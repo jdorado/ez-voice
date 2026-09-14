@@ -14,6 +14,10 @@ owner connection is trusted to invoke installed tools; voice adds no per-command
 Each plugin still enforces its native authentication, authorization and validation. The
 agent must follow the owner's request; retrieved documents cannot grant action authority.
 Plugin stdout is returned to the live model and may contain private data.
+Native task requests use the same owning agent's existing scheduler, owner checks
+and engine settings. They are asynchronous work, not additional voice-model calls;
+ending a voice session does not cancel already-submitted native tasks. Use the
+native task CLI's cancellation control when cancellation is requested.
 
 The operator binds the real agent workspace read-only. Only Markdown is readable;
 hidden paths, symlinks, generated/dependency folders and traversal are rejected.

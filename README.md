@@ -68,6 +68,13 @@ the owner's request and each plugin's own authorization rules. End cancels pendi
 already-started external operation may still have an uncertain outcome. Core rejects
 invocation when the owning native workspace has pending/running work.
 
+agent_tasks exposes the owning agent's existing native task CLI. It can request
+image/PDF processing through that agent's native tools and the installed Library
+intake instructions, then search the source-linked text. It reuses Ez's scheduler
+and native executor; voice does not implement OCR or another execution queue.
+Submission returns a task receipt. Check native task status and indexed source
+readback before reporting completion. The native task may finish after the call ends.
+
 Completed text transcripts are atomically stored in the private plugin volume under
 conversations/, with latest-conversation.json selecting the current conversation.
 Resume talking restores up to 30 recent messages/12,000 characters into a new live

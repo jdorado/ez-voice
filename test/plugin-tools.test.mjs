@@ -15,3 +15,13 @@ test('plugin adapter forwards generic core discovery/invocation; ignores unrelat
  controller.abort();await assert.rejects(call,/cancelled/);assert.equal(frames.at(-1).coreCancel.id,pending.id);
  await assert.rejects(core.execute({name:'plugin_run',arguments:{alias:'example',args_json:'{"shell":"x"}'}},new AbortController().signal),/array/);
 });
+test('native task access forwards literal arguments and returns admission separately from completion',async()=>{
+ const socket=new PassThrough();let frame;socket.on('data',b=>{frame=JSON.parse(b.toString());});
+ const core=new CoreTools(socket);
+ const result=core.execute({name:'agent_tasks',arguments:{args_json:JSON.stringify(['create','--now','--text','Process the source using native tools; $(literal)'])}});
+ assert.equal(frame.coreRequest.method,'tools.native');
+ assert.deepEqual(frame.coreRequest.params,{args:['create','--now','--text','Process the source using native tools; $(literal)']});
+ core.receive({coreResponse:{id:frame.coreRequest.id,result:{id:'s_test',enabled:true}}});
+ assert.deepEqual(JSON.parse(await result),{id:'s_test',enabled:true});
+ await assert.rejects(core.execute({name:'agent_tasks',arguments:{args_json:'"shell"'}}),/array/);
+});

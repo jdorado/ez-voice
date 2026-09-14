@@ -9,6 +9,7 @@ export const pluginTools = [
   {name:'plugin_help',description:'Read a registered plugin’s native CLI help before choosing arguments.',parameters:schema({alias:string(40)})},
   {name:'plugin_skill',description:'Read an installed plugin’s own skill instructions. Skill index starts at 0, line at 1. Follow nextLine for subsequent pages.',parameters:schema({alias:string(40),index:{type:'integer',minimum:0,maximum:99},line:{type:'integer',minimum:1,maximum:100000}})},
   {name:'plugin_run',description:'Run a native installed-plugin command using this agent’s existing permissions. args_json is a JSON array of literal CLI arguments, excluding ez and the alias. No extra voice approval or shell interpretation. Follow the owner’s request and the plugin’s authorization rules. Do not repeat uncertain operations.',parameters:schema({alias:string(40),args_json:string(8000)})},
+  {name:'agent_tasks',description:'Use this agent’s existing native task CLI for work requiring its native tools, including image/PDF ingestion into searchable Library text. args_json is a JSON array of CLI arguments. Read ["--help"] first; create --now submits asynchronous work. A task receipt is not completion: check its status before reporting results. Use the installed plugin’s ingestion instructions; do not invent an OCR pipeline or repeat uncertain submissions.',parameters:schema({args_json:string(8000)})},
 ];
 export class CoreTools {
   constructor(socket){this.socket=socket;this.pending=new Map();}
@@ -36,9 +37,9 @@ export class CoreTools {
     else if(call.name==='plugin_help')method='tools.help';
     else if(call.name==='plugin_skill')method='tools.skill';
     else {
-      method='tools.invoke';const args=JSON.parse(params.args_json);
+      method=call.name==='agent_tasks'?'tools.native':'tools.invoke';const args=JSON.parse(params.args_json);
       if(!Array.isArray(args)||args.length>32||args.some(a=>typeof a!=='string'||a.length>2000||a.includes('\0')))throw Error('Expected a bounded JSON array of CLI arguments');
-      params={alias:params.alias,args};
+      params=call.name==='agent_tasks'?{args}:{alias:params.alias,args};
     }
     const result=JSON.stringify(await this.request(method,params,signal));
     return result.length>15000?JSON.stringify({truncated:true,output:result.slice(0,14000),note:'Request a smaller result or narrower query.'}):result;

@@ -11,6 +11,10 @@ stdin. The container loads SOUL.md/USER.md and owns context search/read executio
 The temporary web client uses core's persistent tools connect transport. Core supplies
 dynamic plugins_list, plugin_help, plugin_skill and native plugin_run calls; no
 Library profile is needed. Read each plugin's own instructions before invocation.
+For scanned sources that need native image/PDF tools, use agent_tasks with the
+existing native task CLI and Library intake instructions. Request processing of
+the verified original into source-linked searchable text, then check task status
+and search/read back the stored result. Do not add a voice-specific OCR pipeline.
 Give the owner the private localhost link. Verify identity, Markdown lookup, native
 plugin discovery/use, then End and Resume talking. Text transcripts are privately
 retained; resume restores a bounded recent window, never old tool calls. Native CLI
