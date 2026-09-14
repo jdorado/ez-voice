@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Replace the temporary host bridge with a Docker web command and bundled client.
+- Authenticate Telegram launches against the live paired owner; provide one-time local login for browser-only use.
+- Document explicit HTTPS ingress and the optional Telegram launcher.
+
 ## 0.1.0-beta.1
 
 - Dockerized OpenAI Realtime WebRTC sessions and server-side direct function execution.

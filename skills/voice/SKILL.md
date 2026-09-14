@@ -8,7 +8,7 @@ workspace, name and purpose from existing agent configuration. Bind the workspac
 read-only; never infer it from the shell cwd. Configure credentials through private
 stdin. The container loads SOUL.md/USER.md and owns context search/read execution.
 
-The temporary web client uses core's persistent tools connect transport. Core supplies
+The bundled web client uses core's persistent tools connect transport. Core supplies
 dynamic plugins_list, plugin_help, plugin_skill and native plugin_run calls; no
 Library profile is needed. Read each plugin's own instructions before invocation.
 Discover native commands with core_tools and read their --help through core_run.

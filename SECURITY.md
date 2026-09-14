@@ -1,11 +1,28 @@
 # Security
 
-Trusted local owner only. Report vulnerabilities privately through GitHub Security.
+Paired owner only. Report vulnerabilities privately through GitHub Security.
 Never include credentials or transcripts.
 
-The temporary bridge binds 127.0.0.1, checks Host/Origin and requires a random bearer
-token stored in tab sessionStorage. Do not tunnel it. The installed container owns
-provider credentials, agent identity and context tools. Configuration is mode 0600.
+The web command runs inside Docker behind an explicit loopback publication.
+Public access requires HTTPS and Telegram production Ed25519 launch validation
+with a server-configured bot ID. Duplicate launch fields, invalid signatures,
+launches older than five minutes and clocks over 30 seconds ahead are rejected.
+The backend checks the current private-chat owner through core, never a browser
+claim or a copied owner ID. Launch exchange is single-use; bearer sessions last
+20 minutes and are held in tab sessionStorage. Protected requests, tool requests
+and the call lease revalidate owner binding. Public mode has no local-token bypass.
+Local HTTP is allowed only for 127.0.0.1; its printed random one-time login is a
+credential. Keep that output private. Neither login secrets nor provider keys go
+into model context. URLs alone do not authorize public access.
+
+Host and Origin are checked; authenticated responses are not cached. Serve this
+application on a dedicated origin. Reverse proxies must preserve Host and must
+not log request bodies or authorization headers. Static assets reveal no agent
+identity or transcripts. The Telegram SDK is loaded from telegram.org; Telegram
+and the host administrator are trusted. Session exhaustion fails closed; reopen
+after expiry. Closing a page relies on best-effort stop plus the bounded lease.
+The installed container owns provider credentials, identity and context tools.
+Configuration is mode 0600.
 The browser cannot choose tools, identity or root. Core connects one command container
 through the bound registry; no Docker socket or shell is exposed to the voice model.
 Workspace tools execute in the voice container. Generic plugin requests execute via

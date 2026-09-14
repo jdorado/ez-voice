@@ -18,7 +18,8 @@ try {
 Use the agent-bound ez voice command. Start/stop through ez plugins.
 Credentials live in /state/config.json (0600), never browser or model context.
 Exit 0 success, 2 invalid input/unavailable. No automatic provider retries.
-The temporary owner web bridge is examples/local-bridge.mjs; see README.`);
+Web: ez tools serve 8791:8080 voice web --origin http://127.0.0.1:8791
+For HTTPS Telegram access add --bot-id ID; see README.`);
   else if (command === 'configure') {
     let raw = '';
     for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 16000) throw new Error('Input too large'); }
@@ -42,6 +43,8 @@ The temporary owner web bridge is examples/local-bridge.mjs; see README.`);
   } else if (command === 'doctor') {
     const config = await readFile(join(state, 'config.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return {}; throw e; });
     console.log(JSON.stringify({ version: '0.1.0-beta.1', configured: Boolean(config.apiKey), model: config.model || 'gpt-realtime-2.1', voice: config.voice || 'marin', transport: 'webrtc', toolMode: 'direct', liveVerified: false }));
+  } else if(command==='web') {
+    await (await import('../src/web-connect.mjs')).webConnect(state,process.argv.slice(3));
   } else if(command==='connect') {
     const socket=net.connect(join(state,'voice.sock'));
     socket.on('error',()=>{console.error('Voice service unavailable');process.exitCode=2;});
