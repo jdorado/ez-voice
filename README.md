@@ -71,6 +71,11 @@ the owner's request and each plugin's own authorization rules. End cancels pendi
 already-started external operation may still have an uncertain outcome. Core rejects
 invocation when the owning native workspace has pending/running work.
 
+Each call loads a bounded current core-command catalogue into its startup context,
+including on resume. This is capability data, not action authorization; old assistant
+claims cannot override current tools. If startup discovery is unavailable, the call
+continues and can use core_tools to check again.
+
 core_tools discovers native commands available to this connection. core_run invokes
 the returned command name and literal arguments; read its --help first. The schedule
 command can request

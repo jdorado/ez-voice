@@ -2,6 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {CoreTools} from '../src/plugin-tools.mjs';
+test('startup context reads the current core catalogue without hardcoded command names',async()=>{
+ const socket=new PassThrough();let frame;socket.on('data',b=>{frame=JSON.parse(b.toString());});
+ const core=new CoreTools(socket);
+ for(const command of ['example_delivery','replacement_command']){
+  const context=core.capabilityContext();assert.equal(frame.coreRequest.method,'tools.native.list');
+  core.receive({coreResponse:{id:frame.coreRequest.id,result:[{command,description:'Current capability',available:true}]}});
+  assert.match(await context,new RegExp(command));
+ }
+ const unavailable=core.capabilityContext();
+ core.receive({coreResponse:{id:frame.coreRequest.id,error:'Core unavailable'}});
+ assert.match(await unavailable,/Use core_tools/);
+ const large=core.capabilityContext();
+ core.receive({coreResponse:{id:frame.coreRequest.id,result:[{command:'example',description:'x'.repeat(10000)}]}});
+ assert((await large).length<4000);
+ core.close();
+});
 test('plugin adapter forwards generic core discovery/invocation; ignores unrelated results and cancels',async()=>{
  const socket=new PassThrough();const frames=[];socket.on('data',b=>frames.push(JSON.parse(b.toString())));
  const core=new CoreTools(socket);const controller=new AbortController();

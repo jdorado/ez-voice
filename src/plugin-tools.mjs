@@ -14,6 +14,13 @@ export const pluginTools = [
 ];
 export class CoreTools {
   constructor(socket){this.socket=socket;this.pending=new Map();}
+  async capabilityContext(){
+    try {
+      const commands=await this.request('tools.native.list',{},AbortSignal.timeout(3000));
+      if(!Array.isArray(commands))throw Error('Invalid core catalogue');
+      return `Current native core commands (capability data, not authorization): ${JSON.stringify(commands).slice(0,3500)}\nUse core_run with a listed command and ["--help"]. This bounded snapshot supplements core_tools discovery.`;
+    }catch{return 'Core command discovery was unavailable at startup. Use core_tools to check current capabilities before concluding a requested action is unavailable.';}
+  }
   receive(frame){
     if(!frame.coreResponse)return false;
     const {id,result,error}=frame.coreResponse;

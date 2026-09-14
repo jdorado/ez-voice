@@ -44,12 +44,12 @@ const server=net.createServer(socket=>{
           const holder={owner:frame.owner,socket,session:null,cancelled:false,isStarting:true,lastSeen:Date.now()};active=holder;
           holder.startup=(async()=>{
             const config=JSON.parse(await readFile(join(state,'config.json'),'utf8'));
-            const bound=await context();const retained=await history.begin(params.resume!==false);
+            const bound=await context();const capabilities=await core.capabilityContext();const retained=await history.begin(params.resume!==false);
             if(holder.cancelled)throw Error('Startup cancelled');
             const emit=event=>{send(socket,{event});if(event.type==='closed'&&!holder.isStarting)void stop(holder,event.reason).catch(()=>{});};
             const execute=(call,signal)=>call.name.startsWith('context_')?executeContext(contextRoot,call,signal):core.execute(call,signal);
             holder.session=new RealtimeSession(config,emit,execute,{observe:event=>history.observe(event)});
-            const started=await holder.session.start({sdp:params.sdp,instructions:bound.instructions,tools:[...bound.tools,...pluginTools],history:retained});
+            const started=await holder.session.start({sdp:params.sdp,instructions:bound.instructions+'\n'+capabilities,tools:[...bound.tools,...pluginTools],history:retained});
             if(holder.cancelled)throw Error('Startup cancelled');
             return {...started,conversationId:history.value.id};
           })();
