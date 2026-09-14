@@ -26,6 +26,7 @@ test('owner-only login, replay protection, expiry and live revocation',async()=>
   await assert.rejects(auth.login({token:'a'.repeat(64)}));
   const {token}=await auth.login({initData:launch()});assert.equal(await auth.authorize(token),token);
   await assert.rejects(auth.login({initData:launch()}),/already used/);
+  await assert.rejects(auth.login({initData:launch()+'&hash=changed'}),/already used/);
   owner={...owner,pairedAt:'new epoch'};await assert.rejects(auth.authorize(token),/revoked/);
   owner=null;await assert.rejects(auth.login({initData:launch()}),/paired owner/);
   const local=new WebAuth({origin:'http://127.0.0.1:8791',readOwner:async()=>null,now:()=>clock});
@@ -57,4 +58,11 @@ test('HTTP protects history and controls; expiry stops active voice; no browser 
   assert.equal((await request('/stop',{body:{}})).status,401);
   clock+=1200001;assert.equal((await request('/status',{token})).status,401);
   await new Promise(resolve=>setTimeout(resolve,5100));assert(calls.some(([method])=>method==='stop'));
+});
+
+test('occupied web port rejects startup without leaving a lease timer',async()=>{
+  const occupied=http.createServer();await new Promise(resolve=>occupied.listen(0,'127.0.0.1',resolve));
+  try {
+    await assert.rejects(serveWeb({origin:'http://127.0.0.1:8791',port:occupied.address().port,host:'127.0.0.1',auth:{},request:async method=>method==='context'?{agent:'fixture',tools:[]}:{messages:[]}}),{code:'EADDRINUSE'});
+  }finally{await new Promise(resolve=>occupied.close(resolve));}
 });

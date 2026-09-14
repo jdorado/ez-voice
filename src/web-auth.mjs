@@ -38,8 +38,9 @@ export class WebAuth {
       const user=this.verifyUser(input.initData,this.botId,{now});
       owner=await this.readOwner();
       if(!owner||owner.telegramUserId!==user)throw Error('Only the paired owner can use Voice');
-      if(this.used.has(input.initData))throw Error('Launch already used; reopen Voice');
-      this.used.set(input.initData,now+330000);
+      const launchId=Buffer.from(new URLSearchParams(input.initData).get('signature'),'base64url').toString('hex');
+      if(this.used.has(launchId))throw Error('Launch already used; reopen Voice');
+      this.used.set(launchId,now+330000);
     }
     const token=randomBytes(32).toString('hex');this.sessions.set(token,{owner,expires:now+20*60*1000});return {token,expiresAt:now+20*60*1000};
   }
