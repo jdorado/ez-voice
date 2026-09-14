@@ -1,0 +1,27 @@
+{
+  "agent": "My agent",
+  "instructions": "Use Library to look up current notes. Search first, then read the matching file. Do not guess facts about the owner. The available library is default.",
+  "tools": [
+    {
+      "name": "library_search",
+      "description": "Search the owner's Library for notes and documents. Returns file references to read next.",
+      "parameters": { "type": "object", "properties": { "query": { "type": "string", "maxLength": 500 } }, "required": ["query"], "additionalProperties": false },
+      "effect": "read", "command": "library",
+      "args": ["search", {"parameter":"query"}, "--library", "default", "--limit", "5"]
+    },
+    {
+      "name": "library_read",
+      "description": "Read a text file using its exact relative Library path returned by search or listing.",
+      "parameters": { "type": "object", "properties": { "path": { "type": "string", "maxLength": 1000 } }, "required": ["path"], "additionalProperties": false },
+      "effect": "read", "command": "library",
+      "args": ["get", "--library", "default", "--path", {"parameter":"path"}, "--raw"]
+    },
+    {
+      "name": "library_list",
+      "description": "List up to 20 files under a Library path prefix. Use an empty prefix for the root.",
+      "parameters": { "type": "object", "properties": { "prefix": { "type": "string", "maxLength": 1000 } }, "required": ["prefix"], "additionalProperties": false },
+      "effect": "read", "command": "library",
+      "args": ["list", "--library", "default", "--prefix", {"parameter":"prefix"}, "--limit", "20"]
+    }
+  ]
+}

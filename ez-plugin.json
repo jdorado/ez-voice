@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "voice",
+  "version": "0.1.0-beta.1",
+  "description": "Realtime voice with explicit direct bindings to installed plugin tools",
+  "commands": { "voice": { "executable": "bin/ez-voice.mjs", "args": [], "exposure": { "receivesExternalContent": true, "sendsExternally": true, "changesRecords": true, "requiresReview": true } } },
+  "skills": ["skills/voice/SKILL.md"]
+}

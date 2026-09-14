@@ -1,0 +1,40 @@
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      - run: npm run release:check
+      - run: git diff --check
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: |
+          candidate_dir="$(mktemp -d)"
+          npm pack --ignore-scripts --pack-destination "$candidate_dir"
+          tar -xzf "$candidate_dir"/*.tgz -C "$candidate_dir"
+          docker build --target test -t ez-voice-test "$candidate_dir/package"
+          docker build --target runtime -t ez-voice:local "$candidate_dir/package"
+          node "$candidate_dir/package/docker/smoke.mjs"

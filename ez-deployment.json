@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "services": {
+    "voice": {
+      "buildTarget": "runtime",
+      "volumes": { "data": "/state" },
+      "memoryMiB": 256,
+      "cpus": 0.5,
+      "healthcheck": ["node", "/app/bin/ez-voice.mjs", "health"]
+    }
+  },
+  "commands": { "voice": { "service": "voice", "argv": ["node", "/app/bin/ez-voice.mjs"] } }
+}
