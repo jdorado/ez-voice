@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
 
-export const MAX_FRAME = 256 * 1024;
+export const MAX_FRAME = 1024 * 1024;
 export function frames(stream, onFrame, onError) {
   // Bound a partial line as well as completed frames.
   let pending = 0;

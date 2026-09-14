@@ -1,108 +1,90 @@
 # Ez Voice
 
-Talk to an Ez agent using OpenAI Realtime and its existing installed plugin tools.
-Library lookups execute directly through the bound CLI; they do not require another LLM call.
+Local-owner voice for an Ez agent. The installed Docker plugin owns the live model,
+agent identity, Markdown search/read and retained voice conversation. Core provides
+one persistent `ez tools connect voice connect` connection and generic installed-plugin
+dispatch. The temporary web client handles audio, captions and owner approvals.
+It contains no plugin-specific tool logic and invokes no second reasoning engine.
 
-This first beta provides a Dockerized voice service and a temporary local web page for owner QA.
-It is a separate voice session with selected context and direct tools, not a continuation of the
-main CLI engine's private conversation. Phone/SIP adapters and public webapp authentication come later.
+## Install and bind
 
-## Requirements
-
-- An existing Ez plugin registry and Docker installation.
-- Node 22+ on the host for the temporary HTTP/stdio bridge.
-- OpenAI API access to `gpt-realtime-2.1` (configurable) and a browser microphone.
-- Explicitly reviewed read-only tool bindings for the owning agent.
-
-The model is deliberately Realtime, not `gpt-live-1`: this slice tests direct function calling.
-Audio travels browser ↔ OpenAI over WebRTC. The container opens a server-side control connection,
-validates completed function calls, and sends structured requests to the local bridge. The bridge
-uses the agent's existing `ez` dispatcher with literal argv; results return to the same voice model.
-API keys stay in the container's private volume. No engine subprocess or conversation replay is added.
-
-## Install and configure
-
-Use the agent's absolute bound launcher (shown as `ez` below), never another workspace's global CLI.
-Obtain a reviewed source release and inspect it before installation:
+Use the owning agent's absolute ez launcher. Inspect and install a reviewed package:
 
 ```sh
-ez plugins inspect voice --source /absolute/reviewed/ez-voice
-ez plugins install voice --source /absolute/reviewed/ez-voice --revision sha256:INSPECTED_HASH
+ez plugins inspect voice --source /absolute/reviewed/package
+ez plugins install voice --source /absolute/reviewed/package --revision sha256:REVIEWED_HASH
+ez plugins folder-bind voice --service voice --source /actual/agent/workspace --target /state/context
 ez plugins start voice
-ez voice doctor
 ```
 
-Supply `{ "apiKey": "YOUR_OPENAI_KEY", "model": "gpt-realtime-2.1", "voice": "marin" }` through
-private stdin to `ez voice configure`. Do not put the key in shell arguments, a public file, or chat.
-`configure` writes mode 0600 atomically. `doctor` checks configuration without contacting OpenAI;
-actual session creation and audio playback establish provider readiness. A 401/403 indicates account
-or access setup; a 429 can indicate quota/billing. Errors omit provider bodies and keys.
+Resolve workspace, name and purpose from the existing agent configuration. The mount
+is read-only. Supply `{ "name": "agent-name", "purpose": "existing agent purpose" }`
+to `ez voice bind` through stdin. SOUL.md and USER.md supply identity and owner context
+from the mounted workspace, capped at 2,500 characters each. Missing files are optional.
+New calls reload identity; browser requests cannot override identity, root or tools.
 
-## Open the temporary voice page
+Supply `{ "apiKey": "YOUR_KEY", "model": "gpt-realtime-2.1", "voice": "marin" }`
+to `ez voice configure` through private stdin. Never put credentials in argv or source.
+`ez voice doctor` checks configuration; `ez voice health` checks the resident runtime.
 
-Prepare a private copy of `examples/library-profile.json`, set its agent label, and review each tool
-against `ez tools list --details` and the installed CLI help. The sample uses Library `default`.
-Keep profile/context files outside the published package. Then run:
+## Temporary QA client
 
 ```sh
-node /absolute/reviewed/ez-voice/examples/local-bridge.mjs \
-  --ez /absolute/agent/tools/bin/ez \
-  --profile /absolute/private/voice-profile.json \
-  --port 8787
+node /absolute/installed/package/examples/local-bridge.mjs --ez /absolute/agent/tools/bin/ez --port 8791
 ```
 
-An optional `--context-file /absolute/private/brief.md` supplies a short startup brief (12,000
-characters maximum). Select only facts/instructions appropriate for this owner conversation.
-Library reads supply more context on demand. No local Markdown is automatically uploaded.
+Open the printed private link in Chrome and select Start talking. The bearer token
+survives refresh within the tab; restarting the bridge changes it. The plugin contract
+currently has no public web-port exposure. This bridge is an explicit temporary client
+transport, not a production webapp channel. Docker owns the actual voice runtime.
+Requires a core build providing tools connect and the shared workspace writer guard;
+the host worker must also run that build. One connection container is started for
+the client lifetime. Session events flow over that connection without polling CLI
+containers. Actual plugin CLI operations still use the standard command containers.
 
-Open the printed private link on the same machine and select **Start talking**. Allow the microphone.
-The page shows captions and tool durations. Use **Mute**, **End**, and the audio playback control.
-The link's random token is required for API access; keep it private. Loopback HTTP permits local
-microphone use. There is no LAN, tunnel, hosted or multi-user access in this pilot.
+Ask who the agent is, then ask about a known Markdown file. Confirm search/read activity
+and compare its answer with the original. Audio quality needs owner QA, not just tests.
 
-The bridge is an interim host transport, not a new plugin installation path. It opens `ez voice bridge`
-through the registry and forwards requests to the resident container over a private Unix socket.
-Its only tool execution is the existing bound dispatcher. Docker owns the provider service lifecycle.
-Stop the bridge with Ctrl-C. `ez plugins stop voice` stops the provider service.
+## Context tools and limits
 
-## Tool bindings
+context_search performs literal case-insensitive word search in Markdown paths/text.
+An empty query lists files. A relative directory prefix narrows the search.
+context_read returns numbered lines and a nextLine cursor. Both execute in the container.
 
-Each operator-authored binding contains a Realtime function schema, installed `command` alias,
-literal `args` template, and `effect: "read"`. Arguments use `{ "parameter": "query" }` slots.
-Only declared scalar parameters are supported; strings/integers require bounds and unknown fields
-are rejected. Values beginning with `-` cannot inject CLI options. The model sees the function
-definition, never host paths or executable selection. It cannot register tools or alter its profile.
+Hidden paths, symlinks, generated/dependency directories and non-Markdown files are
+excluded. Limits: 512 KiB per file, 120 lines/10,000 characters per read; 2,000 Markdown
+files, 10,000 directories and 15 results per search. Truncation is explicit; narrow
+the prefix before concluding something is absent.
 
-Bindings can target any installed plugin's reviewed read operations. Installation alone grants
-nothing. The `effect` label does not prove a command is read-only; the operator must inspect it.
-This beta intentionally has no write bindings or arbitrary shell/argv tool. Supporting writes later
-requires the existing execution/approval boundaries and operation receipts, not simply changing a label.
-Plugin removal takes effect before each invocation. Changing bindings requires restarting the bridge.
+## Installed plugins and resume
 
-## Limits and verification
+plugins_list reads the current registry; plugin_skill and plugin_help retrieve the
+plugin's own usage. plugin_run accepts an alias and a JSON array of literal arguments.
+No Library-specific bindings or per-plugin voice schemas exist. Registry changes are
+visible on the next discovery request. Core checks alias/revision again at execution.
+The connected plugin itself is excluded. Installing a plugin does not grant send/write
+authority: core asks the client to approve each exact command, with a 60-second expiry.
+The plugin cannot approve itself. End cancels approvals and pending commands; an
+already-started external operation may still have an uncertain outcome. Core rejects
+invocation when the owning native workspace has pending/running work.
 
-- One live session per voice service; 20-minute maximum and 100 tool calls. Tool calls are serialized,
-  bounded to 30 seconds and 16,000 returned characters. Narrow queries when output is too large.
-- Browser captions are temporary. Voice transcripts and memory are not persisted into the owner mind.
-- Main-agent history, goals and full CLI tool context are not inherited. Supply a brief and retrieve.
-- Disconnects stop tool work and request provider hangup. Failed hangup is reported as unconfirmed;
-  no automatic redial or action retry. Provider receipts do not prove the owner heard the audio.
-- Mobile backgrounding, screen lock, Bluetooth and sustained PWA calls need separate device QA.
-- Retrieved content can include prompt injection. See SECURITY.md for the actual trust boundary.
+Completed text transcripts are atomically stored in the private plugin volume under
+conversations/, with latest-conversation.json selecting the current conversation.
+Resume talking restores up to 30 recent messages/12,000 characters into a new live
+session. It restores text with original user/assistant roles, never old tool calls.
+Each retained conversation is bounded to its latest 500 message items. New conversation
+starts a new retained file and preserves the prior file. Interrupted assistant
+transcripts are removed because the provider cannot align the text to played audio.
+Raw audio is not stored. UI captions can include generated words the owner did not hear.
 
-QA should prove microphone input, audible replies, direct Library search/read, interruption/correction,
-tool timings, clean End, and re-opening the page. Synthetic tests and container health are insufficient
-to claim audible quality. The temporary page itself is not a production webapp.
+This is the owning agent's identity/workspace in a distinct live-model context. Native
+CLI chat is not inherited. Older-history search is not exposed in this increment.
 
-## State and removal
+End stops the call. Stopping the bridge requests hangup; a 60-second lease closes
+abandoned sessions. Calls are capped at 20 minutes and 100 tool calls. Uncertain hangup
+is reported without automatic redial. ez plugins stop voice stops the runtime;
+uninstall preserves the private data volume.
 
-Private state is `/state/config.json` and the service socket. Back up configuration privately.
-`ez plugins uninstall voice` unregisters/stops the deployment and preserves its named volume.
-Reinstall reuses credentials. Revoking a provider key is a separate OpenAI account operation.
-First-beta state schema is 1; no migration exists. Keep the prior artifact when upgrading.
-
-## Development
-
-`pnpm install --frozen-lockfile`, `pnpm verify`, `npm run release:check`.
-Build Docker `test` and `runtime` targets from the packed artifact; run `docker/smoke.mjs`.
-See CONTRIBUTING.md and docs/releasing.md. MIT licensed; source is public, provider usage is paid.
+Development: pnpm install --frozen-lockfile; pnpm verify; npm run release:check.
+Build Docker test/runtime targets from the packed artifact and run docker/smoke.mjs.
+See CONTRIBUTING.md and SECURITY.md. MIT licensed; provider usage is paid.

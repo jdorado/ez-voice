@@ -1,34 +1,20 @@
 ---
 name: voice
-description: Enable and inspect owner-only realtime voice with direct installed-plugin lookups.
+description: Local-owner realtime voice with agent identity and Markdown context.
 ---
 
-# Voice
+Use the owning agent's bound ez voice --help and read the packaged README. Resolve
+workspace, name and purpose from existing agent configuration. Bind the workspace
+read-only; never infer it from the shell cwd. Configure credentials through private
+stdin. The container loads SOUL.md/USER.md and owns context search/read execution.
 
-Use the bound `ez voice --help` and `ez voice doctor`. This plugin uses an OpenAI Realtime model with
-direct function calling; GPT-Live's backend delegation is a different API and is not supported here.
+The temporary web client uses core's persistent tools connect transport. Core supplies
+dynamic plugins_list, plugin_help, plugin_skill and approved plugin_run calls; no
+Library profile is needed. Read each plugin's own instructions before invocation.
+Give the owner the private localhost link. Verify identity, Markdown lookup, native
+plugin discovery/use, then End and Resume talking. Text transcripts are privately
+retained; resume restores a bounded recent window, never old tool calls. Native CLI
+chat and older-history search are not exposed. Do not claim audio quality from tests.
 
-Install a reviewed source through `ez plugins inspect voice --source PATH`, then
-`ez plugins install voice --source PATH --revision HASH` and `ez plugins start voice`.
-The installed agent completes onboarding through usable voice, not merely container health.
-
-Required input: an OpenAI project API key with access to the configured Realtime model. Reuse a
-connection only when authorized. Send JSON `{ "apiKey": "..." }` to `ez voice configure` over private
-stdin, never argv or chat output. Model and voice are optional configuration fields. The provider key
-is atomically persisted at 0600 in the private volume. `doctor` reports configured, not live verified.
-
-Read the packaged README for the temporary local web transport. Select the correct agent-bound
-launcher and write a private tool profile from the example. Inspect installed tools with
-`ez tools list --details` and their own help. Bind explicit read operations; do not expose shell,
-raw arbitrary argv, administrative operations, or an entire plugin just because it is installed.
-The operator owns these grants. For the pilot use Library search/read/list. API schemas stay with
-this plugin; business instructions stay in the owner's prepared brief and existing plugin skills.
-
-Share the private localhost launch link with the owner, open the page, and verify microphone input,
-audible model output, one actual Library lookup, interruptions and clean hangup. Do not claim audible
-quality from a transcript or build. Return the installed version, tool latency and any remaining QA.
-
-Stop with the page End button and `ez plugins stop voice` when requested. The temporary bridge has its
-own process lifetime; stop it too. Uninstall preserves the private data volume. Back up that volume
-privately; revoking the OpenAI key is separate from removal. State schema is 1; no migration is needed
-for this first beta. Do not automatically redial, restart calls, or replay uncertain operations.
+End stops calls; ez plugins stop voice stops the runtime. Stop the temporary bridge
+when finished. Uninstall preserves private data. Do not redial or replay uncertain work.
