@@ -35,3 +35,16 @@ test('GPT-Live transcript deltas retain bounded speaker rows without inventing s
   const saved=await history.load();assert.deepEqual(saved.messages.map(({role,text})=>({role,text})),[{role:'user',text:'Hello there'},{role:'assistant',text:'Hi.'}]);
  }finally{await rm(root,{recursive:true,force:true});}
 });
+test('rapid speaker alternation preserves chronological rows',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'voice-live-order-'));
+ try{
+  const history=new VoiceHistory(root);await history.begin(false);
+  history.observe({type:'session.input_transcript.delta',delta:'First question.',start_ms:0,end_ms:100});
+  history.observe({type:'session.output_transcript.delta',delta:'First answer.',start_ms:100,end_ms:200});
+  history.observe({type:'session.input_transcript.delta',delta:'Second question.',start_ms:200,end_ms:300});
+  await history.flush();
+  assert.deepEqual((await history.load()).messages.map(({role,text})=>({role,text})),[
+   {role:'user',text:'First question.'},{role:'assistant',text:'First answer.'},{role:'user',text:'Second question.'}
+  ]);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

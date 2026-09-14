@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { createHash, randomUUID } from 'node:crypto';
+import { applicationCall, runApplication } from '@jc_stack/ez-agents/application-client';
 import { text } from './protocol.mjs';
-import { cancelAgentTurn, runAgentTurn } from './agent-client.mjs';
 
 const BASE = 'https://api.openai.com/v1/live/sessions';
 const id = prefix => prefix + randomUUID().replaceAll('-', '');
@@ -12,7 +12,7 @@ const boundedResult = value => {
 };
 
 export class RealtimeSession {
-  constructor(config, emit, _execute, { fetchImpl = fetch, socketFactory = (url, options) => new WebSocket(url, options), observe = () => {}, runAgent = runAgentTurn, cancelAgent = cancelAgentTurn } = {}) {
+  constructor(config, emit, _execute, { fetchImpl = fetch, socketFactory = (url, options) => new WebSocket(url, options), observe = () => {}, runAgent = runApplication, cancelAgent = (runId, connection) => applicationCall(`/v1/runs/${encodeURIComponent(runId)}/cancel`, {}, connection) } = {}) {
     this.config = config; this.emit = emit; this.fetch = fetchImpl; this.socketFactory = socketFactory;
     this.observe = observe; this.runAgent = runAgent; this.cancelAgent = cancelAgent;
     this.id = randomUUID(); this.delegations = new Map(); this.fragments = []; this.closed = false;
@@ -46,7 +46,8 @@ export class RealtimeSession {
       const raw = await response.text();
       if (raw.length > 220000) throw new Error('OpenAI session response too large');
       let result; try { result = JSON.parse(raw); } catch { throw new Error('Invalid OpenAI Live session response'); }
-      if (!/^live_[A-Za-z0-9_-]+$/.test(result?.session?.id || '') || result?.transport?.type !== 'webrtc' ||
+      if (typeof result?.session?.id !== 'string' || !result.session.id || result.session.id.length > 200 || result.session.id.includes('\0') ||
+          result?.transport?.type !== 'webrtc' ||
           typeof result.transport.sdp !== 'string' || !result.transport.sdp.startsWith('v=0') || result.transport.sdp.length > 100000)
         throw new Error('Invalid OpenAI Live session response');
       this.providerId = result.session.id;
@@ -138,7 +139,8 @@ export class RealtimeSession {
     this.emit({ type: 'delegation_started', delegationId });
     state.promise = this.runAgent({ requestId, scope: 'voice', text: prompt }, {
       url: this.config.agentUrl, token: this.config.agentToken, signal: controller.signal,
-    }, { fetchImpl: this.fetch, onAdmitted: runId => { state.runId = runId; } }).then(result => {
+      fetchImpl: this.fetch, onAdmitted: runId => { state.runId = runId; },
+    }).then(result => {
       state.terminal = true;
       if (this.closed) return;
       this.send({ type: 'session.commentary.append', event_id: id('result_'), delegation_id: delegationId, content: boundedResult(result.reply) });
@@ -170,7 +172,10 @@ export class RealtimeSession {
       const cancellations = [];
       for (const state of this.delegations.values()) {
         state.controller.abort();
-        if (state.runId && !state.terminal) cancellations.push(this.cancelAgent(state.runId, { url: this.config.agentUrl, token: this.config.agentToken }, { fetchImpl: this.fetch }).catch(() => null));
+        if (state.runId && !state.terminal) cancellations.push(this.cancelAgent(state.runId, {
+          url: this.config.agentUrl, token: this.config.agentToken,
+          fetchImpl: this.fetch, signal: AbortSignal.timeout(10_000),
+        }).catch(() => null));
       }
       await Promise.allSettled(cancellations);
       const hangupConfirmed = await this.finishProvider();

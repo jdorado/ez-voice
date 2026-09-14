@@ -111,7 +111,9 @@ plugin directly.
 Voice submits each delegation once with a stable request ID. End requests native
 run cancellation when one was admitted; a cancellation or external action can
 still have an uncertain outcome, so receipts remain authoritative. There is no
-automatic mutation retry or replacement inference queue.
+automatic mutation retry or replacement inference queue. The HTTP boundary uses
+the exact beta.29 `@jc_stack/ez-agents/application-client` dependency rather than
+a Voice-owned copy of the core protocol.
 
 Transcript deltas are atomically retained in the private plugin volume. Resume
 seeds up to 30 recent speaker rows and 12,000 characters into a new Live session;

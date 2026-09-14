@@ -37,13 +37,20 @@ test('provider errors omit credentials and response body',async()=>{
 });
 
 test('invalid Live response is rejected without trusting IDs or SDP',async()=>{
-  const f=fixture({fetchImpl:async()=>Response.json({session:{id:'rtc_wrong'},transport:{type:'webrtc',sdp:'v=0'}})});
+  const f=fixture({fetchImpl:async()=>Response.json({session:{id:''},transport:{type:'webrtc',sdp:'v=0'}})});
   await assert.rejects(f.session.start({sdp:'v=0\r\n'}),/Invalid OpenAI Live session response/);
+});
+
+test('preserves an opaque bounded Live session ID when attaching',async()=>{
+  const f=fixture({fetchImpl:async()=>Response.json({session:{id:'provider/session opaque'},transport:{type:'webrtc',sdp:'v=0\r\nanswer'}})});
+  await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
+  assert.equal(f.sockets[0].url,'wss://api.openai.com/v1/live/sessions/provider%2Fsession%20opaque/attach');
+  f.session.onEvent({type:'session.closed'});await f.session.stop();
 });
 
 test('client delegation sends accumulated transcript through the native agent once',async()=>{
   let resolveAgent,calls=0;const observed=[];
-  const f=fixture({observe:event=>observed.push(event),runAgent:async(input,connection,options)=>{calls++;options.onAdmitted('r_app_'+'b'.repeat(64));assert.match(input.text,/Owner: Find my orchard note/);assert.equal(input.scope,'voice');assert.equal(connection.url,config.agentUrl);return new Promise(resolve=>{resolveAgent=resolve;});}});
+  const f=fixture({observe:event=>observed.push(event),runAgent:async(input,options)=>{calls++;options.onAdmitted('r_app_'+'b'.repeat(64));assert.match(input.text,/Owner: Find my orchard note/);assert.equal(input.scope,'voice');assert.equal(options.url,config.agentUrl);return new Promise(resolve=>{resolveAgent=resolve;});}});
   await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
   f.session.onEvent({type:'session.input_transcript.delta',delta:'Find my orchard note',start_ms:1,end_ms:10});
   const event={type:'session.delegation.created',delegation:{id:'item_one',target:'client'}};
@@ -57,7 +64,7 @@ test('client delegation sends accumulated transcript through the native agent on
 
 test('graceful stop cancels admitted native work and waits for session.closed',async()=>{
   let cancelled,resolveAgent;
-  const f=fixture({runAgent:async(_input,_connection,options)=>{options.onAdmitted('r_app_'+'c'.repeat(64));return new Promise(resolve=>{resolveAgent=resolve;});},cancelAgent:async runId=>{cancelled=runId;}});
+  const f=fixture({runAgent:async(_input,options)=>{options.onAdmitted('r_app_'+'c'.repeat(64));return new Promise(resolve=>{resolveAgent=resolve;});},cancelAgent:async runId=>{cancelled=runId;}});
   await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
   f.session.onEvent({type:'session.delegation.created',delegation:{id:'item_two',target:'client'}});await Promise.resolve();
   const stopping=f.session.stop();
@@ -69,7 +76,7 @@ test('graceful stop cancels admitted native work and waits for session.closed',a
 
 test('graceful stop does not cancel native work that already completed',async()=>{
   let cancellations=0;
-  const f=fixture({runAgent:async(_input,_connection,options)=>{options.onAdmitted('r_app_'+'d'.repeat(64));return {runId:'r_app_'+'d'.repeat(64),reply:'done'};},cancelAgent:async()=>{cancellations++;}});
+  const f=fixture({runAgent:async(_input,options)=>{options.onAdmitted('r_app_'+'d'.repeat(64));return {runId:'r_app_'+'d'.repeat(64),reply:'done'};},cancelAgent:async()=>{cancellations++;}});
   await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
   f.session.onEvent({type:'session.delegation.created',delegation:{id:'item_done',target:'client'}});
   await f.session.delegations.get('item_done').promise;

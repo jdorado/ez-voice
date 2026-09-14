@@ -14,7 +14,7 @@ export function recentMessages(messages,maxChars=12000,maxItems=30){
   return result;
 }
 export class VoiceHistory {
-  constructor(state){this.directory=join(state,'conversations');this.index=join(state,'latest-conversation.json');this.chain=Promise.resolve();this.value=null;this.rows={};}
+  constructor(state){this.directory=join(state,'conversations');this.index=join(state,'latest-conversation.json');this.chain=Promise.resolve();this.value=null;this.row=null;}
   async load(){
     await this.chain;
     try{
@@ -28,15 +28,15 @@ export class VoiceHistory {
     await mkdir(this.directory,{recursive:true,mode:0o700});
     this.value=resume?await this.load():null;
     if(!this.value){this.value={id:randomUUID(),createdAt:new Date().toISOString(),messages:[]};await atomic(join(this.directory,this.value.id+'.json'),this.value);await atomic(this.index,{id:this.value.id});}
-    this.rows={};return recentMessages(this.value.messages);
+    this.row=null;return recentMessages(this.value.messages);
   }
   observe(event){
     if(!this.value)return;
     if(event.type==='session.input_transcript.delta'||event.type==='session.output_transcript.delta'){
       const role=event.type.includes('input_')?'user':'assistant';
       if(typeof event.delta!=='string'||!Number.isFinite(event.start_ms)||!Number.isFinite(event.end_ms)||event.end_ms<event.start_ms)return;
-      let row=this.rows[role],item=row&&this.value.messages.find(message=>message.id===row.id);
-      if(!row||!item||event.start_ms-row.end>1500){item={id:'live_'+randomUUID().replaceAll('-',''),role,text:''};row={id:item.id,end:event.end_ms};this.rows[role]=row;this.value.messages.push(item);}
+      let row=this.row,item=row&&this.value.messages.find(message=>message.id===row.id);
+      if(!row||!item||row.role!==role||event.start_ms-row.end>1500){item={id:'live_'+randomUUID().replaceAll('-',''),role,text:''};row={id:item.id,role,end:event.end_ms};this.row=row;this.value.messages.push(item);}
       item.text=(item.text+event.delta).slice(-12000);row.end=Math.max(row.end,event.end_ms);
       this.value.messages=this.value.messages.slice(-500);
       this.save();return;
