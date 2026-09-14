@@ -47,7 +47,7 @@ ez tools serve 8791:8080 voice web --origin https://voice.example.com --bot-id 1
 ```
 
 The bot ID is the numeric public ID of the owning agent's Telegram bot, not its
-secret token. Configure the relay's private environment and restart the relay:
+secret token. Configure the relay's Compose environment or `.env`, then recreate its container:
 
 ```dotenv
 EZ_TELEGRAM_WEB_APP={"command":"voice","label":"Voice","url":"https://voice.example.com/"}

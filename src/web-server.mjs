@@ -6,10 +6,6 @@ export async function serveWeb({request,auth,origin,port=8080,host='0.0.0.0'}) {
 const events=[];let seq=0,sessionId,sessionToken,starting=false,lastBrowserSeen=Date.now(),saved={messages:[]};
 const append=event=>{events.push({...event,seq:++seq});if(events.length>300)events.shift();if(event.type==='closed'){sessionId=undefined;void request('history').then(r=>{saved=r;}).catch(()=>{});}};
 const profile=await request('context');saved=await request('history');
-const lease=setInterval(()=>{
-  if(!sessionId)return;
-  void (async()=>{let method='ping';try{await auth.authorize(sessionToken);}catch{method='stop';}if(Date.now()-lastBrowserSeen>15000)method='stop';await request(method);if(method==='stop')sessionId=undefined;})().catch(()=>append({type:'error',message:'Voice connection unavailable'}));
-},5000);
 const server=http.createServer(async(req,res)=>{
   const reply=(status,value,type='application/json')=>{
     res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors https://web.telegram.org"});
@@ -46,5 +42,9 @@ const server=http.createServer(async(req,res)=>{
 });
 server.requestTimeout=10000;server.headersTimeout=10000;
 await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,host,resolve);});
+const lease=setInterval(()=>{
+  if(!sessionId)return;
+  void (async()=>{let method='ping';try{await auth.authorize(sessionToken);}catch{method='stop';}if(Date.now()-lastBrowserSeen>15000)method='stop';await request(method);if(method==='stop')sessionId=undefined;})().catch(()=>append({type:'error',message:'Voice connection unavailable'}));
+},5000);
 return {server,append,authorizeActive:()=>auth.authorize(sessionToken),close:async()=>{clearInterval(lease);if(sessionId||starting)await request('stop').catch(()=>{});await new Promise(resolve=>server.close(resolve));}};
 }
