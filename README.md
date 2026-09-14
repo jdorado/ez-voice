@@ -1,9 +1,9 @@
 # Ez Voice
 
-Local-owner voice for an Ez agent. The installed Docker plugin owns the live model,
+Owner-authenticated voice for an Ez agent. The installed Docker plugin owns the live model,
 agent identity, Markdown search/read and retained voice conversation. Core provides
 one persistent `ez tools connect voice connect` connection and generic installed-plugin
-dispatch. The temporary web client handles audio and captions.
+dispatch. The bundled web client handles audio and captions.
 It contains no plugin-specific tool logic and invokes no second reasoning engine.
 
 ## Install and bind
@@ -27,23 +27,68 @@ Supply `{ "apiKey": "YOUR_KEY", "model": "gpt-realtime-2.1", "voice": "marin" }`
 to `ez voice configure` through private stdin. Never put credentials in argv or source.
 `ez voice doctor` checks configuration; `ez voice health` checks the resident runtime.
 
-## Temporary QA client
+## Browser and Telegram access
+
+Start the resident runtime with `ez plugins start voice`, then serve the bundled
+client through the owning agent's CLI:
 
 ```sh
-node /absolute/installed/package/examples/local-bridge.mjs --ez /absolute/agent/tools/bin/ez --port 8791
+ez tools serve 8791:8080 voice web --origin http://127.0.0.1:8791
 ```
 
-Open the printed private link in Chrome and select Start talking. The bearer token
-survives refresh within the tab; restarting the bridge changes it. The plugin contract
-currently has no public web-port exposure. This bridge is an explicit temporary client
-transport, not a production webapp channel. Docker owns the actual voice runtime.
-Requires a core build providing tools connect and the shared workspace writer guard;
-the host worker must also run that build. One connection container is started for
-the client lifetime. Session events flow over that connection without polling CLI
-containers. Actual plugin CLI operations still use the standard command containers.
+Open the private one-time link printed on stdout. This exchanges the login secret
+for a 20-minute browser session. The link is a credential: keep command output
+private. The local mode works without Telegram or a telephone provider.
 
-Ask who the agent is, then ask about a known Markdown file. Confirm search/read activity
-and compare its answer with the original. Audio quality needs owner QA, not just tests.
+For Telegram, use a dedicated HTTPS origin forwarded to the same loopback port:
+
+```sh
+ez tools serve 8791:8080 voice web --origin https://voice.example.com --bot-id 123456789
+```
+
+The bot ID is the numeric public ID of the owning agent's Telegram bot, not its
+secret token. Configure the relay's Compose environment or `.env`, then recreate its container:
+
+```dotenv
+EZ_TELEGRAM_WEB_APP={"command":"voice","label":"Voice","url":"https://voice.example.com/"}
+```
+
+The `/voice` command returns an Open Voice button and `/menu` includes Voice.
+Standard commands remain available. Telegram supplies signed launch data;
+Voice verifies Telegram's production Ed25519 signature, a five-minute launch
+window, and the current paired private-chat owner through core. No bot token is
+passed to Voice. A launch can be exchanged only once. Reopen the Mini App after
+expiry. Unpairing or relinking invalidates existing sessions; requests and tool
+calls recheck access, and the active-call lease checks at five-second intervals.
+Group owners are not supported by this web entry point.
+
+`tools serve` runs a connection container with an explicit **loopback-only** port
+publication. The resident Voice container retains provider sessions and state;
+the Voice web command container serves HTTP and forwards tool frames through core.
+Neither container receives the Docker socket. Run the foreground command under
+your host's normal service supervisor for unattended use. Stopping it closes the
+connection and ends the call. There is no separate host web bridge.
+
+A reverse proxy or tunnel must terminate HTTPS and preserve the configured Host
+header, forward requests to `127.0.0.1:8791`, and avoid logging authorization headers
+or request bodies. It must not cache authenticated responses. No domain, certificate
+or public ingress is created automatically. Example Caddy configuration:
+
+```caddyfile
+voice.example.com {
+    reverse_proxy 127.0.0.1:8791
+}
+```
+
+Open `/voice` in the paired owner's private chat and press Start talking. Real
+microphone, playback and interruption behavior must be tested on the target
+Telegram clients; this release does not claim device compatibility from HTTP tests.
+The same local browser client remains available for installations without Telegram.
+
+Requires core's `tools serve`, `tools.owner` and persistent connection support.
+The old `examples/local-bridge.mjs` is removed: stop that QA process and use the
+command above. Configuration, retained conversations and workspace binding are
+unchanged. Do not run the old bridge and new web client simultaneously.
 
 ## Context tools and limits
 
@@ -107,7 +152,7 @@ Raw audio is not stored. UI captions can include generated words the owner did n
 This is the owning agent's identity/workspace in a distinct live-model context. Native
 CLI chat is not inherited. Older-history search is not exposed in this increment.
 
-End stops the call. Stopping the bridge requests hangup; a 60-second lease closes
+End stops the call. Stopping the web connection requests hangup; a 60-second lease closes
 abandoned sessions. Calls are capped at 20 minutes and 100 tool calls. Uncertain hangup
 is reported without automatic redial. ez plugins stop voice stops the runtime;
 uninstall preserves the private data volume.
