@@ -1,7 +1,82 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ez Voice</title><link rel="stylesheet" href="/style.css"></head>
-<body><main><header><span class="brand">ez / voice</span><span class="badge">VOICE</span></header>
-<h1>Talk to your agent.</h1><p id="identity">Connecting to your agent…</p>
-<section class="call"><div id="orb" aria-hidden="true">◉</div><p id="status" role="status">Ready when you are.</p><div class="buttons"><button id="start">Start talking</button><button id="new">New conversation</button><button id="mute" disabled>Mute</button><button id="stop" disabled>End</button></div><audio id="audio" autoplay controls></audio></section>
-<div class="columns"><section><h2>Conversation</h2><p class="hint">Text is retained privately for resume. Your voice and requested context go to OpenAI.</p><div id="transcript" aria-live="polite"></div></section><section><h2>Agent tools</h2><p class="hint">Workspace context and installed plugins.</p><div id="tools"></div><div id="activity" aria-live="polite"></div></section></div>
-<footer>Private owner session · 20-minute call limit</footer></main><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="/app.js" type="module"></script></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light" />
+    <title>Voice</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main id="call" data-state="idle" aria-label="Voice call">
+      <header>
+        <span class="presence" aria-hidden="true"></span>
+        <h1 id="identity">Your agent</h1>
+      </header>
+      <section class="controls" aria-label="Call controls">
+        <div class="microphone">
+          <button id="start" class="mic-button" disabled>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+            </svg>
+            <span id="start-label">Start talking</span>
+          </button>
+          <button id="mute" class="mic-button" aria-pressed="false" hidden>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+              <path class="mute-slash" d="m3 3 18 18" />
+            </svg>
+            <span id="mute-label">Mute mic</span>
+          </button>
+        </div>
+        <p id="status" role="status" aria-live="polite">Connecting securely…</p>
+        <button id="play" class="text-button" hidden>Enable sound</button>
+        <div class="secondary">
+          <button id="new" class="text-button" disabled>
+            New conversation
+          </button>
+          <button id="stop" class="end-button" hidden>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M4 15v-3m16 3v-3M3 13c5-5 13-5 18 0l-2 4-4-2v-3m-6 0v3l-4 2-2-4Z"
+              />
+            </svg>
+            <span id="stop-label">End call</span>
+          </button>
+        </div>
+      </section>
+      <audio id="audio" autoplay playsinline hidden></audio>
+    </main>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

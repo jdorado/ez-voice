@@ -3,7 +3,7 @@
 Owner-authenticated voice for an Ez agent. The installed Docker plugin owns the live model,
 agent identity, Markdown search/read and retained voice conversation. Core provides
 one persistent `ez tools connect voice connect` connection and generic installed-plugin
-dispatch. The bundled web client handles audio and captions.
+dispatch. The bundled web client provides microphone, mute and call controls.
 It contains no plugin-specific tool logic and invokes no second reasoning engine.
 
 ## Install and bind
@@ -147,7 +147,7 @@ session. It restores text with original user/assistant roles, never old tool cal
 Each retained conversation is bounded to its latest 500 message items. New conversation
 starts a new retained file and preserves the prior file. Interrupted assistant
 transcripts are removed because the provider cannot align the text to played audio.
-Raw audio is not stored. UI captions can include generated words the owner did not hear.
+Raw audio is not stored.
 
 This is the owning agent's identity/workspace in a distinct live-model context. Native
 CLI chat is not inherited. Older-history search is not exposed in this increment.
