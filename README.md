@@ -1,6 +1,6 @@
 # Ez Voice
 
-Local-owner voice for an Ez agent. The installed Docker plugin owns the live model,
+Owner-authenticated voice for an Ez agent. The installed Docker plugin owns the live model,
 agent identity, Markdown search/read and retained voice conversation. Core provides
 one persistent `ez tools connect voice connect` connection and generic installed-plugin
 dispatch. The bundled web client handles audio and captions.
