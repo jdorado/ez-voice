@@ -1,15 +1,15 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
-  --background: #f8f9f7;
-  --foreground: #202822;
-  --muted: #717972;
-  --button: #223e30;
+  --background: #ffffff;
+  --foreground: #111d42;
+  --muted: #596a91;
+  --button: #2563eb;
   --button-text: #fff;
-  --halo: #e9ede8;
-  --live: #d7eedf;
-  --live-text: #244c36;
+  --halo: #eaf0ff;
+  --live: #dbeafe;
+  --live-text: #1e40af;
   --danger: #a33b3b;
   --danger-background: #f5e9e7;
 }
@@ -62,7 +62,7 @@ h1 {
   height: 6px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: #9ca59d;
+  background: #94a3b8;
 }
 .controls {
   flex: 1;
@@ -73,7 +73,7 @@ h1 {
   padding: 64px 0 84px;
 }
 .microphone {
-  padding: 18px;
+  padding: 12px;
   border-radius: 50%;
   background: var(--halo);
 }
@@ -84,15 +84,15 @@ button {
   touch-action: manipulation;
 }
 button:focus-visible {
-  outline: 3px solid #668c75;
+  outline: 3px solid #2563eb;
   outline-offset: 6px;
 }
 button:disabled {
   cursor: default;
 }
 .mic-button {
-  width: 160px;
-  height: 160px;
+  width: 208px;
+  height: 208px;
   border: 0;
   border-radius: 50%;
   display: flex;
@@ -110,8 +110,8 @@ button:disabled {
   letter-spacing: -0.1px;
 }
 .mic-button svg {
-  width: 32px;
-  height: 32px;
+  width: 48px;
+  height: 48px;
 }
 .mic-button:disabled {
   opacity: 0.55;
@@ -178,7 +178,7 @@ button:not(:disabled):active {
   height: 20px;
 }
 [data-state="live"] .presence {
-  background: #4b9568;
+  background: #2563eb;
 }
 [data-state="connecting"] .microphone {
   animation: breathe 1.8s ease-in-out infinite;
@@ -208,17 +208,11 @@ button:not(:disabled):active {
     transition: none !important;
   }
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #141a17;
-    --foreground: #e8ede9;
-    --muted: #a0aaa3;
-    --button: #e0eae2;
-    --button-text: #23362a;
-    --halo: #202a24;
-    --live: #345b42;
-    --live-text: #e2f2e7;
-    --danger: #f0afab;
-    --danger-background: #382524;
-  }
+
+#new {
+  min-width: 184px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: var(--foreground);
+  font-weight: 500;
 }
