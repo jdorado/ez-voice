@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.0-beta.2
+
+- Replace the Realtime API session with the GPT-Live WebRTC contract and fixed
+  `gpt-live-1` voice model.
+- Use Live client delegation to send tasks through the owning Ez application
+  channel and native agent instead of exposing plugin tools to a second model.
+- Seed resumed sessions with bounded retained text, wait for `session.started`,
+  and confirm graceful close with `session.closed` before releasing media.
+- Require a separately authorized native-agent endpoint and token; provider and
+  application credentials remain private container state.
+
 ## 0.1.0-beta.1
 
 - Add Dockerized OpenAI Realtime WebRTC sessions with private API-key

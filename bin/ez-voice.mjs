@@ -7,11 +7,11 @@ import { frames, send } from '../src/protocol.mjs';
 const state = resolve(process.env.EZ_VOICE_STATE || '/state');
 const command = process.argv[2] || '--help';
 try {
-  if (command === '--version') console.log('ez-voice 0.1.0-beta.1');
-  else if (command === '--help') console.log(`ez-voice 0.1.0-beta.1
+  if (command === '--version') console.log('ez-voice 0.1.0-beta.2');
+  else if (command === '--help') console.log(`ez-voice 0.1.0-beta.2
   doctor              Read configuration and provider readiness (no provider request)
   health              Check the resident service
-  configure           Read {apiKey, model?, voice?} JSON from stdin; private atomic storage
+  configure           Read {apiKey, agentUrl, agentToken, model?, voice?} JSON from stdin; private atomic storage
   bind                Read {name, purpose} owning-agent identity from private stdin
   exchange            One JSON request on stdin; one response from the resident service
   connect             Persistent JSONL connection (use ez tools connect voice connect)
@@ -24,16 +24,20 @@ For HTTPS Telegram access add --bot-id ID; see README.`);
     let raw = '';
     for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 16000) throw new Error('Input too large'); }
     const config = JSON.parse(raw);
-    if (Object.keys(config).some(k => !['apiKey', 'model', 'voice'].includes(k))) throw new Error('Unknown configuration field');
+    if (Object.keys(config).some(k => !['apiKey', 'agentUrl', 'agentToken', 'model', 'voice'].includes(k))) throw new Error('Unknown configuration field');
     if (typeof config.apiKey !== 'string' || !/^sk-[A-Za-z0-9_-]{10,}$/.test(config.apiKey)) throw new Error('Expected an OpenAI API key');
-    if (config.model && !/^gpt-realtime(?:-[a-zA-Z0-9.-]+)?$/.test(config.model)) throw new Error('Expected a Realtime model, not gpt-live');
+    if (config.model && config.model !== 'gpt-live-1') throw new Error('Voice requires gpt-live-1');
     if (config.voice && !['alloy','ash','ballad','coral','echo','sage','shimmer','verse','marin','cedar'].includes(config.voice)) throw new Error('Unknown voice');
+    if (typeof config.agentUrl !== 'string') throw new Error('Expected the native Ez agent URL');
+    const agentUrl=new URL(config.agentUrl);
+    if(!['http:','https:'].includes(agentUrl.protocol)||agentUrl.username||agentUrl.password||agentUrl.pathname!=='/'||agentUrl.search||agentUrl.hash)throw Error('Invalid native Ez agent URL');
+    if(typeof config.agentToken!=='string'||!/^[A-Za-z0-9_-]{43,200}$/.test(config.agentToken))throw Error('Expected the native Ez agent token');
     await mkdir(state, { recursive: true, mode: 0o700 });
     const target = join(state, 'config.json');
     const tmp = target + '.' + process.pid + '.tmp';
     await writeFile(tmp, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
     await rename(tmp, target);
-    console.log(JSON.stringify({ configured: true, model: config.model || 'gpt-realtime-2.1' }));
+    console.log(JSON.stringify({ configured: true, model: 'gpt-live-1' }));
   } else if(command === 'bind') {
     let raw='';for await(const chunk of process.stdin){raw+=chunk;if(raw.length>4000)throw Error('Binding too large');}
     const agent=JSON.parse(raw);
@@ -42,7 +46,7 @@ For HTTPS Telegram access add --bot-id ID; see README.`);
     console.log(JSON.stringify({bound:true,agent:agent.name}));
   } else if (command === 'doctor') {
     const config = await readFile(join(state, 'config.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return {}; throw e; });
-    console.log(JSON.stringify({ version: '0.1.0-beta.1', configured: Boolean(config.apiKey), model: config.model || 'gpt-realtime-2.1', voice: config.voice || 'marin', transport: 'webrtc', toolMode: 'direct', liveVerified: false }));
+    console.log(JSON.stringify({ version: '0.1.0-beta.2', configured: Boolean(config.apiKey&&config.agentUrl&&config.agentToken), providerConfigured:Boolean(config.apiKey), agentConfigured:Boolean(config.agentUrl&&config.agentToken), model: 'gpt-live-1', voice: config.voice || 'marin', transport: 'webrtc', toolMode: 'client-delegation', liveVerified: false }));
   } else if(command==='web') {
     await (await import('../src/web-connect.mjs')).webConnect(state,process.argv.slice(3));
   } else if(command==='connect') {

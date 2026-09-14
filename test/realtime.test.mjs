@@ -1,63 +1,90 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { RealtimeSession } from '../src/realtime.mjs';
-const tool={type:'function',name:'lookup',description:'Read',parameters:{type:'object',properties:{q:{type:'string',maxLength:100}},required:['q'],additionalProperties:false}};
-function fixture(execute=async()=>'{"answer":42}') {
-  const sent=[], events=[];
-  const session=new RealtimeSession({apiKey:'secret'},e=>events.push(e),execute);
-  session.tools=new Map([['lookup',tool]]);
-  session.socket={readyState:1,send:e=>sent.push(JSON.parse(e)),close(){}};
-  return {session,sent,events};
+
+class Socket extends EventEmitter {
+  constructor(){super();this.readyState=1;this.sent=[];queueMicrotask(()=>this.emit('open'));}
+  send(value){this.sent.push(JSON.parse(value));}
+  close(){this.readyState=3;this.emit('close');}
 }
-const call={type:'function_call',status:'completed',call_id:'call_1',name:'lookup',arguments:'{"q":"notes"}'};
-test('direct call returns tool output, no backend LLM invocation',async()=>{
-  let calls=0;const f=fixture(async()=>{calls++;return 'real result';});
-  await f.session.runTool(call);await f.session.runTool(call);
-  assert.equal(calls,1);assert.equal(f.sent.length,1);assert.equal(f.sent[0].item.output,'real result');
+const config={apiKey:'private-key',agentUrl:'http://agent:8787',agentToken:'x'.repeat(48),voice:'marin'};
+const liveResponse=()=>new Response(JSON.stringify({session:{id:'live_fixture'},transport:{type:'webrtc',sdp:'v=0\r\nanswer'}}),{status:201,headers:{'content-type':'application/json'}});
+function fixture(options={}){
+  const events=[],sockets=[],requests=[];
+  const socketFactory=(url,socketOptions)=>{const socket=new Socket();sockets.push({url,options:socketOptions,socket});return socket;};
+  const fetchImpl=options.fetchImpl||(async(url,request)=>{requests.push({url:String(url),request});return liveResponse();});
+  const session=new RealtimeSession(config,event=>events.push(event),undefined,{fetchImpl,socketFactory,runAgent:options.runAgent,cancelAgent:options.cancelAgent,observe:options.observe});
+  return {session,events,sockets,requests};
+}
+
+test('creates exact GPT-Live WebRTC client-delegation session and seeds retained text',async()=>{
+  const f=fixture();
+  const result=await f.session.start({sdp:'v=0\r\noffer',instructions:'Short voice prompt',history:[{role:'user',text:'Earlier question'}]});
+  assert.equal(result.model,'gpt-live-1');assert.equal(result.sdp,'v=0\r\nanswer');
+  assert.equal(f.requests[0].url,'https://api.openai.com/v1/live/sessions');
+  const body=JSON.parse(f.requests[0].request.body);
+  assert.equal(body.session.model,'gpt-live-1');assert.deepEqual(body.session.delegation,{type:'client'});
+  assert.deepEqual(body.session.audio,{output:{voice:'marin'}});assert.equal(body.session.audio.format,undefined);
+  assert.equal(body.session.input[0].content[0].text,'Earlier question');
+  assert.equal(f.sockets[0].url,'wss://api.openai.com/v1/live/sessions/live_fixture/attach');
+  f.session.onEvent({type:'session.closed',reason:'close_requested',usage:{seconds:1}});await f.session.stop();
 });
-test('invalid/unknown arguments never execute',async()=>{
-  let calls=0;const f=fixture(async()=>{calls++;return '';});
-  await f.session.runTool({...call,name:'shell'});
-  assert.equal(calls,0);assert.match(f.sent[0].item.output,/not exposed/);
-});
-test('closed sessions reject late tool results and abort execution',async()=>{
-  let release;let aborted=false;
-  const f=fixture((c,signal)=>new Promise(r=>{release=r;signal.addEventListener('abort',()=>{aborted=true;});}));
-  const work=f.session.runTool(call);await f.session.stop();release('late');await work;
-  assert.equal(aborted,true);assert.equal(f.sent.length,0);
-});
-test('only complete response function calls execute',async()=>{
-  let calls=0;const f=fixture(async()=>{calls++;return 'ok';});
-  f.session.onEvent({type:'response.function_call_arguments.delta',delta:'{}'});
-  assert.equal(calls,0);
-  f.session.onEvent({type:'response.done',response:{output:[call]}});await f.session.chain;
-  assert.equal(calls,1);assert.equal(f.sent.at(-1).type,'response.create');
-});
+
 test('provider errors omit credentials and response body',async()=>{
-  const f=new RealtimeSession({apiKey:'private-key'},()=>{},()=>{}, {fetchImpl:async()=>new Response('sensitive details',{status:401})});
-  await assert.rejects(f.start({sdp:'v=0\r\n'}),{message:'OpenAI session creation failed (401)'});
+  const f=fixture({fetchImpl:async()=>new Response('sensitive details',{status:401})});
+  await assert.rejects(f.session.start({sdp:'v=0\r\n'}),{message:'OpenAI session creation failed (401)'});
 });
-test('call location cannot redirect authenticated requests',async()=>{
-  const f=new RealtimeSession({apiKey:'private-key'},()=>{},()=>{}, {fetchImpl:async()=>new Response('sdp',{status:201,headers:{Location:'https://evil.example/v1/realtime/calls/rtc_1'}})});
-  await assert.rejects(f.start({sdp:'v=0\r\n'}),/Invalid OpenAI call location/);
+
+test('invalid Live response is rejected without trusting IDs or SDP',async()=>{
+  const f=fixture({fetchImpl:async()=>Response.json({session:{id:'rtc_wrong'},transport:{type:'webrtc',sdp:'v=0'}})});
+  await assert.rejects(f.session.start({sdp:'v=0\r\n'}),/Invalid OpenAI Live session response/);
 });
-test('resume restores role-separated text with provider acknowledgement, without replaying tools',async()=>{
- const f=fixture();const history=[{id:'user_previous',role:'user',text:'Remember orchard.'},{id:'agent_previous',role:'assistant',text:'Orchard it is.'}];
- const restoring=f.session.restore(history);
- assert.equal(f.sent[0].item.role,'user');assert.equal(f.sent[0].item.content[0].type,'input_text');
- f.session.onEvent({type:'conversation.item.added',item:{id:'user_previous'}});await Promise.resolve();
- assert.equal(f.sent[1].item.role,'assistant');assert.equal(f.sent[1].item.content[0].type,'output_text');
- f.session.onEvent({type:'conversation.item.created',item:{id:'agent_previous'}});await restoring;
- assert.equal(f.sent.length,2);assert.equal(f.session.calls.size,0);
+
+test('client delegation sends accumulated transcript through the native agent once',async()=>{
+  let resolveAgent,calls=0;const observed=[];
+  const f=fixture({observe:event=>observed.push(event),runAgent:async(input,connection,options)=>{calls++;options.onAdmitted('r_app_'+'b'.repeat(64));assert.match(input.text,/Owner: Find my orchard note/);assert.equal(input.scope,'voice');assert.equal(connection.url,config.agentUrl);return new Promise(resolve=>{resolveAgent=resolve;});}});
+  await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
+  f.session.onEvent({type:'session.input_transcript.delta',delta:'Find my orchard note',start_ms:1,end_ms:10});
+  const event={type:'session.delegation.created',delegation:{id:'item_one',target:'client'}};
+  f.session.onEvent(event);f.session.onEvent(event);await Promise.resolve();assert.equal(calls,1);assert.equal(observed.length,1);
+  resolveAgent({runId:'r_app_'+'b'.repeat(64),reply:'The note says blue.'});
+  await f.session.delegations.get('item_one').promise;
+  const sent=f.sockets[0].socket.sent.find(item=>item.type==='session.commentary.append');
+  assert.equal(sent.delegation_id,'item_one');assert.equal(sent.content,'The note says blue.');
+  f.session.onEvent({type:'session.closed'});await f.session.stop();
 });
-test('stop waits for delayed call creation and reports failed late hangup',async()=>{
- let finishCreation,hangups=0;
- const session=new RealtimeSession({apiKey:'test'},()=>{},()=>{}, {fetchImpl:async url=>{
-   if(url.endsWith('/hangup')){hangups++;return new Response('',{status:503});}
-   return new Promise(resolve=>{finishCreation=resolve;});
- }});
- const starting=session.start({sdp:'v=0\r\n'});const rejected=assert.rejects(starting,/hangup unconfirmed/);
- let finished=false;const stopping=session.stop().then(r=>{finished=true;return r;});await Promise.resolve();assert.equal(finished,false);
- finishCreation(new Response('sdp',{status:201,headers:{Location:'https://api.openai.com/v1/realtime/calls/rtc_delayed'}}));
- const stopped=await stopping;await rejected;assert.equal(stopped.hangupConfirmed,false);assert.equal(hangups,1);
+
+test('graceful stop cancels admitted native work and waits for session.closed',async()=>{
+  let cancelled,resolveAgent;
+  const f=fixture({runAgent:async(_input,_connection,options)=>{options.onAdmitted('r_app_'+'c'.repeat(64));return new Promise(resolve=>{resolveAgent=resolve;});},cancelAgent:async runId=>{cancelled=runId;}});
+  await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
+  f.session.onEvent({type:'session.delegation.created',delegation:{id:'item_two',target:'client'}});await Promise.resolve();
+  const stopping=f.session.stop();
+  while(!f.sockets[0].socket.sent.some(item=>item.type==='session.close'))await Promise.resolve();
+  f.session.onEvent({type:'session.closed',reason:'close_requested',usage:{seconds:2}});
+  const result=await stopping;resolveAgent({runId:cancelled,reply:'late'});
+  assert.equal(result.hangupConfirmed,true);assert.equal(cancelled,'r_app_'+'c'.repeat(64));
+});
+
+test('graceful stop does not cancel native work that already completed',async()=>{
+  let cancellations=0;
+  const f=fixture({runAgent:async(_input,_connection,options)=>{options.onAdmitted('r_app_'+'d'.repeat(64));return {runId:'r_app_'+'d'.repeat(64),reply:'done'};},cancelAgent:async()=>{cancellations++;}});
+  await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
+  f.session.onEvent({type:'session.delegation.created',delegation:{id:'item_done',target:'client'}});
+  await f.session.delegations.get('item_done').promise;
+  const stopping=f.session.stop();f.session.onEvent({type:'session.closed',reason:'close_requested'});
+  await stopping;assert.equal(cancellations,0);
+});
+
+test('stop during delayed creation attaches and finalizes the created session',async()=>{
+  let finishCreation;
+  const f=fixture({fetchImpl:async()=>new Promise(resolve=>{finishCreation=resolve;})});
+  const starting=f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
+  const stopping=f.session.stop();await Promise.resolve();finishCreation(liveResponse());
+  while(!f.sockets.length)await Promise.resolve();
+  while(!f.sockets[0].socket.sent.some(item=>item.type==='session.close'))await Promise.resolve();
+  f.session.onEvent({type:'session.closed',reason:'close_requested'});
+  const stopped=await stopping;await assert.rejects(starting,/closed during startup/);
+  assert.equal(stopped.hangupConfirmed,true);
 });
