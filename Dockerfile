@@ -6,7 +6,6 @@ RUN corepack enable && corepack prepare pnpm@10.30.3 --activate && pnpm install 
 COPY bin ./bin
 COPY src ./src
 COPY web ./web
-COPY examples ./examples
 FROM base AS test
 COPY test ./test
 RUN node --test test/*.test.mjs

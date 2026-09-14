@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
-const token = location.hash.slice(1) || sessionStorage.getItem('ez-voice-token') || '';
-if (token) sessionStorage.setItem('ez-voice-token', token);
+let token = sessionStorage.getItem('ez-voice-token') || '';
+const loginToken=/^#[a-f0-9]{64}$/.test(location.hash)?location.hash.slice(1):'';
 history.replaceState(null, '', '/');
 let pc, dc, mic, seq = 0, running = false, starting = false, historyId;
 const rows = new Map();
@@ -45,4 +45,14 @@ async function poll(){
     for(const e of data.events){seq=Math.max(seq,e.seq);if(e.type==='tool_started'||e.type==='tool_completed'){const row=document.createElement('div');row.className='entry';row.textContent=e.type==='tool_started'?`${e.name} · running`:`${e.name} · ${e.elapsedMs} ms`;$('activity').prepend(row);}if(e.type==='closed'&&running){cleanup();$('status').textContent=e.hangupConfirmed===false?'Disconnected; provider hangup unconfirmed.':`Conversation ended: ${e.reason}`;}if(e.type==='error')$('status').textContent=e.message;}
   }catch(error){$('status').textContent=error.message;}finally{setTimeout(poll,1000);}
 }
-void poll();
+async function authenticate(){
+  $('start').disabled=$('new').disabled=true;
+  try {
+    if(token){try{await api('/status');}catch{token='';sessionStorage.removeItem('ez-voice-token');}}
+    if(!token){const result=await api('/auth',loginToken?{token:loginToken}:{initData:window.Telegram?.WebApp?.initData||''});token=result.token;sessionStorage.setItem('ez-voice-token',token);}
+    await api('/status');
+    $('start').disabled=$('new').disabled=false;
+    window.Telegram?.WebApp?.ready();void poll();
+  }catch{sessionStorage.removeItem('ez-voice-token');$('status').textContent='Access denied or expired. Reopen Voice from your agent.';}
+}
+void authenticate();
