@@ -59,7 +59,10 @@ the prefix before concluding something is absent.
 ## Installed plugins and resume
 
 plugins_list reads the current registry; plugin_skill and plugin_help retrieve the
-plugin's own usage. plugin_run accepts an alias and a JSON array of literal arguments.
+plugin's own usage. plugin_run accepts an alias, a JSON array of literal arguments
+and output_name: an empty string for text output, or a simple filename for binary
+stdout. On code 0, use result.artifact.path, bytes and sha256. The path is relative
+to the owning workspace, under artifacts/; files remain there after sending.
 No Library-specific bindings or per-plugin voice schemas exist. Registry changes are
 visible on the next discovery request. Core checks alias/revision again at execution.
 The connected plugin itself is excluded. The trusted owner connection uses the agent's
@@ -68,12 +71,24 @@ the owner's request and each plugin's own authorization rules. End cancels pendi
 already-started external operation may still have an uncertain outcome. Core rejects
 invocation when the owning native workspace has pending/running work.
 
-agent_tasks exposes the owning agent's existing native task CLI. It can request
+core_tools discovers native commands available to this connection. core_run invokes
+the returned command name and literal arguments; read its --help first. The schedule
+command can request
 image/PDF processing through that agent's native tools and the installed Library
 intake instructions, then search the source-linked text. It reuses Ez's scheduler
 and native executor; voice does not implement OCR or another execution queue.
 Submission returns a task receipt. Check native task status and indexed source
 readback before reporting completion. The native task may finish after the call ends.
+
+For an explicit message/file request, discover the native message command and use
+its existing CLI directly through core_run. For example, after reading Library
+help, retrieve a source with Library `get --raw` and a nonempty output_name, then
+pass artifact.path from a successful result to the message command's `--document`
+option. Core binds delivery to the owning connection's paired Telegram owner.
+An explicit request needs no repeat
+voice confirmation; verify the receipt before reporting sent. Respect discovery's
+availability and limitations; do not retry uncertain delivery.
+Message history requires a native run and is not available through this connection.
 
 Completed text transcripts are atomically stored in the private plugin volume under
 conversations/, with latest-conversation.json selecting the current conversation.

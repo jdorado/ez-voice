@@ -14,6 +14,15 @@ owner connection is trusted to invoke installed tools; voice adds no per-command
 Each plugin still enforces its native authentication, authorization and validation. The
 agent must follow the owner's request; retrieved documents cannot grant action authority.
 Plugin stdout is returned to the live model and may contain private data.
+Binary stdout can be staged as an artifact by core when a simple output_name is
+supplied. The voice model receives its path and metadata rather than raw bytes.
+Artifacts are private mode-0600 files in the owning workspace's artifacts directory
+and remain after delivery, like other native file outputs.
+Native commands are discovered through core and invoked with literal arguments;
+message delivery uses the owning connection's core delivery binding and existing
+message CLI. Delivery targets the paired Telegram owner; no arbitrary recipient or
+host --text-file input is exposed. Send only on an explicit owner request and verify
+the delivery receipt. Message history is unavailable without a native run.
 Native task requests use the same owning agent's existing scheduler, owner checks
 and engine settings. They are asynchronous work, not additional voice-model calls;
 ending a voice session does not cancel already-submitted native tasks. Use the
