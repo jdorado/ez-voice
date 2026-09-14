@@ -2,16 +2,23 @@
 
 ## Unreleased
 
-- Replace the temporary host bridge with a Docker web command and bundled client.
-- Authenticate Telegram launches against the live paired owner; provide one-time local login for browser-only use.
-- Document explicit HTTPS ingress and the optional Telegram launcher.
-
 ## 0.1.0-beta.1
 
-- Dockerized OpenAI Realtime WebRTC sessions and server-side direct function execution.
-- Explicit bindings to existing installed Ez plugin CLIs; no second reasoning call for tool use.
-- Temporary loopback owner web page with captions, mute/end and tool latency readback.
-- Private API-key configuration, bounded calls and read-only pilot bindings.
+- Add Dockerized OpenAI Realtime WebRTC sessions with private API-key
+  configuration, bounded calls and direct installed Ez plugin/native task tools.
+- Preserve the native engine boundary: Voice performs no second reasoning call,
+  OCR pipeline, application-specific tool routing or replacement execution queue.
+- Retain bounded private conversation text for Resume and New conversation while
+  never storing raw audio or replaying old tool calls.
+- Serve the bundled client through core's loopback-only web connection, with
+  single-use local login or Telegram-signed paired-owner authentication.
+- Recheck owner authority, session expiry, Host/Origin and active-tab controls;
+  stop pending work and active media on hangup, revocation or connection loss.
+- Ship a compact mobile call screen with microphone, mute, End call, New
+  conversation, accessible focus/status handling and reduced-motion support.
+- Document explicit HTTPS ingress, the optional Telegram Mini App launcher,
+  workspace identity binding, install verification and release limits.
 
-Phone/SIP adapters, public web authentication, write tools, main-session continuity and persistent
-voice memory are not included. Live acceptance is reported separately from automated checks.
+Phone/SIP adapters, native CLI-chat inheritance and older-history search are not
+included. Real microphone, playback, interruption and device compatibility remain
+human acceptance gates and are reported separately from automated checks.

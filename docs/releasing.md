@@ -21,5 +21,6 @@ jdorado/ez-voice. Never overwrite a version or tag.
 7. Report source, artifact, published version and local installed state separately. Human microphone
    and audible-quality acceptance remains required before claiming end-to-end voice QA complete.
 
-The interim local HTML transport is packaged for reproducible QA, not a public web deployment.
+The bundled authenticated client is packaged for reproducible QA; public HTTPS
+ingress remains an operator-owned deployment and is not created by this package.
 Close retained QA worktrees after acceptance; retain only when a named pending gate needs them.

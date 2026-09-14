@@ -85,7 +85,8 @@ microphone, playback and interruption behavior must be tested on the target
 Telegram clients; this release does not claim device compatibility from HTTP tests.
 The same local browser client remains available for installations without Telegram.
 
-Requires core's `tools serve`, `tools.owner` and persistent connection support.
+Requires `@jc_stack/ez-agents` 0.1.0-beta.28 or newer for `tools serve`,
+`tools.owner` and persistent connection support.
 The old `examples/local-bridge.mjs` is removed: stop that QA process and use the
 command above. Configuration, retained conversations and workspace binding are
 unchanged. Do not run the old bridge and new web client simultaneously.
