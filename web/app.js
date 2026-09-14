@@ -114,17 +114,16 @@ async function start(resume = true) {
     dc = pc.createDataChannel("oai-events");
     dc.onmessage = ({ data }) => {
       try {
-        if (JSON.parse(data).type === "error" && attempt === operation)
+        const event = JSON.parse(data);
+        if (event.type === "session.started" && attempt === operation) {
+          state = "live";
+          hasHistory = true;
+          render();
+          status("Listening");
+        }
+        if (event.type === "error" && attempt === operation)
           status("Something went wrong. Try ending the call and reconnecting.");
       } catch {}
-    };
-    dc.onopen = () => {
-      if (attempt === operation) {
-        state = "live";
-        hasHistory = true;
-        render();
-        status("Listening");
-      }
     };
     const offer = await pc.createOffer();
     if (attempt !== operation) return;
@@ -156,7 +155,7 @@ async function start(resume = true) {
 async function end(message = "Call ended") {
   const attempt = ++operation;
   state = "ending";
-  releaseMedia();
+  mic?.getAudioTracks().forEach((track) => { track.enabled = false; });
   render();
   status("Ending call…");
   try {

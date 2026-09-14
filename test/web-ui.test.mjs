@@ -58,7 +58,7 @@ function fixture() {
       }
       async setLocalDescription() {}
       async setRemoteDescription() {
-        this.channel.onopen();
+        this.channel.onmessage({data:JSON.stringify({type:"session.started",session:{id:"live_fixture"}})});
       }
     },
     fetch: async (path, options) => {
@@ -106,9 +106,10 @@ test("call controls mute audio and keep restart locked until hangup settles", as
   await flush();
   f.run('readStatus({events:[{seq:1,type:"closed"}]})');
   assert.equal(f.elements.get("start").disabled, true);
-  assert.equal(f.tracks[0].stopped, true);
+  assert.equal(f.tracks[0].stopped, false);
   f.finishStop();
   await flush();
+  assert.equal(f.tracks[0].stopped, true);
   assert.equal(f.elements.get("start").disabled, false);
   f.elements.get("start").onclick();
   await flush();

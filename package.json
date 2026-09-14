@@ -1,18 +1,61 @@
 {
   "name": "@jc_stack/ez-voice",
-  "version": "0.1.0-beta.1",
-  "description": "Dockerized realtime voice sessions with direct Ez plugin tools",
+  "version": "0.1.0-beta.2",
+  "description": "Dockerized GPT-Live voice sessions delegated to the native Ez agent",
   "type": "module",
   "license": "MIT",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "packageManager": "pnpm@10.30.3",
-  "publishConfig": { "access": "public", "tag": "latest" },
-  "repository": { "type": "git", "url": "git+https://github.com/jdorado/ez-voice.git" },
+  "publishConfig": {
+    "access": "public",
+    "tag": "latest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jdorado/ez-voice.git"
+  },
   "homepage": "https://github.com/jdorado/ez-voice#readme",
-  "bugs": { "url": "https://github.com/jdorado/ez-voice/issues" },
-  "bin": { "ez-voice": "bin/ez-voice.mjs" },
-  "files": ["bin", "src", "web", "skills", "docs", "test", "scripts", "docker", "ez-plugin.json", "ez-deployment.json", "Dockerfile", ".dockerignore", "README.md", "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "LICENSE"],
-  "scripts": { "test": "node --test test/*.test.mjs", "verify": "node --test test/*.test.mjs", "release:check": "node scripts/release-check.mjs" },
-  "dependencies": { "ws": "8.21.3" },
-  "ezRelease": { "protocol": 1, "kind": "plugin", "stateSchema": 1, "mainProtocol": 1 }
+  "bugs": {
+    "url": "https://github.com/jdorado/ez-voice/issues"
+  },
+  "bin": {
+    "ez-voice": "bin/ez-voice.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "web",
+    "skills",
+    "docs",
+    "test",
+    "scripts",
+    "docker",
+    "ez-plugin.json",
+    "ez-deployment.json",
+    "Dockerfile",
+    ".dockerignore",
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "verify": "node --test test/*.test.mjs",
+    "release:check": "node scripts/release-check.mjs"
+  },
+  "dependencies": {
+    "@jc_stack/ez-agents": "0.1.0-beta.29",
+    "ws": "8.21.3"
+  },
+  "ezRelease": {
+    "protocol": 1,
+    "kind": "plugin",
+    "stateSchema": 1,
+    "mainProtocol": 1
+  }
 }

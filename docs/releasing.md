@@ -1,15 +1,17 @@
 # Releasing
 
 Use the same contribution, review and release process as the other Ez packages. Version package and
-plugin manifests together. Initial beta is 0.1.0-beta.1, npm package @jc_stack/ez-voice, repository
-jdorado/ez-voice. Never overwrite a version or tag.
+plugin manifests together. The package is @jc_stack/ez-voice in jdorado/ez-voice. Never overwrite a
+version or tag. GPT-Live releases must verify the fixed `gpt-live-1` model, client delegation, native
+Ez application-channel result, `session.started` readiness and `session.closed` finalization.
 
 1. Run frozen install, verify, release:check, diff check and dependency audit. Copy the root pnpm lock
    to docker/pnpm-lock.yaml after dependency changes; npm omits the root lock.
 2. Pack with `npm pack --ignore-scripts`, inspect the allowlist and hash the exact bytes. Extract into
    a clean directory. Build test/runtime images there and run `docker/smoke.mjs` with that runtime image.
 3. Verify install/start/doctor/CLI dispatch/restart/uninstall through the actual Ez manager using
-   separate synthetic state, then install the same candidate on the authorized local agent for voice QA.
+   separate synthetic state. Verify a private application-channel binding and host-owned network pin,
+   then install the same candidate on the authorized local agent for voice QA.
 4. Obtain independent final-diff review and required CI. Merge under the maintainer's release request,
    verify the merged tree, and tag that commit. Keep all customer data and private QA out of Git history.
 5. Initial npm publication requires authenticated npm as jc_stack and applicable 2FA. Publish the exact

@@ -3,12 +3,12 @@ import {mkdir,readFile,chmod,unlink} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {frames,send} from './protocol.mjs';
 import {RealtimeSession} from './realtime.mjs';
-import {agentContext,executeContext} from './context.mjs';
-import {CoreTools,pluginTools} from './plugin-tools.mjs';
+import {agentContext} from './context.mjs';
+import {CoreTools} from './plugin-tools.mjs';
 import {VoiceHistory,recentMessages} from './history.mjs';
 
-const state=resolve(process.env.EZ_VOICE_STATE||'/state'),contextRoot=join(state,'context');
-const context=async()=>agentContext(contextRoot,JSON.parse(await readFile(join(state,'agent.json'),'utf8')));
+const state=resolve(process.env.EZ_VOICE_STATE||'/state');
+const context=async()=>agentContext(JSON.parse(await readFile(join(state,'agent.json'),'utf8')));
 await mkdir(state,{recursive:true,mode:0o700});
 const socketPath=join(state,'voice.sock');await unlink(socketPath).catch(e=>{if(e.code!=='ENOENT')throw e;});
 const history=new VoiceHistory(state);
@@ -34,7 +34,7 @@ const server=net.createServer(socket=>{
       if(typeof id!=='string'||id.length>100)throw Error('Invalid request ID');
       let result;
       if(method==='health')result={healthy:true,active:Boolean(active),transport:'persistent',history:'retained'};
-      else if(method==='context'){const c=await context();result={agent:c.agent,tools:[...c.tools,...pluginTools]};}
+      else if(method==='context'){const c=await context();result={agent:c.agent,tools:[{name:'native_agent',description:'Delegated requests run through the owning native Ez agent.'}]};}
       else if(method==='history'){const saved=await history.load();result={conversationId:saved?.id,messages:recentMessages(saved?.messages||[],50000,100)};}
       else{
         if(!/^[a-f0-9]{64}$/.test(frame.owner||''))throw Error('Invalid client owner');
@@ -44,12 +44,11 @@ const server=net.createServer(socket=>{
           const holder={owner:frame.owner,socket,session:null,cancelled:false,isStarting:true,lastSeen:Date.now()};active=holder;
           holder.startup=(async()=>{
             const config=JSON.parse(await readFile(join(state,'config.json'),'utf8'));
-            const bound=await context();const capabilities=await core.capabilityContext();const retained=await history.begin(params.resume!==false);
+            const bound=await context();const retained=await history.begin(params.resume!==false);
             if(holder.cancelled)throw Error('Startup cancelled');
             const emit=event=>{send(socket,{event});if(event.type==='closed'&&!holder.isStarting)void stop(holder,event.reason).catch(()=>{});};
-            const execute=(call,signal)=>call.name.startsWith('context_')?executeContext(contextRoot,call,signal):core.execute(call,signal);
-            holder.session=new RealtimeSession(config,emit,execute,{observe:event=>history.observe(event)});
-            const started=await holder.session.start({sdp:params.sdp,instructions:bound.instructions+'\n'+capabilities,tools:[...bound.tools,...pluginTools],history:retained});
+            holder.session=new RealtimeSession(config,emit,undefined,{observe:event=>history.observe(event)});
+            const started=await holder.session.start({sdp:params.sdp,instructions:bound.instructions,history:retained});
             if(holder.cancelled)throw Error('Startup cancelled');
             return {...started,conversationId:history.value.id};
           })();
