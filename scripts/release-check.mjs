@@ -1,0 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+const p=JSON.parse(readFileSync('package.json'));
+assert.equal(p.name,'@jc_stack/ez-voice');assert.equal(p.private,undefined);
+assert.equal(JSON.parse(readFileSync('ez-plugin.json')).version,p.version);
+assert.equal(readFileSync('pnpm-lock.yaml','utf8'),readFileSync('docker/pnpm-lock.yaml','utf8'));
+const [pack]=JSON.parse(execFileSync('npm',['pack','--dry-run','--ignore-scripts','--json'],{encoding:'utf8'}));
+const paths=pack.files.map(f=>f.path);
+for(const path of ['LICENSE','README.md','SECURITY.md','CONTRIBUTING.md','THIRD_PARTY_NOTICES.md','CHANGELOG.md','Dockerfile','docker/pnpm-lock.yaml','ez-plugin.json','ez-deployment.json'])assert(paths.includes(path),`Missing ${path}`);
+for(const path of paths)assert(!/(^|\/)(node_modules|\.git|\.private|\.env)(\/|$)|\.(log|tgz)$/.test(path),`Private artifact ${path}`);
+for(const path of p.files)assert(paths.some(f=>f===path||f.startsWith(path+'/')),`Missing allowlist ${path}`);
+console.log(JSON.stringify({name:p.name,version:p.version,files:paths.length,unpackedSize:pack.unpackedSize}));
