@@ -3,7 +3,7 @@
 Local-owner voice for an Ez agent. The installed Docker plugin owns the live model,
 agent identity, Markdown search/read and retained voice conversation. Core provides
 one persistent `ez tools connect voice connect` connection and generic installed-plugin
-dispatch. The temporary web client handles audio, captions and owner approvals.
+dispatch. The temporary web client handles audio and captions.
 It contains no plugin-specific tool logic and invokes no second reasoning engine.
 
 ## Install and bind
@@ -62,9 +62,9 @@ plugins_list reads the current registry; plugin_skill and plugin_help retrieve t
 plugin's own usage. plugin_run accepts an alias and a JSON array of literal arguments.
 No Library-specific bindings or per-plugin voice schemas exist. Registry changes are
 visible on the next discovery request. Core checks alias/revision again at execution.
-The connected plugin itself is excluded. Installing a plugin does not grant send/write
-authority: core asks the client to approve each exact command, with a 60-second expiry.
-The plugin cannot approve itself. End cancels approvals and pending commands; an
+The connected plugin itself is excluded. The trusted owner connection uses the agent's
+existing plugin permissions without a second voice approval prompt. The agent follows
+the owner's request and each plugin's own authorization rules. End cancels pending commands; an
 already-started external operation may still have an uncertain outcome. Core rejects
 invocation when the owning native workspace has pending/running work.
 

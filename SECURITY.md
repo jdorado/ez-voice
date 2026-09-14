@@ -9,11 +9,11 @@ provider credentials, agent identity and context tools. Configuration is mode 06
 The browser cannot choose tools, identity or root. Core connects one command container
 through the bound registry; no Docker socket or shell is exposed to the voice model.
 Workspace tools execute in the voice container. Generic plugin requests execute via
-core's installed-plugin dispatcher. Core separates plugin requests from client approvals:
-the owner approves exact arguments in the page; the plugin cannot approve itself.
-Discovery, help and declared skill reads do not require command approval. Native CLI
-semantics remain those of the installed plugin, so review the exact command before
-approving it. Plugin stdout is returned to the live model and may contain private data.
+core's installed-plugin dispatcher using the agent's existing permissions. The authenticated
+owner connection is trusted to invoke installed tools; voice adds no per-command approval.
+Each plugin still enforces its native authentication, authorization and validation. The
+agent must follow the owner's request; retrieved documents cannot grant action authority.
+Plugin stdout is returned to the live model and may contain private data.
 
 The operator binds the real agent workspace read-only. Only Markdown is readable;
 hidden paths, symlinks, generated/dependency folders and traversal are rejected.

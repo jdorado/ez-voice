@@ -15,10 +15,10 @@ const origin=`http://127.0.0.1:${port}`,token=randomBytes(32).toString('hex'),ow
 const equal=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)&&timingSafeEqual(Buffer.from(value),Buffer.from(token));
 const env={};for(const key of ['PATH','HOME','USER','TMPDIR','DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','XDG_RUNTIME_DIR'])if(process.env[key])env[key]=process.env[key];
 const child=spawn(option('--ez'),['tools','connect','voice','connect'],{env,stdio:['pipe','pipe','pipe']});
-const pending=new Map(),approvals=new Map(),events=[];
+const pending=new Map(),events=[];
 let seq=0,ready=true,sessionId,starting=false,lastBrowserSeen=Date.now(),saved={messages:[]};
 const append=event=>{events.push({...event,seq:++seq});if(events.length>300)events.shift();};
-function disconnected(){ready=false;for(const p of pending.values())p.finish(Error('Core connection closed'));pending.clear();approvals.clear();append({type:'error',message:'Core connection closed; restart the local client.'});}
+function disconnected(){ready=false;for(const p of pending.values())p.finish(Error('Core connection closed'));pending.clear();append({type:'error',message:'Core connection closed; restart the local client.'});}
 child.on('error',disconnected);child.on('close',disconnected);child.stdin.on('error',()=>{});
 child.stderr.on('data',()=>{}); // Never forward provider/host diagnostics to the browser.
 function request(method,params={}){
@@ -30,11 +30,9 @@ function request(method,params={}){
   });
 }
 frames(child.stdout,frame=>{
-  if(frame.coreApproval){approvals.set(frame.coreApproval.id,frame.coreApproval);return;}
-  if(frame.coreApprovalResolved){approvals.delete(frame.coreApprovalResolved.id);return;}
   if(frame.event){
     append(frame.event);
-    if(frame.event.type==='closed'){sessionId=undefined;approvals.clear();void request('history').then(r=>{saved=r;}).catch(()=>{});}
+    if(frame.event.type==='closed'){sessionId=undefined;void request('history').then(r=>{saved=r;}).catch(()=>{});}
     return;
   }
   const p=pending.get(frame.id);if(p){pending.delete(frame.id);p.finish(frame.error?Error(frame.error):null,frame.result);}
@@ -58,7 +56,7 @@ const server=http.createServer(async(req,res)=>{
     if(!equal(req.headers.authorization?.replace(/^Bearer /,'')))return reply(401,{error:'Open the private link printed by your local client'});
     if(req.headers.origin&&req.headers.origin!==origin)return reply(403,{error:'Invalid origin'});
     if(req.method==='GET'&&url.pathname==='/status'){
-      lastBrowserSeen=Date.now();return reply(200,{agent:profile.agent,ready,sessionId,tools:profile.tools,history:saved,approvals:[...approvals.values()],events:events.filter(e=>e.seq>Number(url.searchParams.get('after')||0))});
+      lastBrowserSeen=Date.now();return reply(200,{agent:profile.agent,ready,sessionId,tools:profile.tools,history:saved,events:events.filter(e=>e.seq>Number(url.searchParams.get('after')||0))});
     }
     if(req.method!=='POST'||req.headers.origin!==origin)return reply(403,{error:'Expected same-origin POST'});
     let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>110000)return reply(413,{error:'Request too large'});}
@@ -68,12 +66,8 @@ const server=http.createServer(async(req,res)=>{
       starting=true;lastBrowserSeen=Date.now();
       try{const result=await request('start',{sdp:input.sdp,resume:input.resume!==false});sessionId=result.sessionId;saved=await request('history');return reply(201,result);}finally{starting=false;}
     }
-    if(url.pathname==='/approval'){
-      if(!approvals.has(input.id)||typeof input.approved!=='boolean')return reply(400,{error:'Approval is no longer pending'});
-      send(child.stdin,{coreApprove:{id:input.id,approved:input.approved}});approvals.delete(input.id);return reply(200,{submitted:true});
-    }
     if(url.pathname==='/stop'){
-      const result=sessionId||starting?await request('stop'):{stopped:true};sessionId=undefined;approvals.clear();saved=await request('history');return reply(200,result);
+      const result=sessionId||starting?await request('stop'):{stopped:true};sessionId=undefined;saved=await request('history');return reply(200,result);
     }
     return reply(404,{error:'Not found'});
   }catch(error){reply(400,{error:error.message});}

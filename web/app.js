@@ -3,7 +3,6 @@ const token = location.hash.slice(1) || sessionStorage.getItem('ez-voice-token')
 if (token) sessionStorage.setItem('ez-voice-token', token);
 history.replaceState(null, '', '/');
 let pc, dc, mic, seq = 0, running = false, starting = false, historyId;
-const approvalRows=new Map();
 const rows = new Map();
 async function api(path, body) {
   const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type':'application/json' }, ...(body === undefined ? {} : {body:JSON.stringify(body)}) });
@@ -42,14 +41,6 @@ async function poll(){
     if(!running&&!starting){$('start').textContent=data.history?.messages?.length?'Resume talking':'Start talking';
       if(historyId!==data.history?.conversationId){rows.clear();$('transcript').replaceChildren();historyId=data.history?.conversationId;}
       for(const m of data.history?.messages||[])caption(m.id,m.role==='user'?'You':'Agent',m.text,true);
-    }
-    const activeApprovals=new Set((data.approvals||[]).map(a=>a.id));
-    for(const [id,row] of approvalRows)if(!activeApprovals.has(id)){row.remove();approvalRows.delete(id);}
-    for(const approval of data.approvals||[]){if(approvalRows.has(approval.id))continue;
-      const row=document.createElement('div');row.className='entry';const label=document.createElement('p');label.textContent='Approve this plugin command:';
-      const command=document.createElement('pre');command.style.whiteSpace='pre-wrap';command.textContent=JSON.stringify({plugin:approval.alias,args:approval.args,...(approval.stdin?{input:approval.stdin}:{})},null,2);row.append(label,command);
-      for(const [text,approved] of [['Run once',true],['Decline',false]]){const button=document.createElement('button');button.textContent=text;button.onclick=async()=>{for(const b of row.querySelectorAll('button'))b.disabled=true;try{await api('/approval',{id:approval.id,approved});row.remove();approvalRows.delete(approval.id);}catch(error){$('status').textContent=error.message;}};row.append(button);}
-      approvalRows.set(approval.id,row);$('approvals').append(row);
     }
     for(const e of data.events){seq=Math.max(seq,e.seq);if(e.type==='tool_started'||e.type==='tool_completed'){const row=document.createElement('div');row.className='entry';row.textContent=e.type==='tool_started'?`${e.name} · running`:`${e.name} · ${e.elapsedMs} ms`;$('activity').prepend(row);}if(e.type==='closed'&&running){cleanup();$('status').textContent=e.hangupConfirmed===false?'Disconnected; provider hangup unconfirmed.':`Conversation ended: ${e.reason}`;}if(e.type==='error')$('status').textContent=e.message;}
   }catch(error){$('status').textContent=error.message;}finally{setTimeout(poll,1000);}

@@ -9,7 +9,7 @@ read-only; never infer it from the shell cwd. Configure credentials through priv
 stdin. The container loads SOUL.md/USER.md and owns context search/read execution.
 
 The temporary web client uses core's persistent tools connect transport. Core supplies
-dynamic plugins_list, plugin_help, plugin_skill and approved plugin_run calls; no
+dynamic plugins_list, plugin_help, plugin_skill and native plugin_run calls; no
 Library profile is needed. Read each plugin's own instructions before invocation.
 Give the owner the private localhost link. Verify identity, Markdown lookup, native
 plugin discovery/use, then End and Resume talking. Text transcripts are privately

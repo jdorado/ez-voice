@@ -8,7 +8,7 @@ export const pluginTools = [
   {name:'plugins_list',description:'Discover this agent’s currently installed plugins. Returns aliases, descriptions and skill counts. Installation alone does not authorize actions.',parameters:schema({})},
   {name:'plugin_help',description:'Read a registered plugin’s native CLI help before choosing arguments.',parameters:schema({alias:string(40)})},
   {name:'plugin_skill',description:'Read an installed plugin’s own skill instructions. Skill index starts at 0, line at 1. Follow nextLine for subsequent pages.',parameters:schema({alias:string(40),index:{type:'integer',minimum:0,maximum:99},line:{type:'integer',minimum:1,maximum:100000}})},
-  {name:'plugin_run',description:'Request a native installed-plugin command. args_json is a JSON array of literal CLI arguments, excluding ez and the alias. The owner must approve the exact command in the client before execution. No shell interpretation. Do not repeat uncertain operations.',parameters:schema({alias:string(40),args_json:string(8000)})},
+  {name:'plugin_run',description:'Run a native installed-plugin command using this agent’s existing permissions. args_json is a JSON array of literal CLI arguments, excluding ez and the alias. No extra voice approval or shell interpretation. Follow the owner’s request and the plugin’s authorization rules. Do not repeat uncertain operations.',parameters:schema({alias:string(40),args_json:string(8000)})},
 ];
 export class CoreTools {
   constructor(socket){this.socket=socket;this.pending=new Map();}
