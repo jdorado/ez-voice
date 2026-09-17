@@ -1,8 +1,21 @@
 {
   "schemaVersion": 1,
   "id": "voice",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "GPT-Live voice delegated to the owning native Ez agent",
-  "commands": { "voice": { "executable": "bin/ez-voice.mjs", "args": [], "exposure": { "receivesExternalContent": true, "sendsExternally": true, "changesRecords": true, "requiresReview": true } } },
-  "skills": ["skills/voice/SKILL.md"]
+  "commands": {
+    "voice": {
+      "executable": "bin/ez-voice.mjs",
+      "args": [],
+      "exposure": {
+        "receivesExternalContent": true,
+        "sendsExternally": true,
+        "changesRecords": true,
+        "requiresReview": true
+      }
+    }
+  },
+  "skills": [
+    "skills/voice/SKILL.md"
+  ]
 }
