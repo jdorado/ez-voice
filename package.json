@@ -1,6 +1,6 @@
 {
   "name": "@jc_stack/ez-voice",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Dockerized GPT-Live voice sessions delegated to the native Ez agent",
   "type": "module",
   "license": "MIT",

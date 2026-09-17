@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-beta.3
+
+- Prepare the reviewed GPT-Live native-agent implementation for exact-artifact
+  OIDC publication to npm latest. The public beta.2 GitHub artifact is preserved;
+  beta.2 was not delivered to npm. No runtime or dependency change.
+- Human microphone, playback, interruption and device acceptance remain pending.
+
 ## 0.1.0-beta.2
 
 - Replace the Realtime API session with the GPT-Live WebRTC contract and fixed
