@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 const p=JSON.parse(readFileSync('package.json'));
 assert.equal(p.name,'@jc_stack/ez-voice');assert.equal(p.private,undefined);
 assert.equal(JSON.parse(readFileSync('ez-plugin.json')).version,p.version);
+assert.equal(execFileSync(process.execPath,['bin/ez-voice.mjs','--version'],{encoding:'utf8'}).trim(),`ez-voice ${p.version}`);
+assert(execFileSync(process.execPath,['bin/ez-voice.mjs','--help'],{encoding:'utf8'}).startsWith(`ez-voice ${p.version}\n`));
 assert.equal(readFileSync('pnpm-lock.yaml','utf8'),readFileSync('docker/pnpm-lock.yaml','utf8'));
 const [pack]=JSON.parse(execFileSync('npm',['pack','--dry-run','--ignore-scripts','--json'],{encoding:'utf8'}));
 const paths=pack.files.map(f=>f.path);

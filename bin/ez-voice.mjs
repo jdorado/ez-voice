@@ -7,8 +7,9 @@ import { frames, send } from '../src/protocol.mjs';
 const state = resolve(process.env.EZ_VOICE_STATE || '/state');
 const command = process.argv[2] || '--help';
 try {
-  if (command === '--version') console.log('ez-voice 0.1.0-beta.2');
-  else if (command === '--help') console.log(`ez-voice 0.1.0-beta.2
+  const {version} = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  if (command === '--version') console.log(`ez-voice ${version}`);
+  else if (command === '--help') console.log(`ez-voice ${version}
   doctor              Read configuration and provider readiness (no provider request)
   health              Check the resident service
   configure           Read {apiKey, agentUrl, agentToken, model?, voice?} JSON from stdin; private atomic storage
@@ -46,7 +47,7 @@ For HTTPS Telegram access add --bot-id ID; see README.`);
     console.log(JSON.stringify({bound:true,agent:agent.name}));
   } else if (command === 'doctor') {
     const config = await readFile(join(state, 'config.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return {}; throw e; });
-    console.log(JSON.stringify({ version: '0.1.0-beta.2', configured: Boolean(config.apiKey&&config.agentUrl&&config.agentToken), providerConfigured:Boolean(config.apiKey), agentConfigured:Boolean(config.agentUrl&&config.agentToken), model: 'gpt-live-1', voice: config.voice || 'marin', transport: 'webrtc', toolMode: 'client-delegation', liveVerified: false }));
+    console.log(JSON.stringify({ version, configured: Boolean(config.apiKey&&config.agentUrl&&config.agentToken), providerConfigured:Boolean(config.apiKey), agentConfigured:Boolean(config.agentUrl&&config.agentToken), model: 'gpt-live-1', voice: config.voice || 'marin', transport: 'webrtc', toolMode: 'client-delegation', liveVerified: false }));
   } else if(command==='web') {
     await (await import('../src/web-connect.mjs')).webConnect(state,process.argv.slice(3));
   } else if(command==='connect') {
