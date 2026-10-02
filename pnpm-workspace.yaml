@@ -1,0 +1,7 @@
+# Hold third-party updates for seven days; reviewed first-party releases are exempt.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - "@jc_stack/*"
+  - "@aifit/*"
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
