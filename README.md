@@ -132,6 +132,6 @@ preserves the private data volume.
 Real microphone, playback, interruption and device behavior require human QA on
 the target client. HTTP, unit and Docker tests do not prove audible quality.
 
-Development: `pnpm install --frozen-lockfile`; `pnpm verify`; `npm run release:check`.
+Development: `pnpm install --frozen-lockfile`; `pnpm verify`; `pnpm run release:check`.
 Build the Docker test/runtime targets from the exact packed artifact and run
 `docker/smoke.mjs`. See CONTRIBUTING.md, SECURITY.md and docs/releasing.md.
