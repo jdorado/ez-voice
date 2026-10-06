@@ -3,7 +3,7 @@ import {mkdir,readFile,chmod,unlink} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {frames,send} from './protocol.mjs';
 import {RealtimeSession} from './realtime.mjs';
-import {agentContext} from './context.mjs';
+import {agentContext,discussionContext} from './context.mjs';
 import {CoreTools} from './plugin-tools.mjs';
 import {authorizeTask} from './task-access.mjs';
 import {VoiceHistory,recentMessages} from './history.mjs';
@@ -38,7 +38,7 @@ const server=net.createServer(socket=>{
       if(params.task)await authorizeTask(state,params.task);
       const history=params.task ? discussionHistory(params.task) : ownerHistory;
       if(method==='health')result={healthy:true,active:Boolean(active),transport:'persistent',history:'retained'};
-      else if(method==='context'){const c=await context();result={agent:c.agent,tools:[{name:'native_agent',description:'Delegated requests run through the owning native Ez agent.'}]};}
+      else if(method==='context'){const c=params.task ? discussionContext() : await context();result={agent:c.agent,tools:[{name:'native_agent',description:'Delegated requests run through the owning native Ez agent.'}]};}
       else if(method==='history'){const saved=await history.load();result={conversationId:saved?.id,messages:recentMessages(saved?.messages||[],50000,100)};}
       else{
         if(!/^[a-f0-9]{64}$/.test(frame.owner||''))throw Error('Invalid client owner');
@@ -49,11 +49,11 @@ const server=net.createServer(socket=>{
           holder.startup=(async()=>{
             const config=JSON.parse(await readFile(join(state,'config.json'),'utf8'));
             if(params.task)config.task=params.task;
-            const bound=await context();const retained=await history.begin(params.resume!==false);
+            const bound=params.task ? discussionContext() : await context();const retained=await history.begin(params.resume!==false);
             if(holder.cancelled)throw Error('Startup cancelled');
             const emit=event=>{send(socket,{event});if(event.type==='closed'&&!holder.isStarting)void stop(holder,event.reason).catch(()=>{});};
             holder.session=new RealtimeSession(config,emit,undefined,{observe:event=>history.observe(event)});
-            const started=await holder.session.start({sdp:params.sdp,instructions:params.task ? bound.instructions.replace("with your owner","in this authorized discussion").replace("the owner\'s records","records outside this discussion") : bound.instructions,history:retained});
+            const started=await holder.session.start({sdp:params.sdp,instructions:bound.instructions,history:retained});
             if(holder.cancelled)throw Error('Startup cancelled');
             return {...started,conversationId:history.value.id};
           })();
