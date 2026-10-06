@@ -137,7 +137,7 @@ export class RealtimeSession {
     const prompt = `Live voice transcript (fragments can overlap and contain recognition errors):\n${this.transcript()}\n\nHandle the owner's latest delegated request. Use the native agent's workspace, tools, permissions, and confirmation rules. Return concise verified facts, completion state, and the next needed step for the voice frontend. Do not claim an external action succeeded without its receipt.`;
     const state = { controller, runId: undefined, terminal: false }; this.delegations.set(delegationId, state);
     this.emit({ type: 'delegation_started', delegationId });
-    state.promise = this.runAgent({ requestId, scope: 'voice', text: prompt }, {
+    state.promise = this.runAgent({ requestId, scope: 'voice', text: prompt, ...(this.config.followOwner === true ? { followOwner: true } : {}) }, {
       url: this.config.agentUrl, token: this.config.agentToken, signal: controller.signal,
       fetchImpl: this.fetch, onAdmitted: runId => { state.runId = runId; },
     }).then(result => {

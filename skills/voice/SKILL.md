@@ -25,3 +25,10 @@ from automated tests.
 End requests cancellation of admitted backend work and waits for provider
 finalization. `ez plugins stop voice` stops the runtime. Stop `tools serve` when
 finished. Uninstall preserves private data. Do not redial or replay uncertain work.
+
+For a verified private installation-owner chat, `ez tools connect voice launch`
+issues a five-minute single-use HTTPS browser link after the approved web service
+is running. The bearer link is a credential: deliver only to that exact authorized
+owner chat with previews disabled; never to business contributors or logs.
+The owner explicitly redeems, then starts the microphone. This command creates
+no owner grants, application credentials, shared history or HTTPS routes.

@@ -40,3 +40,16 @@ keeps transports alive until `session.closed`; a socket close alone is not proof
 of finalization. Calls have duration/delegation limits and an owner lease. Voice
 does not redial. Uninstall preserves private state; revoking provider and
 application credentials is a separate administrator action.
+
+Public owner launch links are also supported without Telegram Mini App login.
+Only the core-bound launch command can issue them. They are five-minute,
+256-bit bearer tickets, owner-epoch/origin bound, hash-only in private state,
+and atomically consumed across processes. Forwarding a link transfers the ability
+to redeem it; authorized private delivery is required. GET does not consume it.
+Redemption requires an explicit browser gesture and same-origin POST. URL
+fragments are removed before external scripts; credentials must not be logged
+by ingress. Existing twenty-minute bearer-session revocation checks apply.
+No owner mapping, application grant, provider credential or network provisioning
+is created by this feature. Scoped Voice delegation remains the default. Private `followOwner:true` configuration
+requires separately approved core shared-owner registration; the browser cannot
+select this flag and core denies it without that grant.

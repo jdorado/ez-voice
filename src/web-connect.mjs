@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { frames, send } from "./protocol.mjs";
 import { CoreTools } from "./plugin-tools.mjs";
 import { WebAuth } from "./web-auth.mjs";
+import { LaunchLinks } from "./launch-links.mjs";
 import { serveWeb } from "./web-server.mjs";
 
 // HTTP stays inside Docker. Only framed tool requests cross the core connection.
@@ -95,13 +96,16 @@ export async function webConnect(state, args) {
     socket.once("connect", resolve);
     socket.once("error", reject);
   });
+  const links = options["--origin"]?.startsWith("https:") ? new LaunchLinks(state) : undefined;
   const auth = new WebAuth({
+    links,
     origin: options["--origin"],
     botId: options["--bot-id"],
     readOwner: () => core.request("tools.owner", {}, AbortSignal.timeout(3000)),
   });
   try {
     web = await serveWeb({ request, auth, origin: options["--origin"] });
+    if (links) await links.bind(options["--origin"]);
   } catch (error) {
     await close();
     throw error;
@@ -112,7 +116,7 @@ export async function webConnect(state, args) {
         options["--origin"] + (auth.localToken ? "/#" + auth.localToken : "/"),
       authentication: auth.local
         ? "one-time local login"
-        : "Telegram paired owner",
+        : "paired owner launch link or Telegram",
     },
   });
   for (const signal of ["SIGINT", "SIGTERM"])

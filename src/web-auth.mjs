@@ -81,13 +81,16 @@ export class WebAuth {
     readOwner,
     now = Date.now,
     verifyUser = telegramUser,
+    links,
   }) {
+    this.links = links;
+    this.origin = origin;
     this.local = webOrigin(origin).protocol === "http:";
     this.botId = botId;
     this.readOwner = readOwner;
     this.now = now;
     this.verifyUser = verifyUser;
-    if (!this.local && !/^\d{1,20}$/.test(botId || ""))
+    if (!this.local && !links && !/^\d{1,20}$/.test(botId || ""))
       throw Error("Public web access requires a Telegram bot ID");
     this.localToken = this.local ? randomBytes(32).toString("hex") : undefined;
     this.sessions = new Map();
@@ -110,7 +113,10 @@ export class WebAuth {
       timingSafeEqual(Buffer.from(input.token), Buffer.from(this.localToken))
     )
       this.localToken = undefined;
-    else {
+    else if (!this.local && this.links && input.ticket !== undefined) {
+      owner = await this.readOwner();
+      await this.links.redeem(input.ticket, owner, this.origin);
+    } else {
       const user = this.verifyUser(input.initData, this.botId, { now });
       owner = await this.readOwner();
       if (!owner || owner.telegramUserId !== user)

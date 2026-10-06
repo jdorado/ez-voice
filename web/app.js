@@ -3,6 +3,7 @@ let token = sessionStorage.getItem("ez-voice-token") || "";
 const loginToken = /^#[a-f0-9]{64}$/.test(location.hash)
   ? location.hash.slice(1)
   : "";
+let launchTicket = /^#launch=[a-f0-9]{64}$/.test(location.hash) ? location.hash.slice(8) : "";
 history.replaceState(null, "", "/");
 let pc,
   dc,
@@ -20,7 +21,7 @@ function render() {
   const active = state === "live" || state === "ending";
   $("call").dataset.state = state;
   $("start").hidden = active;
-  $("start").disabled = !authorized || state !== "idle";
+  $("start").disabled = (!authorized && !launchTicket) || state !== "idle";
   $("start-label").textContent =
     state === "connecting"
       ? "Connecting…"
@@ -81,6 +82,10 @@ async function play() {
   }
 }
 async function start(resume = true) {
+  if (!authorized && launchTicket) {
+    await authenticate(true);
+    return;
+  }
   if (!authorized || state !== "idle") return;
   const attempt = ++operation;
   state = "connecting";
@@ -236,7 +241,14 @@ async function poll() {
   }
   if (authorized) setTimeout(poll, 1000);
 }
-async function authenticate() {
+async function authenticate(redeem = false) {
+  if (launchTicket && !redeem) {
+    token = "";
+    sessionStorage.removeItem("ez-voice-token");
+    render();
+    status("Tap Start talking to redeem your private link.");
+    return;
+  }
   render();
   try {
     if (token) {
@@ -248,12 +260,24 @@ async function authenticate() {
       }
     }
     if (!token) {
+      if (!launchTicket && !loginToken && !window.Telegram) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://telegram.org/js/telegram-web-app.js";
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.append(script);
+        });
+      }
       const result = await api(
         "/auth",
-        loginToken
+        launchTicket
+          ? { ticket: launchTicket }
+          : loginToken
           ? { token: loginToken }
           : { initData: window.Telegram?.WebApp?.initData || "" },
       );
+      launchTicket = "";
       token = result.token;
       sessionStorage.setItem("ez-voice-token", token);
     }
@@ -265,7 +289,9 @@ async function authenticate() {
     void poll();
   } catch {
     sessionStorage.removeItem("ez-voice-token");
-    status("Open Voice from your agent in Telegram.");
+    launchTicket = "";
+    render();
+    status("Ask your agent for a fresh Voice link, or reopen from Telegram.");
   }
 }
 void authenticate();
