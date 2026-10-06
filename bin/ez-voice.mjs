@@ -51,8 +51,16 @@ For HTTPS Telegram access add --bot-id ID; see README.`);
     const config = await readFile(join(state, 'config.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return {}; throw e; });
     console.log(JSON.stringify({ version, configured: Boolean(config.apiKey&&config.agentUrl&&config.agentToken), providerConfigured:Boolean(config.apiKey), agentConfigured:Boolean(config.agentUrl&&config.agentToken), model: 'gpt-live-1', voice: config.voice || 'marin', transport: 'webrtc', toolMode: 'client-delegation', liveVerified: false }));
   } else if(command==='launch') {
-    if(process.argv.length!==3)throw Error('launch accepts no identity or origin arguments');
-    await (await import('../src/launch-connect.mjs')).launchConnect(state);
+    if(process.argv.length===4 && process.argv[3]==='--task') {
+      let raw='';for await(const chunk of process.stdin){raw+=chunk;if(raw.length>1024)throw Error('Launch input too large');}
+      const task=JSON.parse(raw);
+      await (await import('../src/task-access.mjs')).authorizeTask(state,task);
+      const launch=await new (await import('../src/launch-links.mjs')).LaunchLinks(state).issue(null,task);
+      console.log(JSON.stringify({launch}));
+    } else {
+      if(process.argv.length!==3)throw Error('launch accepts no identity or origin arguments');
+      await (await import('../src/launch-connect.mjs')).launchConnect(state);
+    }
   } else if(command==='web') {
     await (await import('../src/web-connect.mjs')).webConnect(state,process.argv.slice(3));
   } else if(command==='connect') {

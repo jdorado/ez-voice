@@ -175,3 +175,23 @@ WhatsApp owner chat; tap the HTTPS link and redeem; start and allow microphone;
 ask for one harmless native fact; confirm the intended context; End and verify
 closure. Reopen the consumed link and an expired unused link: both must deny.
 No live or audible-quality claim is made until the owner performs this test.
+
+### WhatsApp discussion links
+
+For an explicitly approved restricted discussion, the native task's
+`browser_link` tool issues a five-minute single-use HTTPS link. The user opens
+it, taps Start to redeem, then Start to allow the microphone. Previews do not
+redeem it. Private server state retains the task bearer; browser code receives
+only its short-lived web session. Revoking/expiring the task or its application
+launch grant denies redemption and stops the active call on the lease check.
+The underlying task bearer expires 20 minutes after issuance, and the provider
+call is also bounded to 20 minutes. Possession of the URL grants access to this
+discussion, so keep it private. HTTPS/referrer and hash-fragment protections
+remain the same as owner links.
+
+Calls use the discussion's task context, notes and restricted tools, never
+`followOwner`. Browser transcript history is stored separately per exact task.
+Core must support restricted application handoff; older core versions fail closed.
+Enable it only through the reviewed core application CLI. No WhatsApp contributor
+is promoted to installation owner. The existing runtime admits one active browser
+call at a time. Microphone/playback quality requires manual user smoke testing.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.4.rc.2
+
+- Add short-lived browser conversation links for explicitly granted restricted discussions, retaining each task’s context and tool permissions.
+
 ## Unreleased
 
 ## 0.1.0-beta.3

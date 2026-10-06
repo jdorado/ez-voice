@@ -18,8 +18,8 @@ export class LaunchLinks {
     await writeFile(tmp, JSON.stringify({ origin }), { mode: 0o600, flag: 'wx' });
     await rename(tmp, join(this.root, 'origin.json'));
   }
-  async issue(owner) {
-    const key = ownerKey(owner);
+  async issue(owner, task) {
+    const key = task ? undefined : ownerKey(owner);
     const { origin } = JSON.parse(await readFile(join(this.root, 'origin.json'), 'utf8'));
     if (webOrigin(origin).protocol !== 'https:') throw Error('Owner links require HTTPS');
     let outstanding = 0;
@@ -33,19 +33,20 @@ export class LaunchLinks {
     if (outstanding >= 32) throw Error('Too many outstanding links; wait for expiry');
     const ticket = randomBytes(32).toString('hex'), expiresAt = this.now() + lifetime;
     const hash = createHash('sha256').update(ticket).digest('hex');
-    await writeFile(join(this.root, hash + '.json'), JSON.stringify({ key, origin, expiresAt }), { mode: 0o600, flag: 'wx' });
+    await writeFile(join(this.root, hash + '.json'), JSON.stringify({ key, origin, expiresAt, ...(task ? {task} : {}) }), { mode: 0o600, flag: 'wx' });
     return { url: origin + '/#launch=' + ticket, expiresAt };
   }
-  async redeem(ticket, owner, origin) {
+  async redeem(ticket, owner, origin, validateTask) {
     if (typeof ticket !== 'string' || !/^[a-f0-9]{64}$/.test(ticket)) throw Error('Invalid owner link');
     const path = join(this.root, createHash('sha256').update(ticket).digest('hex') + '.json');
     const record = JSON.parse(await readFile(path, 'utf8'));
-    if (record.expiresAt <= this.now() || record.origin !== origin || record.key !== ownerKey(owner)) throw Error('Expired or revoked owner link');
+    if (record.expiresAt <= this.now() || record.origin !== origin || (!record.task && record.key !== ownerKey(owner))) throw Error('Expired or revoked owner link');
+    if(record.task){if(!validateTask)throw Error("Discussion access unavailable");await validateTask(record.task);}
     // rename is the cross-process single-use admission point; only one redeemer wins.
     const consumed = join(this.root, randomUUID() + '.used');
     await rename(path, consumed);
     await unlink(consumed);
     if (record.expiresAt <= this.now()) throw Error('Expired owner link');
-    return owner;
+    return record.task ? {task:record.task} : {owner};
   }
 }

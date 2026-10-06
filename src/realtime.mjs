@@ -105,7 +105,7 @@ export class RealtimeSession {
       if (previous?.role === fragment.role) previous.text += fragment.delta;
       else rows.push({ role: fragment.role, text: fragment.delta });
     }
-    const value = rows.map(row => `${row.role === 'user' ? 'Owner' : 'Voice'}: ${row.text}`).join('\n');
+    const value = rows.map(row => `${row.role === 'user' ? 'Speaker' : 'Voice'}: ${row.text}`).join('\n');
     return value.length <= 12000 ? value : value.slice(-12000);
   }
   onEvent(event) {
@@ -134,10 +134,10 @@ export class RealtimeSession {
     if (this.delegations.size >= 100) { void this.stop('delegation_limit'); return; }
     const controller = new AbortController(); this.controllers.add(controller);
     const requestId = 'voice-' + createHash('sha256').update(JSON.stringify([this.id, delegationId])).digest('hex').slice(0, 48);
-    const prompt = `Live voice transcript (fragments can overlap and contain recognition errors):\n${this.transcript()}\n\nHandle the owner's latest delegated request. Use the native agent's workspace, tools, permissions, and confirmation rules. Return concise verified facts, completion state, and the next needed step for the voice frontend. Do not claim an external action succeeded without its receipt.`;
+    const prompt = `Live voice transcript (fragments can overlap and contain recognition errors):\n${this.transcript()}\n\nHandle the speaker's latest delegated request. Use only the native agent's admitted context, tools, permissions, and confirmation rules. Return concise verified facts, completion state, and the next needed step for the voice frontend. Do not claim an external action succeeded without its receipt.`;
     const state = { controller, runId: undefined, terminal: false }; this.delegations.set(delegationId, state);
     this.emit({ type: 'delegation_started', delegationId });
-    state.promise = this.runAgent({ requestId, scope: 'voice', text: prompt, ...(this.config.followOwner === true ? { followOwner: true } : {}) }, {
+    state.promise = this.runAgent({ requestId, scope: this.config.task ? 'task:'+this.config.task.taskId : 'voice', text: prompt, ...(this.config.task ? {taskToken:this.config.task.taskToken} : this.config.followOwner === true ? { followOwner: true } : {}) }, {
       url: this.config.agentUrl, token: this.config.agentToken, signal: controller.signal,
       fetchImpl: this.fetch, onAdmitted: runId => { state.runId = runId; },
     }).then(result => {
