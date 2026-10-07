@@ -71,7 +71,8 @@ export async function serveWeb({
         const visibleHistory=await request("history",principal);
         lastBrowserSeen = Date.now();
         return reply(200, {
-          agent: profile.agent,
+          // A discussion principal never sees the owner's bound agent name.
+          agent: principal.task ? "Ez" : profile.agent,
           ready: true,
           sessionId,
           tools: profile.tools,

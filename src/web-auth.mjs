@@ -114,9 +114,8 @@ export class WebAuth {
     )
       this.localToken = undefined;
     else if (!this.local && this.links && input.ticket !== undefined) {
-      owner = await this.readOwner();
-      const redeemed=await this.links.redeem(input.ticket, owner, this.origin,this.validateTask);
-      task=redeemed.task; if(task)owner=null;
+      const redeemed = await this.links.redeem(input.ticket, () => this.readOwner(), this.origin, this.validateTask);
+      task = redeemed.task; owner = task ? null : redeemed.owner;
     } else {
       const user = this.verifyUser(input.initData, this.botId, { now });
       owner = await this.readOwner();

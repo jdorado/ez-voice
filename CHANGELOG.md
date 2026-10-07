@@ -1,10 +1,19 @@
 # Changelog
 
-## 0.1.0-beta.4.rc.2
+## Unreleased
 
 - Add short-lived browser conversation links for explicitly granted restricted discussions, retaining each task’s context and tool permissions.
-
-## Unreleased
+- Add five-minute single-use owner-bound HTTPS browser launch links, preview-safe
+  manual redemption and owner-epoch revocation checks.
+- Keep scoped native delegation by default; explicitly approved private
+  followOwner configuration can reuse the core shared-owner conversation.
+- No deployment access, credential, identity or network changes are automatic.
+- Issue tickets atomically, sweep expired and leftover files without deleting
+  unparseable tickets, cap outstanding links under concurrent issue, and refuse
+  to hand out a link while the web service is not running (heartbeat check).
+- Discussion sessions report the generic `Ez` agent, redeeming a discussion link
+  never reads the owner, and expired discussion tickets (with their stored bearer)
+  are swept on redeem and bind.
 
 ## 0.1.0-beta.3
 
@@ -47,11 +56,3 @@
 Phone/SIP adapters, native CLI-chat inheritance and older-history search are not
 included. Real microphone, playback, interruption and device compatibility remain
 human acceptance gates and are reported separately from automated checks.
-
-## 0.1.0-beta.4.rc.1 (private candidate)
-
-- Add five-minute single-use owner-bound HTTPS browser launch links, preview-safe
-  manual redemption and owner-epoch revocation checks.
-- Keep scoped native delegation by default; explicitly approved private
-  followOwner configuration can reuse the core shared-owner conversation.
-- No deployment access, credential, identity or network changes are automatic.

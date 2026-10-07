@@ -142,7 +142,9 @@ Start the existing web command under the deployment's approved HTTPS origin;
 `--bot-id` is optional for link-only access. Through the owning agent's trusted
 bound core connection, run `ez tools connect voice launch` to receive
 `{launch:{url,expiresAt}}`. It accepts no browser-selected owner or origin.
-The web command pins the origin in private plugin state. The launch command
+The web command pins the origin in private plugin state and refreshes a heartbeat
+while it runs; `launch` fails with "Voice web service is not running" instead of
+issuing a link for a dead origin. The launch command
 reads the current paired owner through core; do not expose this capability to
 contributors, or use a contributor message as proof of installation ownership.
 Resolve and approve the exact private WhatsApp owner contact through core's
