@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, readdir, stat } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtemp, rm, readFile, readdir, stat, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LaunchLinks } from '../src/launch-links.mjs';
+import { LaunchLinks, heartbeatLifetime } from '../src/launch-links.mjs';
 import { WebAuth } from '../src/web-auth.mjs';
 
+const bin=new URL('../bin/ez-voice.mjs',import.meta.url).pathname;
 async function fixture(t) {
   const state = await mkdtemp(join(tmpdir(), 'voice-link-'));
   t.after(() => rm(state, { recursive: true, force: true }));
@@ -77,4 +79,103 @@ test('link previews and unauthorized HTTP cannot redeem; same-origin explicit PO
   assert.equal((await call('/auth','POST',{ticket},'https://evil.example')).status,403);
   assert.equal((await call('/auth','POST',{ticket})).status,200);
   assert.equal((await call('/auth','POST',{ticket})).status,401);
+});
+
+test('issue writes tickets atomically via temp file and never leaves temp litter', async t => {
+  const f=await fixture(t);
+  await f.links.issue(f.owner);
+  const names=await readdir(join(f.state,'launch-links'));
+  assert(!names.some(n=>n.endsWith('.tmp')||n.endsWith('.used')));
+  assert.equal(names.filter(n=>/^[a-f0-9]{64}\.json$/.test(n)).length,1);
+});
+test('sweeper skips unparseable ticket files, drops expired ones and ages out stale tmp/used litter', async t => {
+  const f=await fixture(t), root=join(f.state,'launch-links');
+  const partial=join(root,'a'.repeat(64)+'.json'), expired=join(root,'b'.repeat(64)+'.json');
+  const oldTmp=join(root,'old.tmp'), oldUsed=join(root,'old.used'), freshTmp=join(root,'fresh.tmp');
+  await writeFile(partial,'{"key":'); await writeFile(expired,JSON.stringify({key:'k',origin:f.origin,expiresAt:1}));
+  for(const p of [oldTmp,oldUsed,freshTmp]) await writeFile(p,'x');
+  const old=new Date(Date.now()-120000);
+  await utimes(oldTmp,old,old); await utimes(oldUsed,old,old);
+  await f.links.issue(f.owner);
+  assert.equal(await readFile(partial,'utf8'),'{"key":');
+  await assert.rejects(stat(expired),{code:'ENOENT'});
+  await assert.rejects(stat(oldTmp),{code:'ENOENT'});
+  await assert.rejects(stat(oldUsed),{code:'ENOENT'});
+  assert((await stat(freshTmp)).isFile());
+});
+test('bind clears expired tickets and tickets for another origin but keeps current ones', async t => {
+  const f=await fixture(t), root=join(f.state,'launch-links');
+  const keep=ticketOf(await f.links.issue(f.owner));
+  const other=join(root,'c'.repeat(64)+'.json'), expired=join(root,'d'.repeat(64)+'.json');
+  await writeFile(other,JSON.stringify({key:'k',origin:'https://other.example',expiresAt:99999999}));
+  await writeFile(expired,JSON.stringify({key:'k',origin:f.origin,expiresAt:1}));
+  await f.links.bind(f.origin);
+  await assert.rejects(stat(other),{code:'ENOENT'});
+  await assert.rejects(stat(expired),{code:'ENOENT'});
+  assert((await f.auth.login({ticket:keep})).token);
+});
+test('issue refuses an unbound, stopped or heartbeat-stale web service and recovers on heartbeat', async t => {
+  const state=await mkdtemp(join(tmpdir(),'voice-link-')); t.after(()=>rm(state,{recursive:true,force:true}));
+  let clock=1000; const links=new LaunchLinks(state,{now:()=>clock}), owner={telegramUserId:42,pairedAt:'epoch'};
+  await assert.rejects(links.issue(owner),/web service is not running/);
+  await links.bind('https://voice.example'); await links.issue(owner);
+  clock+=heartbeatLifetime+1;
+  await assert.rejects(links.issue(owner),/no recent heartbeat/);
+  await links.heartbeat('https://voice.example'); await links.issue(owner);
+  await links.unbind();
+  await assert.rejects(links.issue(owner),/web service is not running/);
+});
+test('outstanding links are capped at 32 and the cap holds under concurrent issue()', async t => {
+  const f=await fixture(t);
+  const results=await Promise.allSettled(Array.from({length:40},()=>f.links.issue(f.owner)));
+  const ok=results.filter(r=>r.status==='fulfilled'), bad=results.filter(r=>r.status==='rejected');
+  assert.equal(ok.length,32); assert.equal(bad.length,8);
+  for(const r of bad) assert.match(r.reason.message,/Too many outstanding links/);
+  assert.equal(new Set(ok.map(r=>ticketOf(r.value))).size,32);
+  assert.equal((await readdir(join(f.state,'launch-links'))).filter(n=>/^[a-f0-9]{64}\.json$/.test(n)).length,32);
+  f.advance(300001); await f.links.heartbeat(f.origin);
+  assert((await f.links.issue(f.owner)).url);
+});
+test('launchConnect issues a link for the owner reported by core and surfaces a dead web service', async t => {
+  const state=await mkdtemp(join(tmpdir(),'voice-launch-')); t.after(()=>rm(state,{recursive:true,force:true}));
+  const origin='https://voice.example', owner={telegramUserId:42,pairedAt:'epoch'};
+  const run=(answer=owner)=>new Promise((resolve,reject)=>{
+    const child=spawn(process.execPath,[bin,'launch'],{env:{...process.env,EZ_VOICE_STATE:state}});
+    let out='',err='';child.stdout.on('data',d=>{out+=d;
+      for(const line of out.split('\n').filter(Boolean)){const frame=JSON.parse(line);
+        if(frame.coreRequest){assert.equal(frame.coreRequest.method,'tools.owner');out='';child.stdin.write(JSON.stringify({coreResponse:{id:frame.coreRequest.id,result:answer}})+'\n');}}});
+    child.stderr.on('data',d=>err+=d);child.on('error',reject);
+    child.on('close',code=>resolve({code,out,err}));
+  });
+  const dead=await run();
+  assert.equal(dead.code,2);assert.match(dead.err,/web service is not running/);
+  await new LaunchLinks(state).bind(origin);
+  const live=await run();
+  assert.equal(live.code,0,live.err);
+  const {launch}=JSON.parse(live.out.trim().split('\n').pop());
+  assert.match(launch.url,new RegExp('^'+origin+'/#launch=[a-f0-9]{64}$'));assert(launch.expiresAt>Date.now());
+  const unpaired=await run(null);
+  assert.equal(unpaired.code,2);assert.match(unpaired.err,/Paired owner unavailable/);
+});
+test('launch CLI rejects identity and origin arguments without issuing anything', async t => {
+  const state=await mkdtemp(join(tmpdir(),'voice-launch-')); t.after(()=>rm(state,{recursive:true,force:true}));
+  await new LaunchLinks(state).bind('https://voice.example');
+  for(const args of [['--origin','https://evil.example'],['--owner','1'],['extra']]){
+    const r=spawnSync(process.execPath,[bin,'launch',...args],{env:{...process.env,EZ_VOICE_STATE:state},encoding:'utf8',input:''});
+    assert.equal(r.status,2);assert.match(r.stderr,/launch accepts no identity or origin arguments/);
+  }
+  assert.deepEqual((await readdir(join(state,'launch-links'))).filter(n=>/^[a-f0-9]{64}\.json$/.test(n)),[]);
+});
+test('configure validates followOwner as a boolean and stores it only when boolean', async t => {
+  const state=await mkdtemp(join(tmpdir(),'voice-cli-')); t.after(()=>rm(state,{recursive:true,force:true}));
+  const base={apiKey:'sk-private-fixture-key',agentUrl:'http://relay:8787',agentToken:'x'.repeat(48)};
+  const run=config=>spawnSync(process.execPath,[bin,'configure'],{env:{...process.env,EZ_VOICE_STATE:state},input:JSON.stringify(config),encoding:'utf8'});
+  for(const bad of ['true','yes',1,null,{}]){
+    const r=run({...base,followOwner:bad});assert.equal(r.status,2,String(bad));assert.match(r.stderr,/followOwner must be boolean/);
+  }
+  await assert.rejects(readFile(join(state,'config.json')),{code:'ENOENT'});
+  assert.equal(run({...base,followOwner:true}).status,0);
+  assert.equal(JSON.parse(await readFile(join(state,'config.json'),'utf8')).followOwner,true);
+  assert.equal(run({...base,followOwner:false}).status,0);
+  assert.equal(JSON.parse(await readFile(join(state,'config.json'),'utf8')).followOwner,false);
 });

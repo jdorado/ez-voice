@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { frames, send } from "./protocol.mjs";
 import { CoreTools } from "./plugin-tools.mjs";
 import { WebAuth } from "./web-auth.mjs";
-import { LaunchLinks } from "./launch-links.mjs";
+import { LaunchLinks, heartbeatInterval } from "./launch-links.mjs";
 import { serveWeb } from "./web-server.mjs";
 
 // HTTP stays inside Docker. Only framed tool requests cross the core connection.
@@ -24,6 +24,9 @@ export async function webConnect(state, args) {
     owner = randomBytes(32).toString("hex");
   const socket = net.connect(join(state, "voice.sock"));
   let web,
+    beat,
+    links,
+    bound,
     closing = false;
   const request = (method, params = {}) =>
     new Promise((resolve, reject) => {
@@ -47,6 +50,8 @@ export async function webConnect(state, args) {
     core.close();
     for (const p of pending.values()) p.finish(Error("Connection closed"));
     pending.clear();
+    clearInterval(beat);
+    if (bound) await links.unbind().catch(() => {});
     socket.destroy();
     await web?.close();
     process.stdin.destroy();
@@ -96,7 +101,7 @@ export async function webConnect(state, args) {
     socket.once("connect", resolve);
     socket.once("error", reject);
   });
-  const links = options["--origin"]?.startsWith("https:") ? new LaunchLinks(state) : undefined;
+  links = options["--origin"]?.startsWith("https:") ? new LaunchLinks(state) : undefined;
   const auth = new WebAuth({
     links,
     origin: options["--origin"],
@@ -105,7 +110,12 @@ export async function webConnect(state, args) {
   });
   try {
     web = await serveWeb({ request, auth, origin: options["--origin"] });
-    if (links) await links.bind(options["--origin"]);
+    if (links) {
+      await links.bind(options["--origin"]);
+      bound = true;
+      beat = setInterval(() => void links.heartbeat(options["--origin"]).catch(() => {}), heartbeatInterval);
+      beat.unref();
+    }
   } catch (error) {
     await close();
     throw error;
