@@ -1,4 +1,5 @@
 import net from "node:net";
+import {authorizeTask} from "./task-access.mjs";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { frames, send } from "./protocol.mjs";
@@ -103,7 +104,7 @@ export async function webConnect(state, args) {
   });
   links = options["--origin"]?.startsWith("https:") ? new LaunchLinks(state) : undefined;
   const auth = new WebAuth({
-    links,
+    links, validateTask:task=>authorizeTask(state,task),
     origin: options["--origin"],
     botId: options["--bot-id"],
     readOwner: () => core.request("tools.owner", {}, AbortSignal.timeout(3000)),

@@ -38,11 +38,13 @@ export class LaunchLinks {
       if (raw === undefined) continue;
       let record;
       try { record = JSON.parse(raw); } catch { continue; }
-      if (record && record.expiresAt > this.now() && (origin === undefined || record.origin === origin)) outstanding++;
+      if (record && !this.#dead(record) && (origin === undefined || record.origin === origin)) outstanding++;
       else await unlink(path).catch(ignoreMissing);
     }
     return outstanding;
   }
+  // A discussion ticket stores a bearer task token, so it dies with its own grant too.
+  #dead(record) { return !(record.expiresAt > this.now()) || (record.task && !(record.task.expiresAt > this.now())); }
   async bind(origin) {
     if (webOrigin(origin).protocol !== 'https:') throw Error('Owner links require HTTPS');
     await mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -66,8 +68,8 @@ export class LaunchLinks {
     }
     try { return await work(); } finally { await unlink(lock).catch(ignoreMissing); }
   }
-  async issue(owner) {
-    const key = ownerKey(owner);
+  async issue(owner, task) {
+    const key = task ? undefined : ownerKey(owner);
     const bound = await readFile(join(this.root, 'origin.json'), 'utf8').then(JSON.parse).catch(e => {
       if (e.code === 'ENOENT') throw Error('Voice web service is not running; start it with ez plugins before requesting a launch link');
       throw e;
@@ -81,21 +83,34 @@ export class LaunchLinks {
       const ticket = randomBytes(32).toString('hex'), expiresAt = this.now() + lifetime;
       const hash = createHash('sha256').update(ticket).digest('hex');
       const tmp = join(this.root, randomUUID() + '.tmp');
-      await writeFile(tmp, JSON.stringify({ key, origin, expiresAt }), { mode: 0o600, flag: 'wx' });
+      await writeFile(tmp, JSON.stringify({ key, origin, expiresAt, ...(task ? { task } : {}) }), { mode: 0o600, flag: 'wx' });
       await rename(tmp, join(this.root, hash + '.json'));
       return { url: origin + '/#launch=' + ticket, expiresAt };
     });
   }
-  async redeem(ticket, owner, origin) {
+  // `owner` is the current owner or a function returning it; it is read only for owner tickets.
+  async redeem(ticket, owner, origin, validateTask) {
     if (typeof ticket !== 'string' || !/^[a-f0-9]{64}$/.test(ticket)) throw Error('Invalid owner link');
     const path = join(this.root, createHash('sha256').update(ticket).digest('hex') + '.json');
     const record = JSON.parse(await readFile(path, 'utf8'));
-    if (record.expiresAt <= this.now() || record.origin !== origin || record.key !== ownerKey(owner)) throw Error('Expired or revoked owner link');
+    await this.#sweep(); // expired tickets, including a stored bearer, do not outlive a redemption attempt
+    // Establish the ticket type before consuming it; a task ticket never consults the owner.
+    const isTask = record.task !== undefined;
+    if (isTask ? record.key !== undefined : typeof record.key !== 'string') throw Error('Expired or revoked owner link');
+    if (this.#dead(record) || record.origin !== origin) throw Error('Expired or revoked owner link');
+    let current;
+    if (!isTask) {
+      current = typeof owner === 'function' ? await owner() : owner;
+      if (record.key !== ownerKey(current)) throw Error('Expired or revoked owner link');
+    } else {
+      if (!validateTask) throw Error('Discussion access unavailable');
+      await validateTask(record.task);
+    }
     // rename is the cross-process single-use admission point; only one redeemer wins.
     const consumed = join(this.root, randomUUID() + '.used');
     await rename(path, consumed);
     await unlink(consumed);
-    if (record.expiresAt <= this.now()) throw Error('Expired owner link');
-    return owner;
+    if (this.#dead(record)) throw Error('Expired owner link');
+    return isTask ? { task: record.task } : { owner: current };
   }
 }

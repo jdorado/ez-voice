@@ -81,9 +81,9 @@ export class WebAuth {
     readOwner,
     now = Date.now,
     verifyUser = telegramUser,
-    links,
+    links, validateTask,
   }) {
-    this.links = links;
+    this.links = links; this.validateTask=validateTask;
     this.origin = origin;
     this.local = webOrigin(origin).protocol === "http:";
     this.botId = botId;
@@ -104,7 +104,7 @@ export class WebAuth {
       if (expires <= now) this.used.delete(key);
     if (this.sessions.size >= 8)
       throw Error("Too many sessions; wait for expiry");
-    let owner = null;
+    let owner = null, task;
     if (
       this.local &&
       typeof input.token === "string" &&
@@ -114,8 +114,8 @@ export class WebAuth {
     )
       this.localToken = undefined;
     else if (!this.local && this.links && input.ticket !== undefined) {
-      owner = await this.readOwner();
-      await this.links.redeem(input.ticket, owner, this.origin);
+      const redeemed = await this.links.redeem(input.ticket, () => this.readOwner(), this.origin, this.validateTask);
+      task = redeemed.task; owner = task ? null : redeemed.owner;
     } else {
       const user = this.verifyUser(input.initData, this.botId, { now });
       owner = await this.readOwner();
@@ -130,15 +130,17 @@ export class WebAuth {
       this.used.set(launchId, now + 330000);
     }
     const token = randomBytes(32).toString("hex");
-    this.sessions.set(token, { owner, expires: now + 20 * 60 * 1000 });
-    return { token, expiresAt: now + 20 * 60 * 1000 };
+    this.sessions.set(token, { owner, ...(task ? {task} : {}), expires: Math.min(now + 20 * 60 * 1000,task?.expiresAt ?? Infinity) });
+    return { token, expiresAt: this.sessions.get(token).expires };
   }
+  principal(token){const session=this.sessions.get(token);return session?.task ? {task:session.task} : {};}
   async authorize(token) {
     const session = typeof token === "string" && this.sessions.get(token);
     if (!session || session.expires <= this.now()) {
       this.sessions.delete(token);
       throw Error("Session expired; reopen Voice");
     }
+    if(session.task)await this.validateTask(session.task);
     if (session.owner) {
       const owner = await this.readOwner();
       if (

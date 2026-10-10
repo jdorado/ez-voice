@@ -81,6 +81,35 @@ test('link previews and unauthorized HTTP cannot redeem; same-origin explicit PO
   assert.equal((await call('/auth','POST',{ticket})).status,401);
 });
 
+test('discussion ticket selects only its server principal and rechecks grant revocation',async t=>{
+  const f=await fixture(t);let active=true;
+  const task={taskId:'task_'+'a'.repeat(32),taskToken:'b'.repeat(64),expiresAt:1201000};
+  const validateTask=async value=>{assert.deepEqual(value,task);if(!active)throw Error('Discussion revoked');};
+  const auth=new WebAuth({origin:f.origin,links:f.links,readOwner:async()=>null,now:()=>1000,validateTask});
+  const ticket=ticketOf(await f.links.issue(null,task));
+  const session=await auth.login({ticket});
+  assert.deepEqual(auth.principal(session.token),{task});
+  assert(!JSON.stringify(session).includes(task.taskToken));
+  assert.equal(await auth.authorize(session.token),session.token);
+  await assert.rejects(auth.login({ticket}));
+  active=false;await assert.rejects(auth.authorize(session.token),/revoked/);
+});
+
+test('browser history and events never cross discussion principals or owner',async t=>{
+  const {serveWeb}=await import('../src/web-server.mjs');const http=await import('node:http');
+  const f=await fixture(t), task={taskId:'task_'+'c'.repeat(32),taskToken:'d'.repeat(64),expiresAt:1201000};
+  const auth=new WebAuth({origin:f.origin,links:f.links,readOwner:async()=>f.owner,now:()=>1000,validateTask:async()=>{}});
+  const own=await auth.login({ticket:ticketOf(await f.links.issue(f.owner))});
+  const discussion=await auth.login({ticket:ticketOf(await f.links.issue(null,task))});
+  const web=await serveWeb({origin:f.origin,auth,port:0,host:'127.0.0.1',request:async(method,params)=>method==='context'?{agent:'Fixture',tools:[]}:method==='history'?{messages:[{text:params?.task?'discussion':'private owner'}]}:{sessionId:'test'}});
+  t.after(()=>web.close());
+  const status=token=>new Promise((resolve,reject)=>{const req=http.request({host:'127.0.0.1',port:web.server.address().port,path:'/status',headers:{host:'voice.example',authorization:'Bearer '+token}},res=>{let raw='';res.on('data',b=>raw+=b);res.on('end',()=>resolve(JSON.parse(raw)));});req.on('error',reject);req.end();});
+  web.append({type:'transcript',text:'old private voice'});
+  assert.deepEqual((await status(discussion.token)).history.messages,[{text:'discussion'}]);
+  assert.deepEqual((await status(discussion.token)).events,[]);
+  assert.deepEqual((await status(own.token)).history.messages,[{text:'private owner'}]);
+});
+
 test('issue writes tickets atomically via temp file and never leaves temp litter', async t => {
   const f=await fixture(t);
   await f.links.issue(f.owner);

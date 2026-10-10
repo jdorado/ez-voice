@@ -14,22 +14,17 @@ export async function serveWeb({
     sessionId,
     sessionToken,
     starting = false,
-    lastBrowserSeen = Date.now(),
-    saved = { messages: [] };
+    lastBrowserSeen = Date.now();
   const append = (event) => {
     events.push({ ...event, seq: ++seq });
     if (events.length > 300) events.shift();
     if (event.type === "closed") {
       sessionId = undefined;
-      void request("history")
-        .then((r) => {
-          saved = r;
-        })
-        .catch(() => {});
+
     }
   };
   const profile = await request("context");
-  saved = await request("history");
+
   const server = http.createServer(async (req, res) => {
     const reply = (status, value, type = "application/json") => {
       res.writeHead(status, {
@@ -71,15 +66,18 @@ export async function serveWeb({
         if ((sessionId || starting) && sessionToken !== token)
           return reply(409, { error: "Voice is active in another tab" });
       }
+      const principal=auth.principal?.(token) ?? {};
       if (req.method === "GET" && url.pathname === "/status") {
+        const visibleHistory=await request("history",principal);
         lastBrowserSeen = Date.now();
         return reply(200, {
-          agent: profile.agent,
+          // A discussion principal never sees the owner's bound agent name.
+          agent: principal.task ? "Ez" : profile.agent,
           ready: true,
           sessionId,
           tools: profile.tools,
-          history: saved,
-          events: events.filter(
+          history: visibleHistory,
+          events: (sessionToken===token ? events : []).filter(
             (e) => e.seq > Number(url.searchParams.get("after") || 0),
           ),
         });
@@ -100,19 +98,21 @@ export async function serveWeb({
           return reply(401, { error: "Access denied; reopen Voice" });
         }
       }
+      if((sessionId || starting) && sessionToken!==token)return reply(409,{error:"Voice is active in another tab"});
       if (url.pathname === "/session") {
         if (sessionId || starting)
           return reply(409, { error: "A session is already active" });
         starting = true;
         sessionToken = token;
+        events.length=0;
         lastBrowserSeen = Date.now();
         try {
           const result = await request("start", {
             sdp: input.sdp,
             resume: input.resume !== false,
+            ...principal,
           });
           sessionId = result.sessionId;
-          saved = await request("history");
           return reply(201, result);
         } finally {
           starting = false;
@@ -122,7 +122,6 @@ export async function serveWeb({
         const result =
           sessionId || starting ? await request("stop") : { stopped: true };
         sessionId = undefined;
-        saved = await request("history");
         return reply(200, result);
       }
       return reply(404, { error: "Not found" });
