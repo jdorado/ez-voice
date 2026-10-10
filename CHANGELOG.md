@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.4
+
+- Requires Ez core 0.1.0-beta.50 or newer for the manifest example.
+  Older cores refuse the update and retain the installed version.
+- Add a representative manifest example for tool discovery.
 
 - Add short-lived browser conversation links for explicitly granted restricted discussions, retaining each task’s context and tool permissions.
 - Add five-minute single-use owner-bound HTTPS browser launch links, preview-safe

@@ -6,6 +6,9 @@ used by the other application channels. The native engine owns reasoning,
 workspace context, tools, permissions and durable execution. Voice owns WebRTC,
 transcripts, call controls and delivery of verified backend results to speech.
 
+Requires Ez core 0.1.0-beta.50 or newer for the manifest example.
+Older cores refuse the update and retain the installed version.
+
 ## Native-agent binding
 
 Voice uses a private Ez application scope. Enable the existing application
