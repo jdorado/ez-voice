@@ -3,6 +3,7 @@
   "id": "voice",
   "version": "0.1.0-beta.3",
   "description": "GPT-Live voice delegated to the owning native Ez agent",
+  "example": "voice doctor",
   "commands": {
     "voice": {
       "executable": "bin/ez-voice.mjs",
