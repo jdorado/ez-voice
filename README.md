@@ -135,3 +135,45 @@ the target client. HTTP, unit and Docker tests do not prove audible quality.
 Development: `pnpm install --frozen-lockfile`; `pnpm verify`; `pnpm run release:check`.
 Build the Docker test/runtime targets from the exact packed artifact and run
 `docker/smoke.mjs`. See CONTRIBUTING.md, SECURITY.md and docs/releasing.md.
+
+### Private owner links (including WhatsApp delivery)
+
+Start the existing web command under the deployment's approved HTTPS origin;
+`--bot-id` is optional for link-only access. Through the owning agent's trusted
+bound core connection, run `ez tools connect voice launch` to receive
+`{launch:{url,expiresAt}}`. It accepts no browser-selected owner or origin.
+The web command pins the origin in private plugin state and refreshes a heartbeat
+while it runs; `launch` fails with "Voice web service is not running" instead of
+issuing a link for a dead origin. The launch command
+reads the current paired owner through core; do not expose this capability to
+contributors, or use a contributor message as proof of installation ownership.
+Resolve and approve the exact private WhatsApp owner contact through core's
+ordinary channel authority before making the request-to-link flow available.
+Generating a link does not send it. Deliver only to the authorized private owner
+chat using the installed channel command; disable provider link previews.
+
+The ticket is 256 random bits, expires in five minutes, and is stored only as a
+SHA-256 filename with owner epoch and origin. Atomic filesystem rename admits
+one redemption across processes. Revocation/relink and wrong-origin exchange
+fail closed. GET previews do not redeem; the owner taps Start talking to exchange
+via a same-origin POST, then taps again to grant microphone access and start.
+The fragment is cleared immediately, before any third-party script loads. Link
+pages do not load the Telegram script. HTTPS ingress must retain no credential
+bodies/Authorization headers; never paste tickets into logs or support reports.
+The returned browser bearer session expires after twenty minutes and rechecks
+owner epoch, origin and active-tab ownership through the existing web path.
+A forwarded bearer link can be redeemed by its holder: owner-bound means bound
+to the issuing owner's authority, not independent proof of the tapper's identity.
+
+Native delegation defaults to the existing `voice` application scope; this feature
+does not enable shared-owner history, add tool grants, create application tokens,
+or change HTTPS/network settings. If the deployment needs the current owner
+conversation, separately approve its `--share-owner` application binding and private
+`configure` setting `followOwner:true` (default false); core enforces that grant;
+do not compensate by copying chat history or widening contributor access.
+
+Owner smoke after reviewed installation: request Voice in the verified private
+WhatsApp owner chat; tap the HTTPS link and redeem; start and allow microphone;
+ask for one harmless native fact; confirm the intended context; End and verify
+closure. Reopen the consumed link and an expired unused link: both must deny.
+No live or audible-quality claim is made until the owner performs this test.
