@@ -50,7 +50,7 @@ test('preserves an opaque bounded Live session ID when attaching',async()=>{
 
 test('client delegation sends accumulated transcript through the native agent once',async()=>{
   let resolveAgent,calls=0;const observed=[];
-  const f=fixture({observe:event=>observed.push(event),runAgent:async(input,options)=>{calls++;options.onAdmitted('r_app_'+'b'.repeat(64));assert.match(input.text,/Owner: Find my orchard note/);assert.equal(input.scope,'voice');assert.equal(options.url,config.agentUrl);return new Promise(resolve=>{resolveAgent=resolve;});}});
+  const f=fixture({observe:event=>observed.push(event),runAgent:async(input,options)=>{calls++;options.onAdmitted('r_app_'+'b'.repeat(64));assert.match(input.text,/Speaker: Find my orchard note/);assert.equal(input.scope,'voice');assert.equal(input.followOwner,undefined);assert.equal(options.url,config.agentUrl);return new Promise(resolve=>{resolveAgent=resolve;});}});
   await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
   f.session.onEvent({type:'session.input_transcript.delta',delta:'Find my orchard note',start_ms:1,end_ms:10});
   const event={type:'session.delegation.created',delegation:{id:'item_one',target:'client'}};
@@ -94,4 +94,24 @@ test('stop during delayed creation attaches and finalizes the created session',a
   f.session.onEvent({type:'session.closed',reason:'close_requested'});
   const stopped=await stopping;await assert.rejects(starting,/closed during startup/);
   assert.equal(stopped.hangupConfirmed,true);
+});
+
+ test('shared owner context requires explicit private configuration; browser cannot select it',async()=>{
+  let input;
+  const f=fixture({runAgent:async value=>{input=value;return {reply:'fixture'};}});
+  f.session.config={...config,followOwner:true};
+  f.session.handleDelegation({type:'session.delegation.created',delegation:{id:'shared-fixture',target:'client'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(input.followOwner,true);assert.equal(input.scope,'voice');
+});
+
+test('discussion delegation always uses task authority even when shared owner is configured',async()=>{
+  let admitted;const f=fixture({runAgent:async input=>{admitted=input;return {reply:'Scoped response'};}});
+  const task={taskId:'task_'+'a'.repeat(32),taskToken:'b'.repeat(64),expiresAt:Date.now()+1200000};
+  f.session.config={...config,followOwner:true,task};
+  await f.session.start({sdp:'v=0\r\n',instructions:'prompt'});
+  f.session.onEvent({type:'session.delegation.created',delegation:{id:'task_request',target:'client'}});
+  await f.session.delegations.get('task_request').promise;
+  assert.equal(admitted.scope,'task:'+task.taskId);assert.equal(admitted.taskToken,task.taskToken);assert.equal(admitted.followOwner,undefined);
+  f.session.onEvent({type:'session.closed'});await f.session.stop();
 });

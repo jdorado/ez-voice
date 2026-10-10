@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add short-lived browser conversation links for explicitly granted restricted discussions, retaining each task’s context and tool permissions.
+- Add five-minute single-use owner-bound HTTPS browser launch links, preview-safe
+  manual redemption and owner-epoch revocation checks.
+- Keep scoped native delegation by default; explicitly approved private
+  followOwner configuration can reuse the core shared-owner conversation.
+- No deployment access, credential, identity or network changes are automatic.
+- Issue tickets atomically, sweep expired and leftover files without deleting
+  unparseable tickets, cap outstanding links under concurrent issue, and refuse
+  to hand out a link while the web service is not running (heartbeat check).
+- Discussion sessions report the generic `Ez` agent, redeeming a discussion link
+  never reads the owner, and expired discussion tickets (with their stored bearer)
+  are swept on redeem and bind.
+
 ## 0.1.0-beta.3
 
 - Prepare the reviewed GPT-Live native-agent implementation for exact-artifact

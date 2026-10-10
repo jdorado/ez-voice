@@ -3,15 +3,17 @@ import {mkdir,readFile,chmod,unlink} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {frames,send} from './protocol.mjs';
 import {RealtimeSession} from './realtime.mjs';
-import {agentContext} from './context.mjs';
+import {agentContext,discussionContext} from './context.mjs';
 import {CoreTools} from './plugin-tools.mjs';
+import {authorizeTask} from './task-access.mjs';
 import {VoiceHistory,recentMessages} from './history.mjs';
 
 const state=resolve(process.env.EZ_VOICE_STATE||'/state');
 const context=async()=>agentContext(JSON.parse(await readFile(join(state,'agent.json'),'utf8')));
 await mkdir(state,{recursive:true,mode:0o700});
 const socketPath=join(state,'voice.sock');await unlink(socketPath).catch(e=>{if(e.code!=='ENOENT')throw e;});
-const history=new VoiceHistory(state);
+const ownerHistory=new VoiceHistory(state);
+const discussionHistory=task=>new VoiceHistory(join(state,"discussions",task.taskId));
 let active;
 const connections=new Set();
 async function stop(holder,reason='ended'){
@@ -19,7 +21,7 @@ async function stop(holder,reason='ended'){
   if(!holder.stopPromise)holder.stopPromise=(async()=>{
     await holder.startup?.catch(()=>{});
     const result=await holder.session?.stop(reason)||{reason,hangupConfirmed:true};
-    await history.flush();
+    await holder.history.flush();
     if(active===holder)active=undefined;
     return result;
   })();
@@ -33,18 +35,21 @@ const server=net.createServer(socket=>{
     try{
       if(typeof id!=='string'||id.length>100)throw Error('Invalid request ID');
       let result;
+      if(params.task)await authorizeTask(state,params.task);
+      const history=params.task ? discussionHistory(params.task) : ownerHistory;
       if(method==='health')result={healthy:true,active:Boolean(active),transport:'persistent',history:'retained'};
-      else if(method==='context'){const c=await context();result={agent:c.agent,tools:[{name:'native_agent',description:'Delegated requests run through the owning native Ez agent.'}]};}
+      else if(method==='context'){const c=params.task ? discussionContext() : await context();result={agent:c.agent,tools:[{name:'native_agent',description:'Delegated requests run through the owning native Ez agent.'}]};}
       else if(method==='history'){const saved=await history.load();result={conversationId:saved?.id,messages:recentMessages(saved?.messages||[],50000,100)};}
       else{
         if(!/^[a-f0-9]{64}$/.test(frame.owner||''))throw Error('Invalid client owner');
         if(method==='start'){
           if(active)throw Error('A voice session is already active');
           if(params.resume!==undefined&&typeof params.resume!=='boolean')throw Error('Invalid resume option');
-          const holder={owner:frame.owner,socket,session:null,cancelled:false,isStarting:true,lastSeen:Date.now()};active=holder;
+          const holder={owner:frame.owner,socket,history,session:null,cancelled:false,isStarting:true,lastSeen:Date.now()};active=holder;
           holder.startup=(async()=>{
             const config=JSON.parse(await readFile(join(state,'config.json'),'utf8'));
-            const bound=await context();const retained=await history.begin(params.resume!==false);
+            if(params.task)config.task=params.task;
+            const bound=params.task ? discussionContext() : await context();const retained=await history.begin(params.resume!==false);
             if(holder.cancelled)throw Error('Startup cancelled');
             const emit=event=>{send(socket,{event});if(event.type==='closed'&&!holder.isStarting)void stop(holder,event.reason).catch(()=>{});};
             holder.session=new RealtimeSession(config,emit,undefined,{observe:event=>history.observe(event)});

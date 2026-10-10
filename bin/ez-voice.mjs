@@ -12,9 +12,10 @@ try {
   else if (command === '--help') console.log(`ez-voice ${version}
   doctor              Read configuration and provider readiness (no provider request)
   health              Check the resident service
-  configure           Read {apiKey, agentUrl, agentToken, model?, voice?} JSON from stdin; private atomic storage
+  configure           Read {apiKey, agentUrl, agentToken, model?, voice?, followOwner?} JSON from stdin; private atomic storage
   bind                Read {name, purpose} owning-agent identity from private stdin
   exchange            One JSON request on stdin; one response from the resident service
+  launch              Issue a five-minute single-use HTTPS owner link (ez tools connect voice launch)
   connect             Persistent JSONL connection (use ez tools connect voice connect)
 Use the agent-bound ez voice command. Start/stop through ez plugins.
 Credentials live in /state/config.json (0600), never browser or model context.
@@ -25,8 +26,9 @@ For HTTPS Telegram access add --bot-id ID; see README.`);
     let raw = '';
     for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 16000) throw new Error('Input too large'); }
     const config = JSON.parse(raw);
-    if (Object.keys(config).some(k => !['apiKey', 'agentUrl', 'agentToken', 'model', 'voice'].includes(k))) throw new Error('Unknown configuration field');
+    if (Object.keys(config).some(k => !['apiKey', 'agentUrl', 'agentToken', 'model', 'voice', 'followOwner'].includes(k))) throw new Error('Unknown configuration field');
     if (typeof config.apiKey !== 'string' || !/^sk-[A-Za-z0-9_-]{10,}$/.test(config.apiKey)) throw new Error('Expected an OpenAI API key');
+    if (config.followOwner !== undefined && typeof config.followOwner !== 'boolean') throw Error('followOwner must be boolean; enabling requires an approved shared-owner application grant');
     if (config.model && config.model !== 'gpt-live-1') throw new Error('Voice requires gpt-live-1');
     if (config.voice && !['alloy','ash','ballad','coral','echo','sage','shimmer','verse','marin','cedar'].includes(config.voice)) throw new Error('Unknown voice');
     if (typeof config.agentUrl !== 'string') throw new Error('Expected the native Ez agent URL');
@@ -48,6 +50,17 @@ For HTTPS Telegram access add --bot-id ID; see README.`);
   } else if (command === 'doctor') {
     const config = await readFile(join(state, 'config.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return {}; throw e; });
     console.log(JSON.stringify({ version, configured: Boolean(config.apiKey&&config.agentUrl&&config.agentToken), providerConfigured:Boolean(config.apiKey), agentConfigured:Boolean(config.agentUrl&&config.agentToken), model: 'gpt-live-1', voice: config.voice || 'marin', transport: 'webrtc', toolMode: 'client-delegation', liveVerified: false }));
+  } else if(command==='launch') {
+    if(process.argv.length===4 && process.argv[3]==='--task') {
+      let raw='';for await(const chunk of process.stdin){raw+=chunk;if(raw.length>1024)throw Error('Launch input too large');}
+      const task=JSON.parse(raw);
+      await (await import('../src/task-access.mjs')).authorizeTask(state,task);
+      const launch=await new (await import('../src/launch-links.mjs')).LaunchLinks(state).issue(null,task);
+      console.log(JSON.stringify({launch}));
+    } else {
+      if(process.argv.length!==3)throw Error('launch accepts no identity or origin arguments');
+      await (await import('../src/launch-connect.mjs')).launchConnect(state);
+    }
   } else if(command==='web') {
     await (await import('../src/web-connect.mjs')).webConnect(state,process.argv.slice(3));
   } else if(command==='connect') {
