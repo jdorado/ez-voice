@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.5 (candidate)
+## 0.1.0-beta.5
 
 - Add an audio-only inbound Twilio Media Streams POC connected directly to
   GPT-Live, with signed ingress, bounded calls and private usage receipts.
