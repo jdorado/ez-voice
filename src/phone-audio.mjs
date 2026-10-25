@@ -42,6 +42,7 @@ export class PhoneAudio {
   event(event) {
     if (event.type === 'session.closed') {
       this.stats.finalized = true; this.stats.usage = event.usage;
+      this.stats.reason ??= event.reason || 'provider_closed';
       this.provider.close(); this.complete(); return;
     }
     if (this.closing) return;

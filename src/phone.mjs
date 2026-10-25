@@ -1,8 +1,9 @@
 import {createServer} from 'node:http';
 import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
-import {mkdir, readFile, writeFile, rename} from 'node:fs/promises';
-import {join} from 'node:path';
+import {mkdir, open, readFile, rename, unlink} from 'node:fs/promises';
+import {dirname, join} from 'node:path';
 import {WebSocketServer} from 'ws';
+import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
 
 const sid = (value, prefix) => typeof value === 'string' && new RegExp(`^${prefix}[a-fA-F0-9]{32}$`).test(value);
@@ -11,7 +12,12 @@ const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone audio t
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
   const temp = path + '.' + randomBytes(8).toString('hex') + '.tmp';
-  await writeFile(temp, JSON.stringify(value), {mode: 0o600, flag: 'wx'}); await rename(temp, path);
+  try {
+    const file = await open(temp, 'wx', 0o600);
+    try { await file.writeFile(JSON.stringify(value)); await file.sync(); } finally { await file.close(); }
+    await rename(temp, path);
+    const directory = await open(dirname(path), 'r'); try { await directory.sync(); } finally { await directory.close(); }
+  } finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 export function validatePhoneConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config) ||
@@ -68,13 +74,24 @@ export class PhoneNumber {
   }
 }
 export async function phoneRoute(directory, config, command, {provider = new PhoneNumber(config)} = {}) {
+  if (['preview','status'].includes(command)) return routeOperation(directory, config, command, provider);
+  const lock = new DatabaseSync(join(directory, 'route-lock.sqlite'), {timeout: 0});
+  try { lock.exec('BEGIN EXCLUSIVE'); } catch { lock.close(); throw Error('A phone route operation is already in progress'); }
+  try { return await routeOperation(directory, config, command, provider); }
+  finally { lock.exec('ROLLBACK'); lock.close(); }
+}
+async function routeOperation(directory, config, command, provider) {
   const current = await provider.get(), receiptPath = join(directory, 'route.json');
   const prior = await read(receiptPath).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
   if (command === 'status') return {...current, receipt: prior};
+  if (command === 'restore' && prior?.state === 'restore_uncertain' && prior.numberSid === current.numberSid && JSON.stringify(current.route) === JSON.stringify(prior.before)) {
+    const reconciled = {...prior, state: 'restored'}; await save(receiptPath, reconciled);
+    return {...current, receipt: reconciled};
+  }
   const target = command === 'restore' ? prior?.before : {VoiceUrl: config.origin + '/incoming', VoiceMethod: 'POST',
     VoiceFallbackUrl: '', VoiceFallbackMethod: 'POST', VoiceApplicationSid: '', TrunkSid: ''};
   if (command === 'preview') return {...current, target};
-  if (command === 'restore' && (!prior || prior.numberSid !== current.numberSid || !['applied','uncertain'].includes(prior.state))) throw Error('No matching active phone route receipt to restore');
+  if (command === 'restore' && (!prior || prior.numberSid !== current.numberSid || !['applied','uncertain','restore_uncertain'].includes(prior.state))) throw Error('No matching active phone route receipt to restore');
   if (command === 'restore' && JSON.stringify(current.route) !== JSON.stringify(prior.target)) throw Error('Phone routing changed outside this POC; refusing to overwrite it');
   if (command === 'route' && prior && prior.state !== 'restored') throw Error('A phone route receipt already exists; inspect status and restore it first');
   const receipt = {numberSid: current.numberSid, number: current.number, before: current.route, target, state: 'uncertain', at: new Date().toISOString()};
@@ -99,8 +116,9 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
       if (!authentic(config, request.headers['x-twilio-signature'], '/incoming', params) || params.get('AccountSid') !== config.accountSid || params.get('To') !== config.number || !sid(params.get('CallSid'), 'CA')) { response.writeHead(403); return response.end(); }
       response.setHeader('Content-Type', 'text/xml');
       for (const [token, ticket] of tickets) if (ticket.expires < Date.now()) tickets.delete(token);
-      if (expired || active || tickets.size || admitted >= 5) return response.end('<Response><Reject reason="busy"/></Response>');
-      const token = randomBytes(32).toString('hex');
+      const existing = [...tickets].find(([, ticket]) => ticket.callSid === params.get('CallSid'))?.[0];
+      if (!existing && (expired || active || tickets.size || admitted >= 5)) return response.end('<Response><Reject reason="busy"/></Response>');
+      const token = existing || randomBytes(32).toString('hex');
       tickets.set(token, {callSid: params.get('CallSid'), expires: Date.now() + 60000});
       response.end(`<Response><Connect><Stream url="${config.origin.replace('https:', 'wss:')}/media"><Parameter name="ticket" value="${token}"/></Stream></Connect><Hangup/></Response>`);
     } catch { response.writeHead(400); response.end(); }
