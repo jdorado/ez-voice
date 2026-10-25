@@ -95,11 +95,12 @@ export class PhoneCalls {
 
 export async function servePhoneControl(directory, handle) {
   const path=join(directory,'phone.sock'), clients=new Set(), pending=new Set();
+  let closing=false,closePromise;
   const server=net.createServer(socket=>{
     clients.add(socket);socket.setTimeout(35000,()=>socket.destroy());socket.on('error',()=>{});socket.on('close',()=>clients.delete(socket));
     let used=false;
     frames(socket,frame=>{
-      if (used) return socket.destroy();used=true;
+      if (closing || used) return socket.destroy();used=true;
       const work=Promise.resolve().then(()=>handle(frame)).then(result=>send(socket,{result}),error=>send(socket,{error:error.message})).finally(()=>{pending.delete(work);socket.end();});
       pending.add(work);
     },()=>socket.destroy());
@@ -114,7 +115,7 @@ export async function servePhoneControl(directory, handle) {
     await unlink(path).catch(e=>{if(e.code!=='ENOENT')throw e;});await listen();
   }
   await chmod(path,0o600);
-  return {close:async()=>{const closed=new Promise(resolve=>server.close(resolve));await Promise.allSettled([...pending]);for(const client of clients)client.destroy();await closed;await unlink(path).catch(e=>{if(e.code!=='ENOENT')throw e;});}};
+  return {close:()=>closePromise??=(async()=>{closing=true;const closed=new Promise(resolve=>server.close(resolve));await Promise.allSettled([...pending]);for(const client of clients)client.destroy();await closed;})()};
 }
 
 export async function phoneControl(directory, action, options) {

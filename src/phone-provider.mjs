@@ -1,6 +1,10 @@
 export const sid = (value, prefix) => typeof value === 'string' && new RegExp(`^${prefix}[a-fA-F0-9]{32}$`).test(value);
 export const phone = value => typeof value === 'string' && /^\+[1-9]\d{6,14}$/.test(value);
 
+const routeFields = number => ({VoiceUrl: number.voice_url || '', VoiceMethod: number.voice_method || 'POST',
+  VoiceFallbackUrl: number.voice_fallback_url || '', VoiceFallbackMethod: number.voice_fallback_method || 'POST',
+  VoiceApplicationSid: number.voice_application_sid || '', TrunkSid: number.trunk_sid || ''});
+
 export class PhoneNumber {
   constructor(config, fetchImpl = fetch) { this.config = config; this.fetch = fetchImpl; this.root = `https://api.twilio.com/2010-04-01/Accounts/${config.accountSid}`; }
   async request(path, form) {

@@ -48,9 +48,7 @@ async function body(request) {
   let value = ''; for await (const chunk of request) { value += chunk; if (Buffer.byteLength(value) > 32000) throw Error('Request too large'); }
   return value;
 }
-const routeFields = number => ({VoiceUrl: number.voice_url || '', VoiceMethod: number.voice_method || 'POST',
-  VoiceFallbackUrl: number.voice_fallback_url || '', VoiceFallbackMethod: number.voice_fallback_method || 'POST',
-  VoiceApplicationSid: number.voice_application_sid || '', TrunkSid: number.trunk_sid || ''});
+
 
 export async function phoneRoute(directory, config, command, {provider = new PhoneNumber(config)} = {}) {
   if (['preview','status'].includes(command)) return routeOperation(directory, config, command, provider);
@@ -86,6 +84,7 @@ async function routeOperation(directory, config, command, provider) {
 
 export async function servePhone(config, {port = 8080, host = '0.0.0.0', record = async () => {}, socketFactory, calls} = {}) {
   const tickets = new Map(); let active, admitted = 0, unavailable = false, receiptError = false, closing;
+  const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.expires<Date.now())tickets.delete(token);};
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     try {
@@ -100,7 +99,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
         if (isStatus) { response.writeHead(204);return response.end(); }
       } else if (url.search || params.get('To')!==config.number) { response.writeHead(403);return response.end(); }
       response.setHeader('Content-Type', 'text/xml');
-      for (const [token, ticket] of tickets) if (ticket.expires < Date.now()) tickets.delete(token);
+      pruneTickets();
       const existing = [...tickets].find(([, ticket]) => ticket.callSid === params.get('CallSid'))?.[0];
       if (unavailable || active || (!existing && tickets.size) || (!outbound && calls?.pending())) return response.end('<Response><Reject reason="busy"/></Response>');
       const token = existing || randomBytes(32).toString('hex');
@@ -140,7 +139,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000;
   await new Promise((resolve,reject) => { server.once('error',reject); server.listen(port, host, resolve); });
-  return {port: server.address().port, busy:()=>unavailable || Boolean(active) || tickets.size>0, close: () => closing ??= (async () => {
+  return {port: server.address().port, busy:()=>{pruneTickets();return unavailable || Boolean(active) || tickets.size>0;}, close: () => closing ??= (async () => {
     unavailable = true;
     const stopped = new Promise(resolve => server.close(resolve));
     server.closeAllConnections();
@@ -194,11 +193,12 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
       });
     } catch (error) { await web?.close();calls.close();throw error; }
     console.log(JSON.stringify({web: {url: config.origin, model: 'gpt-live-1', limits: 'one inbound or outbound call at a time; 3 minutes each; available until stopped', nativeTools: false}}));
-    for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => void (async()=>{
+    let stopping;
+    for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => {stopping??=(async()=>{
       const stopped=await Promise.allSettled([web.close(),control.close()]);
       try { await calls.stop();if(stopped.some(result=>result.status==='rejected'))throw Error('Unconfirmed shutdown');calls.close();process.exit(0); }
       catch { console.error('Phone service stopped with unconfirmed call cleanup or receipt storage');calls.close();process.exit(2); }
-    })());
+    })();});
     return;
   }
   if (command === 'receipt') return read(join(directory, 'last-call.json'));

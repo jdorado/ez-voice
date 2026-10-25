@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
+import net from 'node:net';
 import {mkdtemp,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -82,6 +83,20 @@ test('uncertain creation survives restart and cannot redial under the same or an
   } finally {restarted.close();}
 });
 
+test('an abandoned inbound ticket expires without blocking later outbound dialing',async t=>{
+  const {provider,calls}=await fixture(t);
+  let now=Date.now();t.mock.method(Date,'now',()=>now);
+  const web=await servePhone(config,{port:0,host:'127.0.0.1',calls});
+  try {
+    const inbound=new URLSearchParams({AccountSid:config.accountSid,CallSid:callSid,To:config.number});
+    assert.equal((await post(web.port,'/incoming',inbound)).status,200);
+    await assert.rejects(()=>calls.call({requestId:id,to},web.busy),/busy/);
+    now+=61000;
+    assert.equal((await calls.call({requestId:id,to},web.busy)).created,true);
+    assert.equal(provider.creates,1);
+  } finally {await web.close();}
+});
+
 test('a signed answer before the create response binds the call without regressing its status',async t=>{
   const {provider,calls}=await fixture(t);let release;
   provider.createCall=()=>{provider.creates++;return new Promise(resolve=>{release=resolve;});};
@@ -124,4 +139,29 @@ test('Twilio create request pins caller ID, existing signed endpoint, no recordi
   assert.equal(form.get('To'),to);assert.equal(form.get('From'),config.number);assert.equal(form.get('Url'),config.origin+'/incoming?outbound='+id);
   assert.equal(form.get('StatusCallback'),form.get('Url')+'&status=1');assert.equal(form.get('TimeLimit'),'180');assert.equal(form.get('Timeout'),'20');assert.equal(form.get('Record'),'false');
   assert.equal(form.has('SmsUrl'),false);
+});
+
+test('control shutdown rejects late frames from existing idle clients and waits for admitted work',async t=>{
+  const {directory}=await fixture(t);let release;
+  const gate=new Promise(resolve=>{release=resolve;}),actions=[];
+  const control=await servePhoneControl(directory,async frame=>{actions.push(frame.action);await gate;return {ok:true};});
+  const idle=net.connect(join(directory,'phone.sock'));idle.on('error',()=>{});
+  await new Promise(resolve=>idle.once('connect',resolve));
+  const first=phoneControl(directory,'first',{});await wait(()=>actions.length===1);
+  let stopped=false;const closing=control.close().then(()=>{stopped=true;});
+  try {
+    idle.write(JSON.stringify({action:'late'})+'\n');
+    await new Promise(resolve=>setTimeout(resolve,20));
+    assert.deepEqual(actions,['first']);assert.equal(stopped,false);
+    release();await closing;await first;
+    await control.close();assert.equal(stopped,true);
+  } finally {release();idle.destroy();await control.close();}
+});
+
+test('real phone-number lookup retains inbound preview and restoration fields',async()=>{
+  const row={sid:'PN'+'5'.repeat(32),account_sid:config.accountSid,phone_number:config.number,capabilities:{voice:true},voice_url:config.origin+'/incoming',voice_method:'POST',voice_fallback_url:'',voice_fallback_method:'POST',voice_application_sid:'',trunk_sid:''};
+  const number=new PhoneNumber(config,async()=>new Response(JSON.stringify({incoming_phone_numbers:[row]})));
+  const result=await number.get();
+  assert.equal(result.numberSid,row.sid);assert.equal(result.number,config.number);
+  assert.deepEqual(result.route,{VoiceUrl:row.voice_url,VoiceMethod:'POST',VoiceFallbackUrl:'',VoiceFallbackMethod:'POST',VoiceApplicationSid:'',TrunkSid:''});
 });
