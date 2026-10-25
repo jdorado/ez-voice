@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.5
+
+- Add an audio-only inbound Twilio Media Streams POC connected directly to
+  GPT-Live, with signed ingress, bounded calls and private usage receipts.
+- Add explicit preview, voice-route readback and restoration commands. No native
+  tools are exposed to phone callers. Live audible acceptance remains required.
+- Await provider finalization and receipt storage during phone service shutdown;
+  reconcile an unapplied routing attempt from canonical readback.
+
 ## 0.1.0-beta.4
 
 - Requires Ez core 0.1.0-beta.50 or newer for the manifest example.

@@ -17,11 +17,16 @@ try {
   exchange            One JSON request on stdin; one response from the resident service
   launch              Issue a five-minute single-use HTTPS owner link (ez tools connect voice launch)
   connect             Persistent JSONL connection (use ez tools connect voice connect)
+  phone --help        Experimental direct Twilio phone audio POC (no native tools)
 Use the agent-bound ez voice command. Start/stop through ez plugins.
 Credentials live in /state/config.json (0600), never browser or model context.
 Exit 0 success, 2 invalid input/unavailable. No automatic provider retries.
 Web: ez tools serve 8791:8080 voice web --origin http://127.0.0.1:8791
 For HTTPS Telegram access add --bot-id ID; see README.`);
+  else if (command === 'phone') {
+    const result = await (await import('../src/phone.mjs')).phoneCommand(state, process.argv.slice(3));
+    if (result) console.log(JSON.stringify(result));
+  }
   else if (command === 'configure') {
     let raw = '';
     for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 16000) throw new Error('Input too large'); }
