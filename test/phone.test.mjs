@@ -21,19 +21,39 @@ class ProviderSocket extends EventEmitter {
   close() {this.readyState = WebSocket.CLOSED; this.emit('close');}
   terminate() {this.close();}
 }
-async function connectCall(port) {
+async function connectCall(port, id = callSid) {
   const base = `http://127.0.0.1:${port}`;
-  const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:callSid});
+  const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:id});
   const response = await fetch(base+'/incoming', {method:'POST', body:params,
     headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/incoming',params)}});
   const ticket = (await response.text()).match(/value="([a-f0-9]+)"/)[1];
   const ws = new WebSocket(base.replace('http:','ws:')+'/media', {
     headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/media')}});
   await new Promise((resolve,reject) => {ws.once('open',resolve);ws.once('error',reject);});
-  ws.send(JSON.stringify({event:'start', start:{accountSid:config.accountSid,callSid,streamSid,
+  ws.send(JSON.stringify({event:'start', start:{accountSid:config.accountSid,callSid:id,streamSid,
     customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
   return ws;
 }
+test('inbound listener admits calls after thirty minutes and more than five completed calls', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  const receipts=[], providers=[];
+  const server=await servePhone(config,{port:0,host:'127.0.0.1',socketFactory:()=>{const provider=new ProviderSocket();providers.push(provider);return provider;},record:async value=>{receipts.push(value);}});
+  t.mock.timers.tick(31*60000);
+  t.mock.timers.reset();
+  try {
+    for(let i=0;i<7;i++) {
+      const ws=await connectCall(server.port,'CA'+String(i).padStart(32,'0'));
+      await wait(()=>providers[i]?.events.some(event=>event.type==='session.start'));
+      await new Promise(resolve=>setImmediate(resolve));
+      ws.close();
+      await wait(()=>receipts.length===i+1);
+      assert.equal(receipts[i].finalized,true);
+    }
+    const health=await fetch(`http://127.0.0.1:${server.port}/health`);
+    assert.equal(health.status,200);
+    assert.deepEqual(await health.json(),{ready:true,active:false,admitted:7,model:'gpt-live-1'});
+  } finally {await server.close();}
+});
 test('signed inbound HTTP + real media socket relays mu-law both ways and finalizes without native tools', async () => {
   let provider, receipt;
   const server = await servePhone(config, {port:0, host:'127.0.0.1', socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
@@ -143,6 +163,15 @@ test('a receipt write failure is reported during shutdown without exposing its e
   const ws=await connectCall(server.port);
   try {
     await wait(()=>provider?.events.some(event=>event.type==='session.start'));
+    ws.close();
+    await wait(()=>messages.length===1);
+    const health=await fetch(`http://127.0.0.1:${server.port}/health`);
+    assert.equal(health.status,503);
+    assert.equal((await health.json()).ready,false);
+    const params=new URLSearchParams({AccountSid:config.accountSid,To:config.number,CallSid:'CA'+'7'.repeat(32)});
+    const rejected=await fetch(`http://127.0.0.1:${server.port}/incoming`,{method:'POST',body:params,
+      headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/incoming',params)}});
+    assert.match(await rejected.text(),/Reject reason="busy"/);
     await assert.rejects(server.close(),/receipt could not be persisted/);
     assert.equal(messages.length,1); assert.equal(messages[0].includes('private fixture'),false);
   } finally {ws.terminate();await server.close().catch(()=>{});console.error=original;}

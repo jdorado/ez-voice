@@ -1,8 +1,9 @@
-# Direct phone audio POC
+# Direct inbound phone audio
 
-Experimental, bounded phone feature. The first question is whether we can have a
-two-way phone conversation without Retell or Vapi. Latency, deployment placement,
-cost comparison and native-agent integration come after a real call proves this.
+Experimental audio-only phone channel for direct two-way conversations without
+Retell or Vapi. The listener remains available until stopped; it admits one call
+at a time and caps each call at three minutes. It has no native-agent integration.
+Audible quality, interruption handling and latency require separate acceptance.
 
 ```text
 telephone ↔ Twilio number ↔ Twilio Media Streams ↔ Ez Voice ↔ gpt-live-1
@@ -14,7 +15,7 @@ another voice platform. The short instructions live in the private Voice phone
 configuration and go directly to OpenAI at call startup. Twilio and OpenAI still
 bill their own usage. Removing Retell/Vapi does not make a call free.
 
-## Private configuration and test
+## Private configuration and routing
 
 Install the reviewed release through the normal Ez manager. Use an isolated
 test registry for development. Keep credentials and runtime state outside the agent workspace.
@@ -26,8 +27,8 @@ test registry for development. Keep credentials and runtime state outside the ag
   "accountSid": "TWILIO_ACCOUNT_SID",
   "authToken": "TWILIO_ACCOUNT_AUTH_TOKEN",
   "number": "+15551230001",
-  "origin": "https://phone-test.example.com",
-  "instructions": "You are a friendly AI on a phone test. Introduce yourself and have a short conversation."
+  "origin": "https://phone.example.com",
+  "instructions": "You are a friendly AI on a phone call. Introduce yourself and have a short conversation."
 }
 ```
 
@@ -35,6 +36,9 @@ The number must belong to that account and support voice. An account auth token
 is needed to validate Twilio signatures; a Twilio API key cannot validate them.
 The origin must terminate HTTPS and forward HTTP/WebSocket upgrades to the
 loopback publication. No request bodies, authorization headers or audio in logs.
+Use an approved dedicated number and a host supervisor to keep the installed
+`tools serve` command running. HTTPS ingress and supervision belong to the
+deployment owner, not the plugin. Restart the service after changing configuration.
 
 ```sh
 ez voice phone doctor
@@ -55,15 +59,16 @@ It changes only voice fields; SMS configuration is not submitted. A receipt left
 uncertain after a failure is inspected rather than automatically retried. If
 readback shows the original route is intact, `restore` reconciles the receipt
 without another provider update.
-`restore` refuses to overwrite a voice route changed outside this POC. Restore
-the previous route before stopping the public test endpoint. The test is limited
-to five admitted calls, three minutes per call and a thirty-minute admission
-window per service start. At expiry it refuses new calls; restoration remains
-an explicit operator action.
+`restore` refuses to overwrite a voice route changed outside Voice. Restore
+the previous route before decommissioning the public endpoint. The listener does
+not expire after thirty minutes or stop after five completed calls. Simultaneous
+callers receive busy; each admitted call remains limited to three minutes.
+`/health` reports local readiness and returns 503 after a receipt-storage failure.
+A health response does not prove provider connectivity; `phone probe` does.
 
 ## Boundary and evidence
 
-Phone callers are external callers, not authenticated Ez owners. This test has
+Phone callers are external callers, not authenticated Ez owners. This channel has
 no native-agent delegation, owner history, workspace access or external-action
 tools. Client delegations receive a fixed capability-unavailable result. There
 is no conversation store or recording. The latest private receipt holds call
@@ -79,14 +84,15 @@ startup buffering is bounded. Caller hangup sends `session.close` and waits for
 `session.closed` to confirm final usage. Service shutdown also waits for this
 finalization and durable receipt storage; a receipt write failure is reported.
 A connection failure without that event
-is explicitly unconfirmed. The POC does not yet synchronize Twilio's playback
+is explicitly unconfirmed. Voice does not yet synchronize Twilio's playback
 buffer with the model's full-duplex output; interruption quality needs later
 work and must not be treated as accepted by synthetic transport tests.
 
-Acceptance: an authorized person calls the routed number, the model responds
+Audible acceptance: an authorized person calls the routed number, the model responds
 audibly in the same call, a second turn works, hangup stops the provider session,
-and the previous number routing is restored with provider readback. Only that
-proves the provider bypass end to end. No production readiness or latency claim
+and provider finalization is verified in its private receipt. Only that
+proves the provider bypass end to end. A routing restoration test must also pass
+before decommissioning a temporary endpoint. No production readiness or latency claim
 is made from unit tests, process health or byte counts.
 
 References: [OpenAI WebSocket audio](https://developers.openai.com/api/docs/guides/voice-websockets?api=live),
