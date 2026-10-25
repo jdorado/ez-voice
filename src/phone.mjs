@@ -168,7 +168,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
 }
 
 export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
-  const directory = join(state, 'phone'); await mkdir(directory, {recursive: true, mode: 0o700});
+  const directory = join(state, 'phone');
   const path = join(directory, 'config.json'), [command, ...rest] = args;
   if (rest.length) throw Error('Phone commands accept no flags; credentials and configuration use private stdin');
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
@@ -178,10 +178,14 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
     let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 16000) throw Error('Phone configuration too large'); }
-    const config = validatePhoneConfig(JSON.parse(raw)); await save(path, config);
+    const config = validatePhoneConfig(JSON.parse(raw));
+    await mkdir(directory, {recursive: true, mode: 0o700}); await save(path, config);
     return {configured: true, model: 'gpt-live-1', origin: config.origin, number: config.number};
   }
-  const config = validatePhoneConfig(await read(path));
+  const stored = await read(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (!stored && command === 'doctor') return {configured: false, model: 'gpt-live-1', nativeTools: false, liveVerified: false};
+  if (!stored) throw Error('Phone is not configured; use phone configure with private stdin');
+  const config = validatePhoneConfig(stored);
   if (command === 'doctor') return {configured: true, model: 'gpt-live-1', origin: config.origin, number: config.number, nativeTools: false, liveVerified: false};
   if (command === 'probe') {
     const result = await new Promise(resolve => {
