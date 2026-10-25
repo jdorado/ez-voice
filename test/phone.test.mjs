@@ -21,6 +21,19 @@ class ProviderSocket extends EventEmitter {
   close() {this.readyState = WebSocket.CLOSED; this.emit('close');}
   terminate() {this.close();}
 }
+async function connectCall(port) {
+  const base = `http://127.0.0.1:${port}`;
+  const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:callSid});
+  const response = await fetch(base+'/incoming', {method:'POST', body:params,
+    headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/incoming',params)}});
+  const ticket = (await response.text()).match(/value="([a-f0-9]+)"/)[1];
+  const ws = new WebSocket(base.replace('http:','ws:')+'/media', {
+    headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/media')}});
+  await new Promise((resolve,reject) => {ws.once('open',resolve);ws.once('error',reject);});
+  ws.send(JSON.stringify({event:'start', start:{accountSid:config.accountSid,callSid,streamSid,
+    customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
+  return ws;
+}
 test('signed inbound HTTP + real media socket relays mu-law both ways and finalizes without native tools', async () => {
   let provider, receipt;
   const server = await servePhone(config, {port:0, host:'127.0.0.1', socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
@@ -101,4 +114,48 @@ test('signed media with a ticket for another Call SID never opens a model sessio
     ws.send(JSON.stringify({event:'start',start:{accountSid:config.accountSid,callSid:'CA'+'6'.repeat(32),streamSid,customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
     await closed; assert.equal(called,false);
   } finally {ws?.terminate();await server.close();}
+});
+test('shutdown waits for the provider terminal event and durable receipt before completing', async () => {
+  class DelayedClose extends ProviderSocket {
+    send(raw) {if (JSON.parse(raw).type === 'session.close') this.events.push(JSON.parse(raw)); else super.send(raw);}
+  }
+  let provider, receipt, writing = false, allowWrite;
+  const saved = new Promise(resolve => {allowWrite=resolve;});
+  const server = await servePhone(config, {port:0,host:'127.0.0.1',socketFactory:()=>provider=new DelayedClose(),
+    record:async value=>{writing=true;await saved;receipt=value;}});
+  const ws = await connectCall(server.port);
+  try {
+    await wait(()=>provider?.events.some(event=>event.type==='session.start'));
+    let stopped=false;
+    const closing=server.close().then(()=>{stopped=true;});
+    await wait(()=>provider.events.some(event=>event.type==='session.close'));
+    assert.equal(stopped,false); assert.equal(receipt,undefined);
+    provider.emit('message',Buffer.from(JSON.stringify({type:'session.closed',usage:{seconds:1}})));
+    await wait(()=>writing); assert.equal(stopped,false);
+    allowWrite(); await closing;
+    assert.equal(receipt.finalized,true); assert.equal(receipt.reason,'service_stopped');
+  } finally {allowWrite();ws.terminate();await server.close();}
+});
+test('a receipt write failure is reported during shutdown without exposing its error content', async () => {
+  let provider; const messages=[], original=console.error; console.error=value=>messages.push(value);
+  const server=await servePhone(config,{port:0,host:'127.0.0.1',socketFactory:()=>provider=new ProviderSocket(),
+    record:async()=>{throw Error('private fixture must not be logged');}});
+  const ws=await connectCall(server.port);
+  try {
+    await wait(()=>provider?.events.some(event=>event.type==='session.start'));
+    await assert.rejects(server.close(),/receipt could not be persisted/);
+    assert.equal(messages.length,1); assert.equal(messages[0].includes('private fixture'),false);
+  } finally {ws.terminate();await server.close().catch(()=>{});console.error=original;}
+});
+test('a route rejected before applying is reconciled as restored without a second provider write', async () => {
+  const directory=await mkdtemp(join(tmpdir(),'voice-phone-before-apply-'));
+  const before={VoiceUrl:'https://old.example.com/voice',VoiceMethod:'POST',VoiceFallbackUrl:'',VoiceFallbackMethod:'POST',VoiceApplicationSid:'',TrunkSid:''};
+  let writes=0;
+  const provider={get:async()=>({numberSid:'PN'+'5'.repeat(32),number:config.number,route:{...before}}),
+    set:async()=>{writes++;throw Error('Rejected before apply');}};
+  try {
+    await assert.rejects(()=>phoneRoute(directory,config,'route',{provider}),/Rejected before apply/);
+    const restored=await phoneRoute(directory,config,'restore',{provider});
+    assert.equal(restored.receipt.state,'restored');assert.deepEqual(restored.route,before);assert.equal(writes,1);
+  } finally {await rm(directory,{recursive:true,force:true});}
 });

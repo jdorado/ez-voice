@@ -6,6 +6,7 @@ export class PhoneAudio {
   constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}} = {}) {
     this.twilio = twilio; this.finish = finish; this.config = config;
     this.stats = {inputBytes: 0, outputBytes: 0, finalized: false}; this.onReady = onReady;
+    this.done = new Promise(resolve => { this.resolveDone = resolve; });
     this.queued = []; this.queuedBytes = 0;
     this.provider = socketFactory('wss://api.openai.com/v1/live/sessions', {
       headers: {Authorization: `Bearer ${config.apiKey}`}, maxPayload: 1024 * 1024,
@@ -70,19 +71,24 @@ export class PhoneAudio {
     }
   }
   close(reason = 'caller_hangup') {
-    if (this.closing) return;
+    if (this.closing || this.completed) return this.done;
     this.closing = true; this.stats.reason = reason;
     clearTimeout(this.startTimer); clearTimeout(this.duration);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     if (this.provider.readyState === WebSocket.OPEN) {
-      this.provider.send(JSON.stringify({type: 'session.close'}));
       this.closeTimer = setTimeout(() => { this.provider.terminate(); this.complete(); }, 15000);
+      this.provider.send(JSON.stringify({type: 'session.close'}));
     } else { this.provider.terminate(); this.complete(); }
+    return this.done;
   }
   complete() {
-    if (this.completed) return;
+    if (this.completed) return this.done;
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearTimeout(this.closeTimer);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
-    this.finish(this.stats);
+    Promise.resolve().then(() => this.finish(this.stats)).catch(() => {
+      this.stats.receiptError = true;
+      console.error('Phone call receipt could not be persisted');
+    }).finally(() => this.resolveDone(this.stats));
+    return this.done;
   }
 }

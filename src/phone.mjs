@@ -84,7 +84,7 @@ async function routeOperation(directory, config, command, provider) {
   const current = await provider.get(), receiptPath = join(directory, 'route.json');
   const prior = await read(receiptPath).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
   if (command === 'status') return {...current, receipt: prior};
-  if (command === 'restore' && prior?.state === 'restore_uncertain' && prior.numberSid === current.numberSid && JSON.stringify(current.route) === JSON.stringify(prior.before)) {
+  if (command === 'restore' && ['uncertain','restore_uncertain'].includes(prior?.state) && prior.numberSid === current.numberSid && JSON.stringify(current.route) === JSON.stringify(prior.before)) {
     const reconciled = {...prior, state: 'restored'}; await save(receiptPath, reconciled);
     return {...current, receipt: reconciled};
   }
@@ -106,7 +106,7 @@ async function routeOperation(directory, config, command, provider) {
 }
 
 export async function servePhone(config, {port = 8080, host = '0.0.0.0', record = async () => {}, socketFactory} = {}) {
-  const tickets = new Map(); let active, admitted = 0, expired = false;
+  const tickets = new Map(); let active, admitted = 0, expired = false, receiptError = false, closing;
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     try {
@@ -143,9 +143,10 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
           if (!ticket || ticket.expires < Date.now() || ticket.callSid !== start.callSid || start.accountSid !== config.accountSid ||
               active || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
           tickets.delete(start.customParameters.ticket); admitted++;
-          bridge = new PhoneAudio(ws, {...config, streamSid: start.streamSid}, stats => {
-            if (active === bridge) active = undefined;
-            void record({callSid: start.callSid, ...stats, at: new Date().toISOString()});
+          bridge = new PhoneAudio(ws, {...config, streamSid: start.streamSid}, async stats => {
+            try { await record({callSid: start.callSid, ...stats, at: new Date().toISOString()}); }
+            catch (error) { expired = true; receiptError = true; throw error; }
+            finally { if (active === bridge) active = undefined; }
           }, {socketFactory}); active = bridge;
         } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
         else if (message.event === 'stop') bridge?.close();
@@ -155,11 +156,15 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
   server.requestTimeout = 15000; server.headersTimeout = 10000;
   await new Promise((resolve,reject) => { server.once('error',reject); server.listen(port, host, resolve); });
   const expiry = setTimeout(() => { expired = true; active?.close('poc_expired'); }, 30 * 60000); expiry.unref();
-  return {port: server.address().port, close: async () => {
-    expired = true; clearTimeout(expiry); active?.close('service_stopped');
-    for (const ws of sockets.clients) ws.close(); sockets.close();
-    await new Promise(resolve => server.close(resolve));
-  }};
+  return {port: server.address().port, close: () => closing ??= (async () => {
+    expired = true; clearTimeout(expiry);
+    const stopped = new Promise(resolve => server.close(resolve));
+    server.closeAllConnections();
+    await active?.close('service_stopped');
+    for (const ws of sockets.clients) ws.terminate(); sockets.close();
+    await stopped;
+    if (receiptError) throw Error('Phone call receipt could not be persisted');
+  })()};
 }
 
 export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
@@ -189,7 +194,9 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (command === 'serve') {
     const web = await servePhone(config, {record: value => save(join(directory, 'last-call.json'), value)});
     console.log(JSON.stringify({web: {url: config.origin, model: 'gpt-live-1', limits: '5 inbound calls; 3 minutes each; 30-minute test window', nativeTools: false}}));
-    for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => void web.close().then(() => process.exit(0)));
+    for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => void web.close().then(() => process.exit(0), () => {
+      console.error('Phone service stopped with an unpersisted call receipt'); process.exit(2);
+    }));
     return;
   }
   if (command === 'receipt') return read(join(directory, 'last-call.json'));

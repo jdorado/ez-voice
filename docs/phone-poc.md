@@ -1,6 +1,6 @@
 # Direct phone audio POC
 
-Experimental, private candidate. The first question is whether we can have a
+Experimental, bounded phone feature. The first question is whether we can have a
 two-way phone conversation without Retell or Vapi. Latency, deployment placement,
 cost comparison and native-agent integration come after a real call proves this.
 
@@ -16,8 +16,8 @@ bill their own usage. Removing Retell/Vapi does not make a call free.
 
 ## Private configuration and test
 
-Install the reviewed candidate through the normal Ez manager in an isolated
-test registry. Keep credentials and runtime state outside the agent workspace.
+Install the reviewed release through the normal Ez manager. Use an isolated
+test registry for development. Keep credentials and runtime state outside the agent workspace.
 `ez voice phone configure` takes the following JSON on private stdin:
 
 ```json
@@ -52,7 +52,9 @@ ez voice phone status
 `preview` and `status` read the actual number. `route` saves the previous voice
 routing before its single provider update and verifies canonical readback.
 It changes only voice fields; SMS configuration is not submitted. A receipt left
-uncertain after a failure is inspected rather than automatically retried.
+uncertain after a failure is inspected rather than automatically retried. If
+readback shows the original route is intact, `restore` reconciles the receipt
+without another provider update.
 `restore` refuses to overwrite a voice route changed outside this POC. Restore
 the previous route before stopping the public test endpoint. The test is limited
 to five admitted calls, three minutes per call and a thirty-minute admission
@@ -74,7 +76,9 @@ Twilio Call SID. The signed media upgrade must present it in its start event,
 with the configured account and the expected audio format. One call runs at a
 time. The provider must report `session.started` before input is forwarded;
 startup buffering is bounded. Caller hangup sends `session.close` and waits for
-`session.closed` to confirm final usage. A connection failure without that event
+`session.closed` to confirm final usage. Service shutdown also waits for this
+finalization and durable receipt storage; a receipt write failure is reported.
+A connection failure without that event
 is explicitly unconfirmed. The POC does not yet synchronize Twilio's playback
 buffer with the model's full-duplex output; interruption quality needs later
 work and must not be treated as accepted by synthetic transport tests.
