@@ -1,3 +1,10 @@
+# Private 0.1.0-beta.5.rc.2
+
+- Add an audio-only inbound Twilio Media Streams POC connected directly to
+  GPT-Live, with signed ingress, bounded calls and private usage receipts.
+- Add explicit preview, voice-route readback and restoration commands. No native
+  tools are exposed to phone callers. Live audible acceptance remains required.
+
 # Changelog
 
 ## 0.1.0-beta.4
