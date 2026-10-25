@@ -11,6 +11,7 @@ export function frames(stream, onFrame, onError) {
     }
   });
   const reader = createInterface({ input: stream, crlfDelay: Infinity });
+  reader.on('error', onError);
   reader.on('line', line => {
     try {
       if (Buffer.byteLength(line) > MAX_FRAME) throw new Error('Frame too large');

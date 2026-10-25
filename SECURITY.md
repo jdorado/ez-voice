@@ -5,7 +5,11 @@ surface. Signed Twilio requests and single-use Call-SID-bound media tickets admi
 only audio transport; they never grant owner identity, native-agent delegation,
 workspace context or tools. Private account credentials and recovery receipts
 stay in the plugin volume. Changing and restoring a number route requires the
-deployment owner's authority. Byte counts are not proof of audible delivery.
+deployment owner's authority. Outbound calls require an explicitly authorized
+recipient and enter through the private mode-0600 phone control socket, never a
+public HTTP dialing endpoint. Durable request IDs prevent accidental redial;
+signed outbound callbacks are bound to the recorded destination, caller ID and
+Call SID. Byte counts are not proof of audible delivery.
 
 Paired owner only. Report vulnerabilities privately through GitHub Security.
 Never include credentials or transcripts in reports, logs or source.
