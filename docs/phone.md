@@ -1,8 +1,8 @@
-# Direct inbound phone audio
+# Direct phone audio
 
 Experimental audio-only phone channel for direct two-way conversations without
 Retell or Vapi. The listener remains available until stopped; it admits one call
-at a time and caps each call at three minutes. It has no native-agent integration.
+at a time and caps each call at three minutes, in either direction. It has no native-agent integration.
 Audible quality, interruption handling and latency require separate acceptance.
 
 ```text
@@ -66,6 +66,39 @@ callers receive busy; each admitted call remains limited to three minutes.
 `/health` reports local readiness and returns 503 after a receipt-storage failure.
 A health response does not prove provider connectivity; `phone probe` does.
 
+## Place a call
+
+Use the installed CLI from the same agent environment while the phone service is running:
+
+```sh
+ez voice phone call --to +15551230002 --request-id owner-call-001
+ez voice phone call-status --request-id owner-call-001
+ez voice phone hangup --request-id owner-call-001
+ez voice phone receipt
+```
+
+The recipient must be explicitly authorized. Caller ID is the configured Twilio
+number; answering connects the recipient to the same audio bridge and phone
+instructions. No new application, agent context, provider or inbound number route
+is created. The existing HTTPS `/incoming` endpoint also receives the signed
+outbound answer and terminal-status callbacks. Ringing is limited to twenty
+seconds and the call to three minutes. Calls are not recorded.
+
+Use one stable request ID per intended call. Repeating it returns the original
+attempt and never dials again, including after a service restart. Reusing it with
+a different destination fails. Creation is durably recorded before the provider
+request; an ambiguous network failure remains uncertain, with no automatic retry.
+Inspect that request and Twilio before attempting another call. Status reads the
+provider when the Call SID is known. Hangup cancels a ringing call or ends an
+answered call. Completion at Twilio alone does not prove a person answered;
+voicemail may answer too. The private audio receipt must match the Call SID.
+
+The CLI talks to the running phone process through a mode-0600 Unix socket in
+the existing private volume. Ringing, answered and inbound calls share the same
+single-call capacity. Stop the phone supervisor before replacing the plugin;
+shutdown attempts to finalize audio and terminate its outstanding outbound call.
+No service restart or transport loss automatically redials an uncertain attempt.
+
 ## Boundary and evidence
 
 Phone callers are external callers, not authenticated Ez owners. This channel has
@@ -74,7 +107,7 @@ tools. Client delegations receive a fixed capability-unavailable result. There
 is no conversation store or recording. The latest private receipt holds call
 and provider IDs, input/output byte counts, provider error code and final usage.
 These counts prove transport activity, not audible quality or semantic accuracy.
-No automatic calls, redial, replacement provider or model fallback exists.
+No automatic dialing, redial, replacement provider or model fallback exists.
 
 The signed HTTP webhook creates a short-lived single-use ticket bound to the
 Twilio Call SID. The signed media upgrade must present it in its start event,
@@ -97,3 +130,5 @@ is made from unit tests, process health or byte counts.
 
 References: [OpenAI WebSocket audio](https://developers.openai.com/api/docs/guides/voice-websockets?api=live),
 [Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
+
+Outbound API reference: [Twilio Call resource](https://www.twilio.com/docs/voice/api/call-resource).

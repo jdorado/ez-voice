@@ -42,7 +42,7 @@ The owner must explicitly grant the installed `launch --task` command through
 core application administration; installation alone grants no task access.
 One browser call can be active per Voice runtime. End it before another begins.
 
-`ez voice phone --help` describes the separate inbound Twilio audio channel. It
+`ez voice phone --help` describes the separate inbound/outbound Twilio audio channel. It
 connects directly to GPT-Live and has no native-agent delegation, owner history,
 workspace access or action tools. Its private configuration needs the OpenAI
 key, Twilio Account SID and account Auth Token, voice-capable number and HTTPS
@@ -50,3 +50,12 @@ origin. Number routing requires deployment-owner authority. Preview/readback and
 restore affect voice routing only. The phone listener stays available until stopped, with one call at a time and a
 three-minute limit per call. Keep the installed `tools serve` command under the
 deployment supervisor. Restore the previous route before decommissioning its endpoint.
+
+
+For an explicitly authorized recipient, `ez voice phone call --to E.164 --request-id ID`
+places one call from the configured number through the running phone service.
+`call-status --request-id ID` reads its provider state; `hangup --request-id ID`
+cancels ringing or ends an answered call. Reuse the original request ID to inspect
+an attempt without redialing. An uncertain creation is not permission for a new
+request ID or retry. The command's private receipt and provider readback own the
+outcome. Outbound calls share the existing audio-only context and call limits.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.7
+
+- Add explicit outbound call, status and hangup commands through the existing
+  direct Twilio audio bridge and configured caller ID. No native-agent context
+  or new public dialing endpoint is added.
+- Persist request IDs before dialing, verify signed answer/status callbacks and
+  share one-call capacity with inbound calls. Never automatically redial an
+  uncertain attempt; preserve receipts across restarts.
+- Handle private control-socket errors without an unhandled frame-reader error.
+
 ## 0.1.0-beta.6
 
 - Keep the inbound phone listener available until stopped, rather than expiring

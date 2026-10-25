@@ -17,7 +17,7 @@ try {
   exchange            One JSON request on stdin; one response from the resident service
   launch              Issue a five-minute single-use HTTPS owner link (ez tools connect voice launch)
   connect             Persistent JSONL connection (use ez tools connect voice connect)
-  phone --help        Direct inbound Twilio phone audio (no native tools)
+  phone --help        Direct inbound/outbound Twilio phone audio (no native tools)
 Use the agent-bound ez voice command. Start/stop through ez plugins.
 Credentials live in /state/config.json (0600), never browser or model context.
 Exit 0 success, 2 invalid input/unavailable. No automatic provider retries.

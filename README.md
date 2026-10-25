@@ -1,7 +1,8 @@
 # Ez Voice
 
-Experimental [direct inbound Twilio phone service](docs/phone.md): connect an approved
-Twilio number directly to GPT-Live with `voice phone --help`. This is an
+Experimental [direct Twilio phone service](docs/phone.md): connect an approved
+Twilio number directly to GPT-Live for inbound and outbound calls with
+`voice phone --help`. This is an
 audio-only phone channel; callers receive no native-agent tools or context.
 
 Owner-authenticated GPT-Live voice for an Ez agent. `gpt-live-1` owns the
