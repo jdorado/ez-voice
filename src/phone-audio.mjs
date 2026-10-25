@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 
 // Twilio and GPT-Live both carry raw mono G.711 mu-law at 8 kHz.
-// This POC relays bytes; the model owns the spoken conversation.
+// Voice relays bytes; the model owns the spoken conversation.
 export class PhoneAudio {
   constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}} = {}) {
     this.twilio = twilio; this.finish = finish; this.config = config;
@@ -64,7 +64,7 @@ export class PhoneAudio {
       // Public phone callers have no owner identity, workspace or tool grants.
       const id = event.delegation?.id;
       if (typeof id === 'string') this.send({type: 'session.commentary.append', delegation_id: id,
-        content: 'This is an audio-only phone test. No backend, tools, private information or actions are connected.'});
+        content: 'This is an audio-only phone call. No backend, tools, private information or actions are connected.'});
     } else if (event.type === 'error') {
       this.stats.providerError = typeof event.error?.code === 'string' ? event.error.code.slice(0,100) : 'provider_error';
       this.close('provider_rejected');

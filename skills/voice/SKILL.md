@@ -42,10 +42,11 @@ The owner must explicitly grant the installed `launch --task` command through
 core application administration; installation alone grants no task access.
 One browser call can be active per Voice runtime. End it before another begins.
 
-`ez voice phone --help` describes the separate inbound Twilio audio test. It
+`ez voice phone --help` describes the separate inbound Twilio audio channel. It
 connects directly to GPT-Live and has no native-agent delegation, owner history,
 workspace access or action tools. Its private configuration needs the OpenAI
 key, Twilio Account SID and account Auth Token, voice-capable number and HTTPS
 origin. Number routing requires deployment-owner authority. Preview/readback and
-restore affect voice routing only. The bounded phone test is not a permanent
-phone service; restore the previous route before stopping its endpoint.
+restore affect voice routing only. The phone listener stays available until stopped, with one call at a time and a
+three-minute limit per call. Keep the installed `tools serve` command under the
+deployment supervisor. Restore the previous route before decommissioning its endpoint.

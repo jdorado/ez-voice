@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.6
+
+- Keep the inbound phone listener available until stopped, rather than expiring
+  after thirty minutes or five calls. Retain one call at a time, a three-minute
+  per-call limit, signed ingress and private finalization receipts.
+- Report unavailable phone health as HTTP 503 after receipt-storage failure.
+  Callers still have no native-agent tools or private context.
+
 ## 0.1.0-beta.5
 
 - Add an audio-only inbound Twilio Media Streams POC connected directly to

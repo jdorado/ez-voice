@@ -8,7 +8,7 @@ import {PhoneAudio} from './phone-audio.mjs';
 
 const sid = (value, prefix) => typeof value === 'string' && new RegExp(`^${prefix}[a-fA-F0-9]{32}$`).test(value);
 const phone = value => typeof value === 'string' && /^\+[1-9]\d{6,14}$/.test(value);
-const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone audio test. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
+const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone call. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
   const temp = path + '.' + randomBytes(8).toString('hex') + '.tmp';
@@ -92,7 +92,7 @@ async function routeOperation(directory, config, command, provider) {
     VoiceFallbackUrl: '', VoiceFallbackMethod: 'POST', VoiceApplicationSid: '', TrunkSid: ''};
   if (command === 'preview') return {...current, target};
   if (command === 'restore' && (!prior || prior.numberSid !== current.numberSid || !['applied','uncertain','restore_uncertain'].includes(prior.state))) throw Error('No matching active phone route receipt to restore');
-  if (command === 'restore' && JSON.stringify(current.route) !== JSON.stringify(prior.target)) throw Error('Phone routing changed outside this POC; refusing to overwrite it');
+  if (command === 'restore' && JSON.stringify(current.route) !== JSON.stringify(prior.target)) throw Error('Phone routing changed outside Voice; refusing to overwrite it');
   if (command === 'route' && prior && prior.state !== 'restored') throw Error('A phone route receipt already exists; inspect status and restore it first');
   const receipt = {numberSid: current.numberSid, number: current.number, before: current.route, target, state: 'uncertain', at: new Date().toISOString()};
   // Save recovery information before making the external write. Never redial or
@@ -106,18 +106,18 @@ async function routeOperation(directory, config, command, provider) {
 }
 
 export async function servePhone(config, {port = 8080, host = '0.0.0.0', record = async () => {}, socketFactory} = {}) {
-  const tickets = new Map(); let active, admitted = 0, expired = false, receiptError = false, closing;
+  const tickets = new Map(); let active, admitted = 0, unavailable = false, receiptError = false, closing;
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     try {
-      if (request.method === 'GET' && request.url === '/health') { response.setHeader('Content-Type', 'application/json'); return response.end(JSON.stringify({ready: !expired, active: Boolean(active), admitted, model: 'gpt-live-1'})); }
+      if (request.method === 'GET' && request.url === '/health') { response.statusCode = unavailable ? 503 : 200; response.setHeader('Content-Type', 'application/json'); return response.end(JSON.stringify({ready: !unavailable, active: Boolean(active), admitted, model: 'gpt-live-1'})); }
       if (request.method !== 'POST' || request.url !== '/incoming' || !request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) { response.writeHead(404); return response.end(); }
       const params = new URLSearchParams(await body(request));
       if (!authentic(config, request.headers['x-twilio-signature'], '/incoming', params) || params.get('AccountSid') !== config.accountSid || params.get('To') !== config.number || !sid(params.get('CallSid'), 'CA')) { response.writeHead(403); return response.end(); }
       response.setHeader('Content-Type', 'text/xml');
       for (const [token, ticket] of tickets) if (ticket.expires < Date.now()) tickets.delete(token);
       const existing = [...tickets].find(([, ticket]) => ticket.callSid === params.get('CallSid'))?.[0];
-      if (!existing && (expired || active || tickets.size || admitted >= 5)) return response.end('<Response><Reject reason="busy"/></Response>');
+      if (unavailable || active || (!existing && tickets.size)) return response.end('<Response><Reject reason="busy"/></Response>');
       const token = existing || randomBytes(32).toString('hex');
       tickets.set(token, {callSid: params.get('CallSid'), expires: Date.now() + 60000});
       response.end(`<Response><Connect><Stream url="${config.origin.replace('https:', 'wss:')}/media"><Parameter name="ticket" value="${token}"/></Stream></Connect><Hangup/></Response>`);
@@ -125,7 +125,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
   });
   const sockets = new WebSocketServer({noServer: true, maxPayload: 32000});
   server.on('upgrade', (request, socket, head) => {
-    if (expired || active || request.url !== '/media' || !authentic(config, request.headers['x-twilio-signature'], '/media')) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
+    if (unavailable || active || request.url !== '/media' || !authentic(config, request.headers['x-twilio-signature'], '/media')) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
     sockets.handleUpgrade(request, socket, head, ws => sockets.emit('connection', ws));
   });
   sockets.on('connection', ws => {
@@ -145,7 +145,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
           tickets.delete(start.customParameters.ticket); admitted++;
           bridge = new PhoneAudio(ws, {...config, streamSid: start.streamSid}, async stats => {
             try { await record({callSid: start.callSid, ...stats, at: new Date().toISOString()}); }
-            catch (error) { expired = true; receiptError = true; throw error; }
+            catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (active === bridge) active = undefined; }
           }, {socketFactory}); active = bridge;
         } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
@@ -155,9 +155,8 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000;
   await new Promise((resolve,reject) => { server.once('error',reject); server.listen(port, host, resolve); });
-  const expiry = setTimeout(() => { expired = true; active?.close('poc_expired'); }, 30 * 60000); expiry.unref();
   return {port: server.address().port, close: () => closing ??= (async () => {
-    expired = true; clearTimeout(expiry);
+    unavailable = true;
     const stopped = new Promise(resolve => server.close(resolve));
     server.closeAllConnections();
     await active?.close('service_stopped');
@@ -174,7 +173,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
     'phone route', 'phone status', 'phone restore', 'phone receipt', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey','accountSid','authToken','number','origin'], optional: ['instructions']},
-    limits: 'Direct Twilio Media Streams to gpt-live-1; no native tools, history, recording or Retell/Vapi; 5 inbound calls, 3 minutes each, 30-minute window',
+    limits: 'Direct Twilio Media Streams to gpt-live-1; no native tools, history, recording or Retell/Vapi; one call at a time, 3 minutes each; listener stays available until stopped',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
     let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 16000) throw Error('Phone configuration too large'); }
@@ -197,7 +196,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (['preview','route','restore','status'].includes(command)) return phoneRoute(directory, config, command);
   if (command === 'serve') {
     const web = await servePhone(config, {record: value => save(join(directory, 'last-call.json'), value)});
-    console.log(JSON.stringify({web: {url: config.origin, model: 'gpt-live-1', limits: '5 inbound calls; 3 minutes each; 30-minute test window', nativeTools: false}}));
+    console.log(JSON.stringify({web: {url: config.origin, model: 'gpt-live-1', limits: 'one inbound call at a time; 3 minutes each; available until stopped', nativeTools: false}}));
     for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => void web.close().then(() => process.exit(0), () => {
       console.error('Phone service stopped with an unpersisted call receipt'); process.exit(2);
     }));

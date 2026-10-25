@@ -1,11 +1,11 @@
 # Security
 
-The experimental [phone POC](docs/phone-poc.md) is a separate external-caller
+The experimental [phone channel](docs/phone.md) is a separate external-caller
 surface. Signed Twilio requests and single-use Call-SID-bound media tickets admit
 only audio transport; they never grant owner identity, native-agent delegation,
 workspace context or tools. Private account credentials and recovery receipts
 stay in the plugin volume. Changing and restoring a number route requires the
-deployment owner's authority. POC byte counts are not proof of audible delivery.
+deployment owner's authority. Byte counts are not proof of audible delivery.
 
 Paired owner only. Report vulnerabilities privately through GitHub Security.
 Never include credentials or transcripts in reports, logs or source.
