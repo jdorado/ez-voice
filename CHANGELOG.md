@@ -10,7 +10,9 @@
   receipt (`phone receipt`, and `call-status` for the same Call SID) gains `recording`
   with `state: started` and the Recording SID, or `state: failed` and an `HTTP_<status>`
   or `ERROR` code. Outbound creation keeps `Record=false`.
-- QA candidate `0.1.0-beta.8.rc.1`; not tagged or published.
+- QA candidate `0.1.0-beta.8.rc.3`; not tagged or published. It is `rc.1` re-versioned: `rc.2` (answering-machine
+  detection before the answer) was withdrawn because it delays every person who answers. A voicemail is left by the
+  live model itself under the phone `instructions`, and the app labels it from the call transcript.
 
 ## 0.1.0-beta.7
 
