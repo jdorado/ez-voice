@@ -276,3 +276,49 @@ test('phone help states that calls are recorded at Twilio and receipt readback s
     assert.deepEqual(await phoneCommand(state,['receipt']),receipt);
   } finally {await rm(state,{recursive:true,force:true});}
 });
+
+// A fake Twilio socket and an audio bridge over a synthetic provider, for the idle rule.
+async function bridge(settings) {
+  let provider; const twilioSocket = Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [],
+    send(raw) {this.sent.push(JSON.parse(raw));}, close() {this.readyState = WebSocket.CLOSED;}});
+  const {PhoneAudio} = await import('../src/phone-audio.mjs');
+  const audio = new PhoneAudio(twilioSocket, {...config, streamSid, ...settings}, async () => {}, {socketFactory: () => provider = new ProviderSocket()});
+  await wait(() => provider?.events.some(e => e.type === 'session.start')); await new Promise(r => setTimeout(r, 20));
+  const emit = event => provider.emit('message', Buffer.from(JSON.stringify(event)));
+  return {audio, emit, twilioSocket};
+}
+
+test('a call ends after the idle time once the provider streams transcripts, and speech or playback keeps it open', async () => {
+  const {audio, emit} = await bridge({idleSeconds: 0.4});
+  try {
+    emit({type: 'session.input_transcript.delta', delta: 'Hi.'});
+    for (let i = 0; i < 3; i++) {await new Promise(r => setTimeout(r, 200)); emit({type: 'session.input_transcript.delta', delta: 'more'}); assert.equal(audio.closing, undefined);}
+    // 8000 bytes of mu-law play for one second: the model is still talking, so the line is not idle yet
+    emit({type: 'session.output_audio.delta', delta: Buffer.alloc(8000).toString('base64')});
+    await new Promise(r => setTimeout(r, 700)); assert.equal(audio.closing, undefined);
+    for (let i = 0; i < 300 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(audio.stats.reason, 'idle_timeout');
+  } finally {await audio.close('test_done');}
+});
+
+test('without any transcript the idle rule never arms, and idleSeconds 0 turns it off', async () => {
+  const silent = await bridge({idleSeconds: 0.2});
+  const off = await bridge({idleSeconds: 0});
+  try {
+    off.emit({type: 'session.input_transcript.delta', delta: 'Hi.'});
+    await new Promise(r => setTimeout(r, 700));
+    assert.equal(silent.audio.closing, undefined); assert.equal(off.audio.closing, undefined);
+  } finally {await silent.audio.close('test_done'); await off.audio.close('test_done');}
+});
+
+test('maxCallSeconds and idleSeconds are validated, default to 180 and 20, and reach the Twilio call limit', async () => {
+  const base = {apiKey: config.apiKey, accountSid: config.accountSid, authToken: config.authToken, number: config.number, origin: config.origin};
+  const ok = validatePhoneConfig(base);
+  assert.equal(ok.maxCallSeconds, 180); assert.equal(ok.idleSeconds, 20);
+  assert.equal(validatePhoneConfig({...base, maxCallSeconds: 900, idleSeconds: 0}).maxCallSeconds, 900);
+  for (const bad of [{maxCallSeconds: 10}, {maxCallSeconds: 4000}, {maxCallSeconds: 60.5}, {maxCallSeconds: '900'}, {idleSeconds: 3}, {idleSeconds: 301}, {idleSeconds: '20'}])
+    assert.throws(() => validatePhoneConfig({...base, ...bad}), /must be/);
+  const requests = [];
+  await new PhoneNumber({...config, maxCallSeconds: 900}, async (url, options) => {requests.push(options); return new Response(JSON.stringify({sid: callSid}));}).createCall('+15551230002', 'id1');
+  assert.equal(new URLSearchParams(requests[0].body).get('TimeLimit'), '915');
+});
