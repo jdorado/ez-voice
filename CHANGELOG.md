@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The tools backend model defaults to `gpt-6.1-sol` at reasoning effort `low` (`toolModel`, `toolEffort` in the private
+  phone configuration). QA candidate `0.1.0-beta.8.rc.9`; not tagged or published.
+
 - The model's first tool: `end_call`. The phone session now starts with Responses delegation (backend model `toolModel`,
   default `gpt-6-luna`; `tools: false` keeps the earlier client delegation) and a small registry (`src/phone-tools.mjs`)
   of tools the plugin runs for the backend. `end_call` lets the model hang up after a goodbye or a voicemail message

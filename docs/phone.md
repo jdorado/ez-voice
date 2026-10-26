@@ -80,7 +80,7 @@ mailbox stays open after the message, and a dead line. GPT-Live has no model-cal
 ## Tools
 
 GPT-Live has no direct function calling; tools run on its backend (Responses delegation). The phone session starts with
-`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6-luna`), instructions that say the backend
+`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6.1-sol` at reasoning effort `toolEffort`, default `low`), instructions that say the backend
 can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
 backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a
 `function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`.
