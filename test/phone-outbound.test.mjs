@@ -74,7 +74,7 @@ test('private call command dials once, signed answer streams audio, and terminal
 test('an outbound answer starts exactly one recording for its Call SID and call-status reports its outcome',async t=>{
   const {directory,provider,calls}=await fixture(t),{requests,provider:twilio}=recorder();let audio,receipt,ws;
   const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:twilio,socketFactory:()=>audio=new AudioProvider(),
-    record:async value=>{receipt=value;await writeFile(join(directory,LAST_CALL),JSON.stringify(value));}});
+    record:async value=>{await writeFile(join(directory,LAST_CALL),JSON.stringify(value));receipt=value;}});
   try {
     await calls.call({requestId:id,to},web.busy);provider.value.status='in-progress';
     const path='/incoming?outbound='+id;
