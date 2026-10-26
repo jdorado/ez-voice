@@ -7,7 +7,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
-import {PhoneCalls, callOptions, servePhoneControl, phoneControl} from './phone-calls.mjs';
+import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL} from './phone-calls.mjs';
 const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone call. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
@@ -82,7 +82,12 @@ async function routeOperation(directory, config, command, provider) {
   await save(receiptPath, final); return {...observed, receipt: final};
 }
 
-export async function servePhone(config, {port = 8080, host = '0.0.0.0', record = async () => {}, socketFactory, calls} = {}) {
+// One attempt per admitted call, never awaited by the audio path. The receipt keeps only a SID or a code.
+const startRecording = (provider, callSid) => Promise.resolve().then(() => provider.startRecording(callSid)).then(
+  recording => ({state: 'started', sid: recording.sid}),
+  error => ({state: 'failed', code: Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'ERROR'}));
+
+export async function servePhone(config, {port = 8080, host = '0.0.0.0', record = async () => {}, socketFactory, calls, provider = new PhoneNumber(config)} = {}) {
   const tickets = new Map(); let active, admitted = 0, unavailable = false, receiptError = false, closing;
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.expires<Date.now())tickets.delete(token);};
   const server = createServer(async (request, response) => {
@@ -113,7 +118,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
     sockets.handleUpgrade(request, socket, head, ws => sockets.emit('connection', ws));
   });
   sockets.on('connection', ws => {
-    let bridge, started = false;
+    let bridge, recording, started = false;
     const timeout = setTimeout(() => ws.close(), 10000);
     ws.on('error', () => bridge?.close('twilio_connection_failed'));
     ws.on('close', () => { clearTimeout(timeout); bridge?.close(); });
@@ -128,10 +133,11 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
               active || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
           tickets.delete(start.customParameters.ticket); admitted++;
           bridge = new PhoneAudio(ws, {...config, streamSid: start.streamSid}, async stats => {
-            try { await record({callSid: start.callSid, ...stats, at: new Date().toISOString()}); }
+            try { await record({callSid: start.callSid, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (active === bridge) active = undefined; }
           }, {socketFactory}); active = bridge;
+          recording = startRecording(provider, start.callSid);
         } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
         else if (message.event === 'stop') bridge?.close();
       } catch { ws.close(); bridge?.close('invalid_twilio_event'); }
@@ -159,7 +165,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey','accountSid','authToken','number','origin'], optional: ['instructions']},
-    limits: 'Direct Twilio Media Streams to gpt-live-1; no native tools, history, recording or Retell/Vapi; one call at a time, 3 minutes each; listener stays available until stopped',
+    limits: 'Direct Twilio Media Streams to gpt-live-1; no native tools, history or Retell/Vapi; every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each; listener stays available until stopped',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
@@ -182,17 +188,17 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   }
   if (['preview','route','restore','status'].includes(command)) return phoneRoute(directory, config, command);
   if (command === 'serve') {
-    const calls=new PhoneCalls(directory,config,new PhoneNumber(config));let web,control;
+    const provider=new PhoneNumber(config),calls=new PhoneCalls(directory,config,provider);let web,control;
     try {
       await calls.recover();
-      web=await servePhone(config, {calls,record: value => save(join(directory, 'last-call.json'), value)});
+      web=await servePhone(config, {calls,provider,record: value => save(join(directory, LAST_CALL), value)});
       control=await servePhoneControl(directory,frame=>{
         const {action,...options}=frame;
         if (!['call','call-status','hangup'].includes(action) || Object.keys(options).some(key=>!['requestId',...(action==='call'?['to']:[])].includes(key))) throw Error('Invalid phone control command');
         return action==='call'?calls.call(options,web.busy):action==='call-status'?calls.status(options.requestId):calls.hangup(options.requestId);
       });
     } catch (error) { await web?.close();calls.close();throw error; }
-    console.log(JSON.stringify({web: {url: config.origin, model: 'gpt-live-1', limits: 'one inbound or outbound call at a time; 3 minutes each; available until stopped', nativeTools: false}}));
+    console.log(JSON.stringify({web: {url: config.origin, model: 'gpt-live-1', limits: 'one inbound or outbound call at a time; 3 minutes each; available until stopped; every call recorded at Twilio', nativeTools: false}}));
     let stopping;
     for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => {stopping??=(async()=>{
       const stopped=await Promise.allSettled([web.close(),control.close()]);
@@ -201,6 +207,6 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     })();});
     return;
   }
-  if (command === 'receipt') return read(join(directory, 'last-call.json'));
+  if (command === 'receipt') return read(join(directory, LAST_CALL));
   throw Error('Use phone configure|doctor|probe|preview|route|status|restore|serve|receipt|call|call-status|hangup');
 }

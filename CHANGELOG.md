@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Record every phone call the direct Twilio bridge admits, inbound and outbound, at
+  Twilio: one dual-channel Calls Recordings API request per call when its media stream
+  starts. The recording stays in the Twilio account, retrievable by Call SID; the plugin
+  stores no audio. The operator is responsible for any recording notice to callers.
+- The request never delays or closes the call and is not retried. The private call
+  receipt (`phone receipt`, and `call-status` for the same Call SID) gains `recording`
+  with `state: started` and the Recording SID, or `state: failed` and an `HTTP_<status>`
+  or `ERROR` code. Outbound creation keeps `Record=false`.
+- QA candidate `0.1.0-beta.8.rc.1`; not tagged or published.
+
 ## 0.1.0-beta.7
 
 - Add explicit outbound call, status and hangup commands through the existing

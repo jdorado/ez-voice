@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {Readable} from 'node:stream';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import WebSocket from 'ws';
-import {servePhone, twilioSignature, phoneRoute, validatePhoneConfig} from '../src/phone.mjs';
+import {servePhone, twilioSignature, phoneRoute, phoneCommand, validatePhoneConfig} from '../src/phone.mjs';
+import {PhoneNumber} from '../src/phone-provider.mjs';
 
 const config = {apiKey: 'sk-synthetic123456789', accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com', instructions: 'Synthetic audio test'};
-const callSid = 'CA' + '3'.repeat(32), streamSid = 'MZ' + '4'.repeat(32);
+const callSid = 'CA' + '3'.repeat(32), streamSid = 'MZ' + '4'.repeat(32), recordingSid = 'RE' + '8'.repeat(32);
 const wait = async fn => {for (let i=0; i<100; i++) {if (fn()) return; await new Promise(r=>setTimeout(r,10));} throw Error('Timed out');};
 class ProviderSocket extends EventEmitter {
   readyState = WebSocket.OPEN; bufferedAmount = 0; events = [];
@@ -21,23 +23,32 @@ class ProviderSocket extends EventEmitter {
   close() {this.readyState = WebSocket.CLOSED; this.emit('close');}
   terminate() {this.close();}
 }
-async function connectCall(port, id = callSid) {
-  const base = `http://127.0.0.1:${port}`;
-  const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:id});
-  const response = await fetch(base+'/incoming', {method:'POST', body:params,
-    headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/incoming',params)}});
-  const ticket = (await response.text()).match(/value="([a-f0-9]+)"/)[1];
-  const ws = new WebSocket(base.replace('http:','ws:')+'/media', {
+// A Twilio REST client whose fetch is synthetic: the tests never reach api.twilio.com.
+function twilio(respond = async () => new Response(JSON.stringify({sid: recordingSid}), {status: 201})) {
+  const requests = [];
+  return {requests, provider: new PhoneNumber(config, async (url, options) => {requests.push({url, options}); return respond();})};
+}
+const startEvent = (ticket, id = callSid) => JSON.stringify({event:'start', start:{accountSid:config.accountSid,callSid:id,streamSid,
+  customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}});
+async function mediaSocket(port) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/media`, {
     headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/media')}});
   await new Promise((resolve,reject) => {ws.once('open',resolve);ws.once('error',reject);});
-  ws.send(JSON.stringify({event:'start', start:{accountSid:config.accountSid,callSid:id,streamSid,
-    customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
+  return ws;
+}
+async function connectCall(port, id = callSid) {
+  const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:id});
+  const response = await fetch(`http://127.0.0.1:${port}/incoming`, {method:'POST', body:params,
+    headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/incoming',params)}});
+  const ticket = (await response.text()).match(/value="([a-f0-9]+)"/)[1];
+  const ws = await mediaSocket(port);
+  ws.ticket = ticket; ws.send(startEvent(ticket, id));
   return ws;
 }
 test('inbound listener admits calls after thirty minutes and more than five completed calls', async t => {
   t.mock.timers.enable({apis:['setTimeout']});
   const receipts=[], providers=[];
-  const server=await servePhone(config,{port:0,host:'127.0.0.1',socketFactory:()=>{const provider=new ProviderSocket();providers.push(provider);return provider;},record:async value=>{receipts.push(value);}});
+  const server=await servePhone(config,{port:0,host:'127.0.0.1',provider:twilio().provider,socketFactory:()=>{const provider=new ProviderSocket();providers.push(provider);return provider;},record:async value=>{receipts.push(value);}});
   t.mock.timers.tick(31*60000);
   t.mock.timers.reset();
   try {
@@ -56,7 +67,7 @@ test('inbound listener admits calls after thirty minutes and more than five comp
 });
 test('signed inbound HTTP + real media socket relays mu-law both ways and finalizes without native tools', async () => {
   let provider, receipt;
-  const server = await servePhone(config, {port:0, host:'127.0.0.1', socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
+  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:twilio().provider, socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
   const base = `http://127.0.0.1:${server.port}`; let ws;
   try {
     const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:callSid});
@@ -141,7 +152,7 @@ test('shutdown waits for the provider terminal event and durable receipt before 
   }
   let provider, receipt, writing = false, allowWrite;
   const saved = new Promise(resolve => {allowWrite=resolve;});
-  const server = await servePhone(config, {port:0,host:'127.0.0.1',socketFactory:()=>provider=new DelayedClose(),
+  const server = await servePhone(config, {port:0,host:'127.0.0.1',provider:twilio().provider,socketFactory:()=>provider=new DelayedClose(),
     record:async value=>{writing=true;await saved;receipt=value;}});
   const ws = await connectCall(server.port);
   try {
@@ -158,7 +169,7 @@ test('shutdown waits for the provider terminal event and durable receipt before 
 });
 test('a receipt write failure is reported during shutdown without exposing its error content', async () => {
   let provider; const messages=[], original=console.error; console.error=value=>messages.push(value);
-  const server=await servePhone(config,{port:0,host:'127.0.0.1',socketFactory:()=>provider=new ProviderSocket(),
+  const server=await servePhone(config,{port:0,host:'127.0.0.1',provider:twilio().provider,socketFactory:()=>provider=new ProviderSocket(),
     record:async()=>{throw Error('private fixture must not be logged');}});
   const ws=await connectCall(server.port);
   try {
@@ -187,4 +198,81 @@ test('a route rejected before applying is reconciled as restored without a secon
     const restored=await phoneRoute(directory,config,'restore',{provider});
     assert.equal(restored.receipt.state,'restored');assert.deepEqual(restored.route,before);assert.equal(writes,1);
   } finally {await rm(directory,{recursive:true,force:true});}
+});
+test('an admitted inbound call starts exactly one dual-channel Twilio recording without blocking audio; a replayed start starts none', async () => {
+  let provider, receipt, release;
+  const gate = new Promise(resolve => {release = resolve;});
+  const {requests, provider: recorder} = twilio(async () => {await gate; return new Response(JSON.stringify({sid: recordingSid}), {status: 201});});
+  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipt=value;}});
+  let ws, replay;
+  try {
+    await assert.rejects(()=>recorder.startRecording('CA/../x'), /Invalid Call SID/); assert.equal(requests.length,0);
+    ws = await connectCall(server.port);
+    const output = []; ws.on('message', raw => output.push(JSON.parse(raw.toString())));
+    await wait(()=>requests.length===1);
+    // The recording request is still pending: the audio bridge already relays both ways.
+    ws.send(JSON.stringify({event:'media',media:{payload:'//8='}}));
+    await wait(()=>provider.events.some(event=>event.type==='session.input_audio.append'));
+    provider.emit('message',Buffer.from(JSON.stringify({type:'session.output_audio.delta',delta:'//8='})));
+    await wait(()=>output.length);
+    ws.send(startEvent(ws.ticket));
+    const {url, options} = requests[0];
+    assert.equal(url, `https://api.twilio.com/2010-04-01/Accounts/${config.accountSid}/Calls/${callSid}/Recordings.json`);
+    assert.equal(options.method, 'POST'); assert.equal(options.redirect, 'error');
+    assert.equal(options.body, 'RecordingChannels=dual&RecordingTrack=both');
+    assert.equal(options.headers.Authorization, 'Basic ' + Buffer.from(`${config.accountSid}:${config.authToken}`).toString('base64'));
+    ws.close();
+    await new Promise(resolve=>setTimeout(resolve,50)); assert.equal(receipt,undefined);
+    release(); await wait(()=>receipt);
+    assert.equal(receipt.finalized,true); assert.equal(receipt.callSid,callSid);
+    assert.deepEqual(receipt.recording,{state:'started',sid:recordingSid});
+    const text = JSON.stringify(receipt);
+    for (const secret of [config.authToken, config.apiKey, Buffer.from(`${config.accountSid}:${config.authToken}`).toString('base64')]) assert.equal(text.includes(secret),false);
+    replay = await mediaSocket(server.port);
+    const closed = new Promise(resolve=>replay.once('close',resolve));
+    replay.send(startEvent(ws.ticket)); await closed;
+    assert.equal(requests.length,1);
+  } finally {ws?.terminate(); replay?.terminate(); release(); await server.close();}
+});
+test('a rejected, failed or malformed Twilio recording start never degrades the call and is receipted by code only', async () => {
+  let provider, respond; const receipts = [];
+  const {requests, provider: recorder} = twilio(()=>respond());
+  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipts.push(value);}});
+  const cases = [
+    [async()=>new Response('secret-twilio-body',{status:403}), {state:'failed',code:'HTTP_403'}],
+    [async()=>new Response('secret-twilio-body',{status:500}), {state:'failed',code:'HTTP_500'}],
+    [async()=>{throw Error('secret-network-error');}, {state:'failed',code:'ERROR'}],
+    [async()=>new Response('{}',{status:201}), {state:'failed',code:'ERROR'}],
+  ];
+  try {
+    for (const [index, [answer, expected]] of cases.entries()) {
+      respond = answer;
+      const ws = await connectCall(server.port, 'CA' + String(index + 1).repeat(32)), output = [];
+      ws.on('message', raw => output.push(JSON.parse(raw.toString())));
+      await wait(()=>requests.length===index+1 && provider.events.some(event=>event.type==='session.start'));
+      ws.send(JSON.stringify({event:'media',media:{payload:'//8='}}));
+      await wait(()=>provider.events.some(event=>event.type==='session.input_audio.append'));
+      provider.emit('message',Buffer.from(JSON.stringify({type:'session.output_audio.delta',delta:'//8='})));
+      await wait(()=>output.length);
+      ws.close(); await wait(()=>receipts.length===index+1);
+      const receipt = receipts[index];
+      assert.equal(receipt.finalized,true); assert.equal(receipt.inputBytes,2); assert.equal(receipt.outputBytes,2);
+      assert.deepEqual(receipt.recording,expected);
+      assert.equal(/secret|authToken|sk-/.test(JSON.stringify(receipt)),false);
+    }
+    const health = await fetch(`http://127.0.0.1:${server.port}/health`);
+    assert.equal(health.status,200); assert.equal((await health.json()).admitted,cases.length);
+  } finally {await server.close();}
+});
+test('phone help states that calls are recorded at Twilio and receipt readback shows the recording outcome', async () => {
+  const state = await mkdtemp(join(tmpdir(),'voice-phone-help-'));
+  try {
+    await phoneCommand(state,['configure'],{stdin:Readable.from([JSON.stringify(config)])});
+    const {limits} = await phoneCommand(state,['--help']);
+    assert.match(limits,/every call is recorded at Twilio/); assert.match(limits,/stores no audio/); assert.match(limits,/operator is responsible/);
+    assert.doesNotMatch(limits,/no [^;]*recording/);
+    const receipt = {callSid, finalized:true, recording:{state:'failed',code:'HTTP_403'}};
+    await writeFile(join(state,'phone','last-call.json'),JSON.stringify(receipt));
+    assert.deepEqual(await phoneCommand(state,['receipt']),receipt);
+  } finally {await rm(state,{recursive:true,force:true});}
 });

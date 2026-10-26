@@ -31,6 +31,12 @@ export class PhoneNumber {
     if (!sid(callSid, 'CA')) throw Error('Invalid Call SID');
     return this.request(`/Calls/${callSid}.json`);
   }
+  async startRecording(callSid) {
+    if (!sid(callSid, 'CA')) throw Error('Invalid Call SID');
+    const recording = await this.request(`/Calls/${callSid}/Recordings.json`, {RecordingChannels: 'dual', RecordingTrack: 'both'});
+    if (!sid(recording?.sid, 'RE')) throw Error('Twilio recording response has no Recording SID');
+    return recording;
+  }
   async endCall(callSid, status) {
     if (!sid(callSid, 'CA') || !['canceled','completed'].includes(status)) throw Error('Invalid call termination');
     return this.request(`/Calls/${callSid}.json`, {Status: status});

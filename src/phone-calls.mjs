@@ -1,11 +1,12 @@
 import net from 'node:net';
-import {mkdirSync, openSync, closeSync} from 'node:fs';
+import {mkdirSync, openSync, closeSync, readFileSync} from 'node:fs';
 import {chmod, unlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {frames, send} from './protocol.mjs';
 import {phone, sid} from './phone-provider.mjs';
 
+export const LAST_CALL = 'last-call.json';
 const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected']);
 const statuses = new Set(['queued','initiated','ringing','in-progress',...terminal]);
 const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
@@ -24,7 +25,7 @@ export function callOptions(action, args) {
 
 export class PhoneCalls {
   constructor(directory, config, provider) {
-    this.config = config; this.provider = provider;
+    this.config = config; this.provider = provider; this.directory = directory;
     mkdirSync(directory, {recursive:true,mode:0o700});
     const path=join(directory,'calls.sqlite');closeSync(openSync(path,'a',0o600));
     this.db = new DatabaseSync(path, {timeout:0});
@@ -44,9 +45,16 @@ export class PhoneCalls {
     if (call.account_sid!==this.config.accountSid || call.from!==this.config.number || call.to!==row.recipient || call.direction!=='outbound-api') throw Error('Twilio call identity does not match the outbound request');
     return this.update(row,call.sid,call.status);
   }
+  // The recording outcome comes from the private audio receipt of the same Call SID.
+  recorded(receipt) {
+    try {
+      const last=JSON.parse(readFileSync(join(this.directory,LAST_CALL),'utf8'));
+      return last.callSid && last.callSid===receipt.callSid && last.recording ? {...receipt,recording:last.recording} : receipt;
+    } catch { return receipt; }
+  }
   async status(id) {
     const row=this.row(id);this.receipt(row);
-    return row.call_sid ? this.observe(row,await this.provider.getCall(row.call_sid)) : this.receipt(row);
+    return this.recorded(row.call_sid ? this.observe(row,await this.provider.getCall(row.call_sid)) : this.receipt(row));
   }
   async recover() { const row=this.pending(); if (row?.call_sid) await this.status(row.id); }
   async call(options, isBusy) {

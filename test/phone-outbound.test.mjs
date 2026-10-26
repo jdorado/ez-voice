@@ -2,16 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import net from 'node:net';
-import {mkdtemp,rm,stat} from 'node:fs/promises';
+import {mkdtemp,rm,stat,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import WebSocket from 'ws';
-import {PhoneCalls,phoneControl,servePhoneControl,callOptions} from '../src/phone-calls.mjs';
+import {PhoneCalls,phoneControl,servePhoneControl,callOptions,LAST_CALL} from '../src/phone-calls.mjs';
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {servePhone,twilioSignature} from '../src/phone.mjs';
 
 const config={apiKey:'sk-synthetic123456789',accountSid:'AC'+'1'.repeat(32),authToken:'2'.repeat(32),number:'+15551230001',origin:'https://phone.example.com',instructions:'Synthetic test'};
-const id='outbound-synthetic',to='+15551230002',callSid='CA'+'3'.repeat(32),streamSid='MZ'+'4'.repeat(32);
+const id='outbound-synthetic',to='+15551230002',callSid='CA'+'3'.repeat(32),streamSid='MZ'+'4'.repeat(32),recordingSid='RE'+'8'.repeat(32);
 const wait=async fn=>{for(let i=0;i<100;i++){if(fn())return;await new Promise(resolve=>setTimeout(resolve,10));}throw Error('Timed out');};
 class AudioProvider extends EventEmitter {
   readyState=WebSocket.OPEN;bufferedAmount=0;events=[];
@@ -27,6 +27,8 @@ class TwilioProvider {
   async getCall(){return {...this.value};}
   async endCall(_sid,status){this.ends.push(status);this.value.status=status;return {...this.value};}
 }
+// Synthetic Twilio REST client: the tests never reach api.twilio.com.
+function recorder(){const requests=[];return {requests,provider:new PhoneNumber(config,async(url,options)=>{requests.push({url,options});return new Response(JSON.stringify({sid:recordingSid}),{status:201});})};}
 async function fixture(t){
   const directory=await mkdtemp(join(tmpdir(),'voice-outbound-'));
   const provider=new TwilioProvider(),calls=new PhoneCalls(directory,config,provider);
@@ -38,7 +40,7 @@ async function post(port,path,body){return fetch(`http://127.0.0.1:${port}${path
 
 test('private call command dials once, signed answer streams audio, and terminal callback releases the line',async t=>{
   const {directory,provider,calls}=await fixture(t);let audio,receipt,ws;
-  const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,socketFactory:()=>audio=new AudioProvider(),record:async value=>{receipt=value;}});
+  const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:recorder().provider,socketFactory:()=>audio=new AudioProvider(),record:async value=>{receipt=value;}});
   const control=await servePhoneControl(directory,frame=>frame.action==='call'?calls.call({requestId:frame.requestId,to:frame.to},web.busy):calls.status(frame.requestId));
   try {
     assert.equal((await stat(join(directory,'phone.sock'))).mode&0o777,0o600);
@@ -67,6 +69,29 @@ test('private call command dials once, signed answer streams audio, and terminal
     assert.equal((await post(web.port,path,params())).status,403);
     assert.equal((await phoneControl(directory,'call',{requestId:id,to})).created,false);assert.equal(provider.creates,1);
   } finally {ws?.terminate();await control.close();await web.close();}
+});
+
+test('an outbound answer starts exactly one recording for its Call SID and call-status reports its outcome',async t=>{
+  const {directory,provider,calls}=await fixture(t),{requests,provider:twilio}=recorder();let audio,receipt,ws;
+  const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:twilio,socketFactory:()=>audio=new AudioProvider(),
+    record:async value=>{receipt=value;await writeFile(join(directory,LAST_CALL),JSON.stringify(value));}});
+  try {
+    await calls.call({requestId:id,to},web.busy);provider.value.status='in-progress';
+    const path='/incoming?outbound='+id;
+    const ticket=(await (await post(web.port,path,params())).text()).match(/value="([a-f0-9]+)"/)[1];
+    ws=new WebSocket(`ws://127.0.0.1:${web.port}/media`,{headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/media')}});
+    await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    ws.send(JSON.stringify({event:'start',start:{accountSid:config.accountSid,callSid,streamSid,customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
+    await wait(()=>audio?.events.some(event=>event.type==='session.start'));
+    assert.equal((await calls.status(id)).recording,undefined);
+    ws.close();await wait(()=>receipt);
+    assert.equal(requests.length,1);assert.equal(requests[0].url,`https://api.twilio.com/2010-04-01/Accounts/${config.accountSid}/Calls/${callSid}/Recordings.json`);
+    assert.equal(requests[0].options.body,'RecordingChannels=dual&RecordingTrack=both');
+    assert.deepEqual(receipt.recording,{state:'started',sid:recordingSid});
+    assert.deepEqual((await calls.status(id)).recording,{state:'started',sid:recordingSid});
+    await writeFile(join(directory,LAST_CALL),JSON.stringify({...receipt,callSid:'CA'+'9'.repeat(32)}));
+    assert.equal((await calls.status(id)).recording,undefined);
+  } finally {ws?.terminate();await web.close();}
 });
 
 test('uncertain creation survives restart and cannot redial under the same or another request ID',async t=>{
@@ -130,7 +155,7 @@ test('running control socket cannot be replaced, and repeated request remains de
   await assert.rejects(()=>phoneControl(directory,'call',{requestId:'offline',to}),/unavailable/);
 });
 
-test('Twilio create request pins caller ID, existing signed endpoint, no recording and bounded duration',async()=>{
+test('Twilio create request pins caller ID, existing signed endpoint, Record=false (recording starts on the media stream) and bounded duration',async()=>{
   const requests=[];
   const number=new PhoneNumber(config,async(url,options)=>{requests.push({url,options});return new Response(JSON.stringify({sid:callSid}));});
   await number.createCall(to,id);
