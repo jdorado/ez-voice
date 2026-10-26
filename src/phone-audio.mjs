@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import {PHONE_TOOLS, toolDefinitions, BACKEND_INSTRUCTIONS, DEFAULT_TOOL_MODEL} from './phone-tools.mjs';
 
 // Twilio and GPT-Live both carry raw mono G.711 mu-law at 8 kHz.
 // Voice relays bytes; the model owns the spoken conversation.
@@ -17,7 +18,8 @@ export class PhoneAudio {
     this.provider.on('open', () => this.send({type: 'session.start', session: {
       model: 'gpt-live-1', instructions: config.instructions,
       audio: {format: {type: 'audio/pcmu', rate: 8000}, output: {voice: 'marin'}},
-      delegation: {type: 'client'}, store: false,
+      delegation: config.tools === false ? {type: 'client'} : {type: 'responses', responses: {model: config.toolModel ?? DEFAULT_TOOL_MODEL,
+        instructions: BACKEND_INSTRUCTIONS, tools: toolDefinitions(), tool_choice: 'auto'}}, store: false,
     }}));
     this.provider.on('message', raw => {
       try { this.event(JSON.parse(raw.toString())); } catch { this.close('invalid_provider_event'); }
@@ -26,9 +28,12 @@ export class PhoneAudio {
     this.provider.on('close', () => this.complete());
     this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000);
     this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000);
-    if (this.idleMs > 0) this.idle = setInterval(() => {
-      if (this.stats.inputTranscriptEvents && Date.now() - this.activeAt > this.idleMs) this.close('idle_timeout');
-    }, Math.min(1000, this.idleMs / 4));
+    this.idle = setInterval(() => {
+      const now = Date.now();
+      if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up
+        if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.close('end_call');
+      } else if (this.idleMs > 0 && this.stats.inputTranscriptEvents && now - this.activeAt > this.idleMs) this.close('idle_timeout');
+    }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
   }
   send(event) {
     if (this.provider.readyState !== WebSocket.OPEN) return false;
@@ -70,7 +75,10 @@ export class PhoneAudio {
       // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
       if (event.type === 'session.input_transcript.delta') this.stats.inputTranscriptEvents++;
       this.activeAt = Date.now();
-    } else if (event.type === 'session.delegation.created') {
+    } else if (event.type === 'response.event') {
+      const item = event.event?.type === 'response.output_item.done' ? event.event.item : null;
+      if (item?.type === 'function_call') this.tool(item);
+    } else if (event.type === 'session.delegation.created' && event.delegation?.target !== 'responses') {
       // Public phone callers have no owner identity, workspace or tool grants.
       const id = event.delegation?.id;
       if (typeof id === 'string') this.send({type: 'session.commentary.append', delegation_id: id,
@@ -80,6 +88,17 @@ export class PhoneAudio {
       this.close('provider_rejected');
     }
   }
+  // A finished tool call from the backend: run it here and hand its output back so the backend can resume.
+  tool(item) {
+    if (typeof item.call_id !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(item.call_id) || typeof item.name !== 'string') return;
+    const tool = Object.hasOwn(PHONE_TOOLS, item.name) ? PHONE_TOOLS[item.name] : null;
+    let output;
+    try { output = tool ? tool.run(this) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
+    (this.stats.tools ??= []).length < 20 && this.stats.tools.push(tool ? item.name : 'unknown');
+    this.send({type: 'response.item.create', item: {type: 'function_call_output', call_id: item.call_id, output: JSON.stringify(output)}});
+    this.send({type: 'response.create'});
+  }
+  endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.closing = true; this.stats.reason = reason;

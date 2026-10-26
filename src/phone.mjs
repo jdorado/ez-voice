@@ -21,7 +21,7 @@ async function save(path, value) {
 }
 export function validatePhoneConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config) ||
-      Object.keys(config).some(k => !['apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds'].includes(k))) throw Error('Invalid phone configuration fields');
+      Object.keys(config).some(k => !['apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds','tools','toolModel'].includes(k))) throw Error('Invalid phone configuration fields');
   if (!/^sk-[A-Za-z0-9_-]{10,}$/.test(config.apiKey || '') || !sid(config.accountSid, 'AC') ||
       !/^[a-fA-F0-9]{32}$/.test(config.authToken || '') || !phone(config.number)) throw Error('Supply the OpenAI key, Twilio account auth token and configured E.164 number privately');
   const origin = new URL(config.origin);
@@ -31,6 +31,8 @@ export function validatePhoneConfig(config) {
   const maxCallSeconds = config.maxCallSeconds ?? 180, idleSeconds = config.idleSeconds ?? 20;
   if (!Number.isInteger(maxCallSeconds) || maxCallSeconds < 30 || maxCallSeconds > 3600) throw Error('maxCallSeconds must be a whole number from 30 to 3600');
   if (!Number.isInteger(idleSeconds) || (idleSeconds !== 0 && (idleSeconds < 5 || idleSeconds > 300))) throw Error('idleSeconds must be 0 (off) or a whole number from 5 to 300');
+  if (config.tools !== undefined && typeof config.tools !== 'boolean') throw Error('tools must be true or false');
+  if (config.toolModel !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(config.toolModel)) throw Error('toolModel must be a model name');
   return {...config, origin: origin.origin, instructions, maxCallSeconds, idleSeconds};
 }
 export function twilioSignature(token, url, params = new URLSearchParams()) {
@@ -167,8 +169,8 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
     'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'tools serve 8793:8080 voice phone serve'],
-    configuration: {required: ['apiKey','accountSid','authToken','number','origin'], optional: ['instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)']},
-    limits: 'Direct Twilio Media Streams to gpt-live-1; no native tools, history or Retell/Vapi; every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
+    configuration: {required: ['apiKey','accountSid','authToken','number','origin'], optional: ['instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call through GPT-Live Responses delegation; false keeps client delegation)','toolModel (default gpt-6-luna)']},
+    limits: 'Direct Twilio Media Streams to gpt-live-1; no native-agent tools, history or Retell/Vapi (the model's only tool is end_call, on GPT-Live's Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {

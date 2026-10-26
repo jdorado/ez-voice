@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The model's first tool: `end_call`. The phone session now starts with Responses delegation (backend model `toolModel`,
+  default `gpt-6-luna`; `tools: false` keeps the earlier client delegation) and a small registry (`src/phone-tools.mjs`)
+  of tools the plugin runs for the backend. `end_call` lets the model hang up after a goodbye or a voicemail message
+  (close reason `end_call`; the receipt lists `tools`). `idleSeconds` remains the backstop. QA candidate
+  `0.1.0-beta.8.rc.8`; not tagged or published.
+
 - End a call when nobody has spoken for `idleSeconds` (default 20; 0 turns it off): neither the contact (the provider's
   `session.input_transcript.delta`) nor the model (its `session.output_transcript.delta`; its output audio flows nonstop,
   silence included, so it says nothing) has spoken. It
