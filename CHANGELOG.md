@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Ring an outbound call for thirty seconds instead of twenty, so a call the person does not answer can reach their
+  carrier voicemail, where the live model leaves a message under the phone `instructions`. QA candidate
+  `0.1.0-beta.8.rc.4`; not tagged or published.
+
 - Record every phone call the direct Twilio bridge admits, inbound and outbound, at
   Twilio: one dual-channel Calls Recordings API request per call when its media stream
   starts. The recording stays in the Twilio account, retrievable by Call SID; the plugin
