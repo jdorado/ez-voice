@@ -25,7 +25,7 @@ export class PhoneNumber {
   async createCall(to, requestId) {
     const url = this.config.origin + '/incoming?' + new URLSearchParams({outbound: requestId});
     return this.request('/Calls.json', {To: to, From: this.config.number, Url: url, Method: 'POST',
-      StatusCallback: url + '&status=1', StatusCallbackMethod: 'POST', Timeout: '30', TimeLimit: '180', Record: 'false'});
+      StatusCallback: url + '&status=1', StatusCallbackMethod: 'POST', Timeout: '45', TimeLimit: '180', Record: 'false'});
   }
   async getCall(callSid) {
     if (!sid(callSid, 'CA')) throw Error('Invalid Call SID');

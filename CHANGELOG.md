@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Ring an outbound call for forty-five seconds: a live call to a phone that rang thirty seconds without reaching its
+  voicemail ended `no-answer`. QA candidate `0.1.0-beta.8.rc.5`; not tagged or published.
+
 - Ring an outbound call for thirty seconds instead of twenty, so a call the person does not answer can reach their
   carrier voicemail, where the live model leaves a message under the phone `instructions`. QA candidate
   `0.1.0-beta.8.rc.4`; not tagged or published.

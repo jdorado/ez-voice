@@ -82,7 +82,7 @@ The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
 instructions. No new application, agent context, provider or inbound number route
 is created. The existing HTTPS `/incoming` endpoint also receives the signed
-outbound answer and terminal-status callbacks. Ringing is limited to thirty
+outbound answer and terminal-status callbacks. Ringing is limited to forty-five
 seconds (long enough for a carrier voicemail to pick up) and the call to three minutes. Outbound calls are recorded at Twilio like
 inbound calls (see Recording).
 
