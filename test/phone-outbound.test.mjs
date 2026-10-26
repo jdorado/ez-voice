@@ -162,7 +162,7 @@ test('Twilio create request pins caller ID, existing signed endpoint, Record=fal
   const form=new URLSearchParams(requests[0].options.body);
   assert.equal(requests[0].url,`https://api.twilio.com/2010-04-01/Accounts/${config.accountSid}/Calls.json`);
   assert.equal(form.get('To'),to);assert.equal(form.get('From'),config.number);assert.equal(form.get('Url'),config.origin+'/incoming?outbound='+id);
-  assert.equal(form.get('StatusCallback'),form.get('Url')+'&status=1');assert.equal(form.get('TimeLimit'),'180');assert.equal(form.get('Timeout'),'20');assert.equal(form.get('Record'),'false');
+  assert.equal(form.get('StatusCallback'),form.get('Url')+'&status=1');assert.equal(form.get('TimeLimit'),'180');assert.equal(form.get('Timeout'),'30');assert.equal(form.get('Record'),'false');
   assert.equal(form.has('SmsUrl'),false);
 });
 
