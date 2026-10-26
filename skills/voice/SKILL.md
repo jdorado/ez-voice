@@ -48,7 +48,7 @@ workspace access or action tools. Its private configuration needs the OpenAI
 key, Twilio Account SID and account Auth Token, voice-capable number and HTTPS
 origin. Number routing requires deployment-owner authority. Preview/readback and
 restore affect voice routing only. The phone listener stays available until stopped, with one call at a time and a
-three-minute limit per call. Keep the installed `tools serve` command under the
+per-call limit (three minutes unless `maxCallSeconds` is set), and a call ends after `idleSeconds` with nobody speaking. Keep the installed `tools serve` command under the
 deployment supervisor. Restore the previous route before decommissioning its endpoint.
 Every phone call is recorded at Twilio (dual-channel, retrievable by Call SID through the
 account); the plugin stores no audio. The private call receipt, also shown by `call-status`

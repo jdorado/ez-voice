@@ -2,7 +2,7 @@
 
 Experimental audio-only phone channel for direct two-way conversations without
 Retell or Vapi. The listener remains available until stopped; it admits one call
-at a time and caps each call at three minutes, in either direction. It has no native-agent integration.
+at a time and caps each call at three minutes by default (`maxCallSeconds`), in either direction. It has no native-agent integration.
 Audible quality, interruption handling and latency require separate acceptance.
 
 ```text
@@ -63,9 +63,19 @@ without another provider update.
 `restore` refuses to overwrite a voice route changed outside Voice. Restore
 the previous route before decommissioning the public endpoint. The listener does
 not expire after thirty minutes or stop after five completed calls. Simultaneous
-callers receive busy; each admitted call remains limited to three minutes.
+callers receive busy; each admitted call remains limited to `maxCallSeconds`.
 `/health` reports local readiness and returns 503 after a receipt-storage failure.
 A health response does not prove provider connectivity; `phone probe` does.
+
+## Call length and idle hang-up
+
+Two optional private configuration fields bound a call: `maxCallSeconds` (30 to 3600, default 180; the Twilio call limit
+is that plus 15 seconds) and `idleSeconds` (0 to turn off, otherwise 5 to 300, default 20). A call ends with the close
+reason `idle_timeout` when nobody has spoken for `idleSeconds`: the contact's speech is the provider's
+`session.input_transcript.delta`, the model's is `session.output_transcript.delta` (its output audio flows nonstop,
+silence included, so it says nothing about who is speaking). The rule arms only after the first transcript event, and the receipt counts them
+(`inputTranscriptEvents`), so a session that streams none is bounded by `maxCallSeconds` alone. It ends a voicemail whose
+mailbox stays open after the message, and a dead line. GPT-Live has no model-callable hang-up.
 
 ## Place a call
 
@@ -83,7 +93,7 @@ number; answering connects the recipient to the same audio bridge and phone
 instructions. No new application, agent context, provider or inbound number route
 is created. The existing HTTPS `/incoming` endpoint also receives the signed
 outbound answer and terminal-status callbacks. Ringing is limited to forty-five
-seconds (long enough for a carrier voicemail to pick up) and the call to three minutes. Outbound calls are recorded at Twilio like
+seconds (long enough for a carrier voicemail to pick up) and the call to `maxCallSeconds`. Outbound calls are recorded at Twilio like
 inbound calls (see Recording).
 
 Use one stable request ID per intended call. Repeating it returns the original

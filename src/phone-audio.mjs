@@ -5,7 +5,10 @@ import WebSocket from 'ws';
 export class PhoneAudio {
   constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}} = {}) {
     this.twilio = twilio; this.finish = finish; this.config = config;
-    this.stats = {inputBytes: 0, outputBytes: 0, finalized: false}; this.onReady = onReady;
+    this.stats = {inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false}; this.onReady = onReady;
+    // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
+    // once the provider has streamed a transcript, so a session without transcripts is never cut short by it.
+    this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
     this.done = new Promise(resolve => { this.resolveDone = resolve; });
     this.queued = []; this.queuedBytes = 0;
     this.provider = socketFactory('wss://api.openai.com/v1/live/sessions', {
@@ -22,7 +25,10 @@ export class PhoneAudio {
     this.provider.on('error', () => this.close('provider_connection_failed'));
     this.provider.on('close', () => this.complete());
     this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000);
-    this.duration = setTimeout(() => this.close('duration_limit'), 180000);
+    this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000);
+    if (this.idleMs > 0) this.idle = setInterval(() => {
+      if (this.stats.inputTranscriptEvents && Date.now() - this.activeAt > this.idleMs) this.close('idle_timeout');
+    }, Math.min(1000, this.idleMs / 4));
   }
   send(event) {
     if (this.provider.readyState !== WebSocket.OPEN) return false;
@@ -60,6 +66,10 @@ export class PhoneAudio {
         if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
         this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: event.delta}}));
       }
+    } else if (event.type === 'session.input_transcript.delta' || event.type === 'session.output_transcript.delta') {
+      // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
+      if (event.type === 'session.input_transcript.delta') this.stats.inputTranscriptEvents++;
+      this.activeAt = Date.now();
     } else if (event.type === 'session.delegation.created') {
       // Public phone callers have no owner identity, workspace or tool grants.
       const id = event.delegation?.id;
@@ -73,7 +83,7 @@ export class PhoneAudio {
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.closing = true; this.stats.reason = reason;
-    clearTimeout(this.startTimer); clearTimeout(this.duration);
+    clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     if (this.provider.readyState === WebSocket.OPEN) {
       this.closeTimer = setTimeout(() => { this.provider.terminate(); this.complete(); }, 15000);
@@ -83,7 +93,7 @@ export class PhoneAudio {
   }
   complete() {
     if (this.completed) return this.done;
-    this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearTimeout(this.closeTimer);
+    this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     Promise.resolve().then(() => this.finish(this.stats)).catch(() => {
       this.stats.receiptError = true;
