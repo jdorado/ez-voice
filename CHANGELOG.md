@@ -3,12 +3,13 @@
 ## Unreleased
 
 - End a call when nobody has spoken for `idleSeconds` (default 20; 0 turns it off): neither the contact (the provider's
-  `session.input_transcript.delta`) nor the model (its output audio, counted by playback length) has made a sound. It
+  `session.input_transcript.delta`) nor the model (its `session.output_transcript.delta`; its output audio flows nonstop,
+  silence included, so it says nothing) has spoken. It
   arms only once the provider has streamed a transcript, so a session without transcripts is never cut short. This
   ends a voicemail whose mailbox stays open after the message, and a dead line, without the model needing a hang-up tool
   (GPT-Live has none). The receipt gains `inputTranscriptEvents` and the close reason `idle_timeout`.
 - The call length is `maxCallSeconds` (30..3600, default 180) in the private phone configuration; the Twilio call limit is
-  that plus 15 seconds. QA candidate `0.1.0-beta.8.rc.6`; not tagged or published.
+  that plus 15 seconds. QA candidate `0.1.0-beta.8.rc.7`; not tagged or published.
 
 - Ring an outbound call for forty-five seconds: a live call to a phone that rang thirty seconds without reaching its
   voicemail ended `no-answer`. QA candidate `0.1.0-beta.8.rc.5`; not tagged or published.

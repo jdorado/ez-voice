@@ -72,8 +72,8 @@ A health response does not prove provider connectivity; `phone probe` does.
 Two optional private configuration fields bound a call: `maxCallSeconds` (30 to 3600, default 180; the Twilio call limit
 is that plus 15 seconds) and `idleSeconds` (0 to turn off, otherwise 5 to 300, default 20). A call ends with the close
 reason `idle_timeout` when nobody has spoken for `idleSeconds`: the contact's speech is the provider's
-`session.input_transcript.delta`, the model's is its output audio counted by playback length (the API reports no
-end-of-speech event). The rule arms only after the first transcript event, and the receipt counts them
+`session.input_transcript.delta`, the model's is `session.output_transcript.delta` (its output audio flows nonstop,
+silence included, so it says nothing about who is speaking). The rule arms only after the first transcript event, and the receipt counts them
 (`inputTranscriptEvents`), so a session that streams none is bounded by `maxCallSeconds` alone. It ends a voicemail whose
 mailbox stays open after the message, and a dead line. GPT-Live has no model-callable hang-up.
 

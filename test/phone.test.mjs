@@ -288,14 +288,15 @@ async function bridge(settings) {
   return {audio, emit, twilioSocket};
 }
 
-test('a call ends after the idle time once the provider streams transcripts, and speech or playback keeps it open', async () => {
+test('a call ends after the idle time once the provider streams transcripts; speech by either side keeps it open', async () => {
   const {audio, emit} = await bridge({idleSeconds: 0.4});
   try {
     emit({type: 'session.input_transcript.delta', delta: 'Hi.'});
     for (let i = 0; i < 3; i++) {await new Promise(r => setTimeout(r, 200)); emit({type: 'session.input_transcript.delta', delta: 'more'}); assert.equal(audio.closing, undefined);}
-    // 8000 bytes of mu-law play for one second: the model is still talking, so the line is not idle yet
+    // output audio flows nonstop, silence included: it never counts as speech
     emit({type: 'session.output_audio.delta', delta: Buffer.alloc(8000).toString('base64')});
-    await new Promise(r => setTimeout(r, 700)); assert.equal(audio.closing, undefined);
+    // the model speaking (its transcript) keeps the line open
+    for (let i = 0; i < 3; i++) {await new Promise(r => setTimeout(r, 200)); emit({type: 'session.output_transcript.delta', delta: 'Hello'}); assert.equal(audio.closing, undefined);}
     for (let i = 0; i < 300 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
     assert.equal(audio.stats.reason, 'idle_timeout');
   } finally {await audio.close('test_done');}

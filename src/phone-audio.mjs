@@ -8,7 +8,7 @@ export class PhoneAudio {
     this.stats = {inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false}; this.onReady = onReady;
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
     // once the provider has streamed a transcript, so a session without transcripts is never cut short by it.
-    this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now(); this.playUntil = 0;
+    this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
     this.done = new Promise(resolve => { this.resolveDone = resolve; });
     this.queued = []; this.queuedBytes = 0;
     this.provider = socketFactory('wss://api.openai.com/v1/live/sessions', {
@@ -27,7 +27,7 @@ export class PhoneAudio {
     this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000);
     this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000);
     if (this.idleMs > 0) this.idle = setInterval(() => {
-      if (this.stats.inputTranscriptEvents && Date.now() - Math.max(this.activeAt, this.playUntil) > this.idleMs) this.close('idle_timeout');
+      if (this.stats.inputTranscriptEvents && Date.now() - this.activeAt > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs / 4));
   }
   send(event) {
@@ -61,15 +61,15 @@ export class PhoneAudio {
       this.onReady();
     } else if (event.type === 'session.output_audio.delta') {
       if (typeof event.delta !== 'string' || event.delta.length > 1000000) return this.close('invalid_provider_audio');
-      const bytes = Buffer.from(event.delta, 'base64').length;
-      this.stats.outputBytes += bytes;
-      this.playUntil = Math.max(this.playUntil, Date.now()) + bytes / 8; // mu-law at 8 kHz plays 8 bytes a millisecond
+      this.stats.outputBytes += Buffer.from(event.delta, 'base64').length;
       if (this.twilio.readyState === WebSocket.OPEN) {
         if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
         this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: event.delta}}));
       }
-    } else if (event.type === 'session.input_transcript.delta') {
-      this.stats.inputTranscriptEvents++; this.activeAt = Date.now();
+    } else if (event.type === 'session.input_transcript.delta' || event.type === 'session.output_transcript.delta') {
+      // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
+      if (event.type === 'session.input_transcript.delta') this.stats.inputTranscriptEvents++;
+      this.activeAt = Date.now();
     } else if (event.type === 'session.delegation.created') {
       // Public phone callers have no owner identity, workspace or tool grants.
       const id = event.delegation?.id;
