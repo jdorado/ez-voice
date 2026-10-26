@@ -13,7 +13,8 @@ Twilio and GPT-Live both use raw G.711 mu-law, mono, 8 kHz. Voice forwards the
 base64 audio without STT/TTS services, transcoding, a hosted agent definition or
 another voice platform. The short instructions live in the private Voice phone
 configuration and go directly to OpenAI at call startup. Twilio and OpenAI still
-bill their own usage. Removing Retell/Vapi does not make a call free.
+bill their own usage, including call recording and its storage at Twilio.
+Removing Retell/Vapi does not make a call free.
 
 ## Private configuration and routing
 
@@ -82,7 +83,8 @@ number; answering connects the recipient to the same audio bridge and phone
 instructions. No new application, agent context, provider or inbound number route
 is created. The existing HTTPS `/incoming` endpoint also receives the signed
 outbound answer and terminal-status callbacks. Ringing is limited to twenty
-seconds and the call to three minutes. Calls are not recorded.
+seconds and the call to three minutes. Outbound calls are recorded at Twilio like
+inbound calls (see Recording).
 
 Use one stable request ID per intended call. Repeating it returns the original
 attempt and never dials again, including after a service restart. Reusing it with
@@ -99,13 +101,42 @@ single-call capacity. Stop the phone supervisor before replacing the plugin;
 shutdown attempts to finalize audio and terminate its outstanding outbound call.
 No service restart or transport loss automatically redials an uncertain attempt.
 
+## Recording
+
+Every call the bridge admits, inbound or outbound, is recorded at Twilio. When the
+media stream's start event is accepted, the service makes one Calls Recordings API
+request for that Call SID (`RecordingChannels=dual`, `RecordingTrack=both`) with the
+configured account SID and auth token. The recording stays in the Twilio account and
+is retrievable there by Call SID. This plugin stores no audio. Outbound call
+creation still sends `Record=false`; the stream-start request covers both directions
+with one code path.
+
+The request is a single attempt that never delays the audio bridge. If Twilio rejects
+it or it fails, the call continues unrecorded and nothing is retried. The private
+receipt (`phone receipt`, and `call-status` for the matching Call SID) reports the
+outcome with codes and SIDs only:
+
+```json
+{"recording": {"state": "started", "sid": "RE..."}}
+{"recording": {"state": "failed", "code": "HTTP_403"}}
+```
+
+`failed` carries `HTTP_<status>` for a Twilio error response and `ERROR` for any other
+failure, including a timeout. It means a recording start was not confirmed; after a
+timeout a recording may still exist, so check the Twilio account. The receipt is
+written when the call ends, after the recording request has settled.
+
+The operator is responsible for any recording notice to callers and for the laws
+that apply to recording; the phone `instructions` can state the notice.
+
 ## Boundary and evidence
 
 Phone callers are external callers, not authenticated Ez owners. This channel has
 no native-agent delegation, owner history, workspace access or external-action
 tools. Client delegations receive a fixed capability-unavailable result. There
-is no conversation store or recording. The latest private receipt holds call
-and provider IDs, input/output byte counts, provider error code and final usage.
+is no conversation store, and this plugin stores no audio; Twilio holds the call
+recording. The latest private receipt holds call and provider IDs, input/output
+byte counts, provider error code, final usage and the recording outcome.
 These counts prove transport activity, not audible quality or semantic accuracy.
 No automatic dialing, redial, replacement provider or model fallback exists.
 

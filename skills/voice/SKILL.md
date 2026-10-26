@@ -50,6 +50,10 @@ origin. Number routing requires deployment-owner authority. Preview/readback and
 restore affect voice routing only. The phone listener stays available until stopped, with one call at a time and a
 three-minute limit per call. Keep the installed `tools serve` command under the
 deployment supervisor. Restore the previous route before decommissioning its endpoint.
+Every phone call is recorded at Twilio (dual-channel, retrievable by Call SID through the
+account); the plugin stores no audio. The private call receipt, also shown by `call-status`
+for its Call SID, reports `recording` as `started` with the Recording SID or `failed` with a
+code. The operator is responsible for any recording notice to callers.
 
 
 For an explicitly authorized recipient, `ez voice phone call --to E.164 --request-id ID`
