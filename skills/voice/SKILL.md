@@ -63,3 +63,7 @@ cancels ringing or ends an answered call. Reuse the original request ID to inspe
 an attempt without redialing. An uncertain creation is not permission for a new
 request ID or retry. The command's private receipt and provider readback own the
 outcome. Outbound calls share the existing audio-only context and call limits.
+
+Outbound calls detect answering machines first: a person gets the live model, a machine never does.
+`--voicemail-file PATH` (plain text, 1..1000 characters, written by the caller) is spoken after the beep and the
+call ends; without it the call ends at once. `call-status` reports `answeredBy` and, once left, `voicemail`.

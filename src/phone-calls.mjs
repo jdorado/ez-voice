@@ -10,13 +10,25 @@ export const LAST_CALL = 'last-call.json';
 const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected']);
 const statuses = new Set(['queued','initiated','ringing','in-progress',...terminal]);
 const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
+export const VOICEMAIL_MAX = 1000;
+const answeredBy = new Set(['human','machine_start','machine_end_beep','machine_end_silence','machine_end_other','fax','unknown']);
+// Twilio reports a message-end value only once the greeting has finished, which is when a message can be left.
+export const messageEnd = value => typeof value === 'string' && /^machine_end_(beep|silence|other)$/.test(value);
+export const machine = value => messageEnd(value) || value === 'machine_start' || value === 'fax';
 const rank = value => terminal.has(value) ? 4 : value === 'in-progress' ? 3 : value === 'ringing' ? 2 : value === 'queued' || value === 'initiated' ? 1 : 0;
+
+export const voicemailText = value => {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.length > VOICEMAIL_MAX || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text)) throw Error(`Voicemail message must contain 1..${VOICEMAIL_MAX} characters`);
+  return text;
+};
 
 export function callOptions(action, args) {
   const result = {};
   for (let i=0; i<args.length; i+=2) {
-    const key = args[i] === '--request-id' ? 'requestId' : args[i] === '--to' && action === 'call' ? 'to' : null;
-    if (!key || result[key] !== undefined || !args[i+1]) throw Error('Use phone call --to E.164 --request-id ID; call-status/hangup require --request-id ID');
+    const key = args[i] === '--request-id' ? 'requestId' : args[i] === '--to' && action === 'call' ? 'to'
+      : args[i] === '--voicemail-file' && action === 'call' ? 'voicemailFile' : null;
+    if (!key || result[key] !== undefined || !args[i+1]) throw Error('Use phone call --to E.164 --request-id ID [--voicemail-file PATH]; call-status/hangup require --request-id ID');
     result[key] = args[i+1];
   }
   if (!requestId(result.requestId) || (action === 'call' && !phone(result.to))) throw Error('Supply an E.164 destination and a stable request ID (1..100 letters, digits, _ or -)');
@@ -30,9 +42,16 @@ export class PhoneCalls {
     const path=join(directory,'calls.sqlite');closeSync(openSync(path,'a',0o600));
     this.db = new DatabaseSync(path, {timeout:0});
     this.db.exec('CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, recipient TEXT NOT NULL, call_sid TEXT UNIQUE, status TEXT NOT NULL, at TEXT NOT NULL)');
+    const columns = this.db.prepare('PRAGMA table_info(requests)').all().map(column => column.name);
+    for (const column of ['voicemail', 'answered_by']) if (!columns.includes(column)) this.db.exec(`ALTER TABLE requests ADD COLUMN ${column} TEXT`);
   }
   row(id) { if (!requestId(id)) throw Error('Invalid request ID'); return this.db.prepare('SELECT * FROM requests WHERE id=?').get(id); }
-  receipt(row) { if (!row) throw Error('Unknown outbound request ID'); return {requestId:row.id,to:row.recipient,from:this.config.number,callSid:row.call_sid,status:row.status,at:row.at}; }
+  receipt(row) { if (!row) throw Error('Unknown outbound request ID'); return {requestId:row.id,to:row.recipient,from:this.config.number,callSid:row.call_sid,status:row.status,at:row.at,answeredBy:row.answered_by,voicemailRequested:Boolean(row.voicemail)}; }
+  // The message the agent asked to leave if a machine answers, read once per answer.
+  voicemail(id) { return this.row(id)?.voicemail ?? null; }
+  answered(id, value) {
+    if (answeredBy.has(value)) this.db.prepare('UPDATE requests SET answered_by=? WHERE id=?').run(value,id);
+  }
   pending() { return this.db.prepare("SELECT * FROM requests WHERE status NOT IN ('completed','busy','failed','no-answer','canceled','rejected') LIMIT 1").get(); }
   update(row, callSid, status) {
     const current=this.row(row.id);
@@ -43,13 +62,14 @@ export class PhoneCalls {
   }
   observe(row, call) {
     if (call.account_sid!==this.config.accountSid || call.from!==this.config.number || call.to!==row.recipient || call.direction!=='outbound-api') throw Error('Twilio call identity does not match the outbound request');
+    this.answered(row.id,call.answered_by);
     return this.update(row,call.sid,call.status);
   }
   // The recording outcome comes from the private audio receipt of the same Call SID.
   recorded(receipt) {
     try {
       const last=JSON.parse(readFileSync(join(this.directory,LAST_CALL),'utf8'));
-      return last.callSid && last.callSid===receipt.callSid && last.recording ? {...receipt,recording:last.recording} : receipt;
+      return last.callSid && last.callSid===receipt.callSid && last.recording ? {...receipt,recording:last.recording,...(last.voicemail&&{voicemail:last.voicemail})} : receipt;
     } catch { return receipt; }
   }
   async status(id) {
@@ -58,21 +78,23 @@ export class PhoneCalls {
   }
   async recover() { const row=this.pending(); if (row?.call_sid) await this.status(row.id); }
   async call(options, isBusy) {
-    if (!options || Object.keys(options).some(key=>!['to','requestId'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || options.to===this.config.number) throw Error('Supply a destination other than the configured number and a stable request ID');
+    if (!options || Object.keys(options).some(key=>!['to','requestId','voicemail'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || options.to===this.config.number) throw Error('Supply a destination other than the configured number and a stable request ID');
+    const voicemail = options.voicemail === undefined ? null : voicemailText(options.voicemail);
     this.db.exec('BEGIN IMMEDIATE');
     let existing;
     try {
       existing=this.row(options.requestId);
       if (existing && existing.recipient!==options.to) throw Error('Request ID was already used for a different destination');
+      if (existing && (existing.voicemail??null)!==voicemail) throw Error('Request ID was already used with a different voicemail message');
       if (!existing) {
         if (isBusy() || this.pending()) throw Error('Phone line is busy; inspect the existing call before dialing');
-        this.db.prepare('INSERT INTO requests(id,recipient,status,at) VALUES(?,?,?,?)').run(options.requestId,options.to,'uncertain',new Date().toISOString());
+        this.db.prepare('INSERT INTO requests(id,recipient,status,at,voicemail) VALUES(?,?,?,?,?)').run(options.requestId,options.to,'uncertain',new Date().toISOString(),voicemail);
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK');throw error; }
     if (existing) return {...await this.status(existing.id),created:false};
     const row=this.row(options.requestId);
-    try { return {...this.observe(row,await this.provider.createCall(options.to,options.requestId)),created:true}; }
+    try { return {...this.observe(row,await this.provider.createCall(options.to,options.requestId,{voicemail:Boolean(voicemail)})),created:true}; }
     catch (error) {
       const observed=this.row(row.id);
       if (observed.call_sid) return {...this.receipt(observed),created:true};
@@ -86,6 +108,7 @@ export class PhoneCalls {
     const callSid=params.get('CallSid'), status=params.get('CallStatus');
     if (!row || params.get('From')!==this.config.number || params.get('To')!==row.recipient || params.get('Direction')!=='outbound-api' || !sid(callSid,'CA') || (row.call_sid && row.call_sid!==callSid) || (isStatus ? !terminal.has(status) || status==='rejected' : status!=='in-progress' || terminal.has(row.status))) return false;
     this.update(row,callSid,status);
+    this.answered(id,params.get('AnsweredBy'));
     return true;
   }
   async hangup(id) {

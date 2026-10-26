@@ -7,6 +7,8 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import WebSocket from 'ws';
 import {PhoneCalls,phoneControl,servePhoneControl,callOptions,LAST_CALL} from '../src/phone-calls.mjs';
+import {phoneCommand} from '../src/phone.mjs';
+import {DatabaseSync} from 'node:sqlite';
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {servePhone,twilioSignature} from '../src/phone.mjs';
 
@@ -35,7 +37,7 @@ async function fixture(t){
   t.after(async()=>{calls.close();await rm(directory,{recursive:true,force:true});});
   return {directory,provider,calls};
 }
-function params(status='in-progress'){return new URLSearchParams({AccountSid:config.accountSid,CallSid:callSid,From:config.number,To:to,Direction:'outbound-api',CallStatus:status});}
+function params(status='in-progress',answeredBy){const value=new URLSearchParams({AccountSid:config.accountSid,CallSid:callSid,From:config.number,To:to,Direction:'outbound-api',CallStatus:status});if(answeredBy)value.set('AnsweredBy',answeredBy);return value;}
 async function post(port,path,body){return fetch(`http://127.0.0.1:${port}${path}`,{method:'POST',body,headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+path,body)}});}
 
 test('private call command dials once, signed answer streams audio, and terminal callback releases the line',async t=>{
@@ -164,6 +166,83 @@ test('Twilio create request pins caller ID, existing signed endpoint, Record=fal
   assert.equal(form.get('To'),to);assert.equal(form.get('From'),config.number);assert.equal(form.get('Url'),config.origin+'/incoming?outbound='+id);
   assert.equal(form.get('StatusCallback'),form.get('Url')+'&status=1');assert.equal(form.get('TimeLimit'),'180');assert.equal(form.get('Timeout'),'20');assert.equal(form.get('Record'),'false');
   assert.equal(form.has('SmsUrl'),false);
+  assert.equal(form.get('MachineDetection'),'Enable');assert.equal(form.has('AsyncAmd'),false);
+  await number.createCall(to,id,{voicemail:true});
+  assert.equal(new URLSearchParams(requests[1].options.body).get('MachineDetection'),'DetectMessageEnd');
+});
+
+const message='Hi, this is Quarre about 12 Main St & the "sale". Call us back.';
+async function answered(t,{voicemail,answeredBy}){
+  const {directory,provider,calls}=await fixture(t),{requests,provider:twilio}=recorder();let audio;
+  const receipts=[];
+  const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:twilio,socketFactory:()=>audio=new AudioProvider(),record:async value=>{await writeFile(join(directory,LAST_CALL),JSON.stringify(value));receipts.push(value);}});
+  t.after(()=>web.close());
+  await calls.call({requestId:id,to,...(voicemail&&{voicemail})},web.busy);provider.value.status='in-progress';
+  const response=await post(web.port,'/incoming?outbound='+id,params('in-progress',answeredBy));
+  return {calls,provider,requests,receipts,web,response,text:await response.text(),opened:()=>audio!==undefined};
+}
+
+test('a machine that finishes its greeting gets the message after the beep, one recording and a receipt, never the live model',async t=>{
+  const r=await answered(t,{voicemail:message,answeredBy:'machine_end_beep'});
+  assert.equal(r.response.status,200);assert.equal(r.response.headers.get('content-type'),'text/xml');
+  assert.equal(r.text,'<Response><Pause length="1"/><Say voice="Polly.Joanna">Hi, this is Quarre about 12 Main St &amp; the &quot;sale&quot;. Call us back.</Say><Hangup/></Response>');
+  assert.doesNotMatch(r.text,/Stream/);
+  await wait(()=>r.receipts.length);
+  assert.equal(r.requests.length,1);assert.match(r.requests[0].url,/Recordings\.json$/);
+  assert.deepEqual(r.receipts[0],{callSid,answeredBy:'machine_end_beep',voicemail:'left',recording:{state:'started',sid:recordingSid},at:r.receipts[0].at});
+  const status=await r.calls.status(id);
+  assert.equal(status.answeredBy,'machine_end_beep');assert.equal(status.voicemail,'left');assert.deepEqual(status.recording,{state:'started',sid:recordingSid});
+  assert.equal(r.opened(),false);
+  assert.equal((await post(r.web.port,'/incoming?outbound='+id+'&status=1',params('completed','machine_end_beep'))).status,204);
+  assert.equal(r.calls.pending(),undefined);
+});
+
+test('a machine with no message requested is hung up on at once; fax and an unfinished greeting never get a message',async t=>{
+  for (const [voicemail,answeredBy] of [[undefined,'machine_end_beep'],[undefined,'machine_start'],[message,'machine_start'],[message,'fax']]) {
+    await t.test(`${voicemail?'message':'no message'} / ${answeredBy}`,async t=>{
+      const r=await answered(t,{voicemail,answeredBy});
+      assert.equal(r.text,'<Response><Hangup/></Response>');
+      await new Promise(resolve=>setTimeout(resolve,20));
+      assert.equal(r.requests.length,0);assert.equal(r.receipts.length,0);assert.equal(r.opened(),false);
+      assert.equal((await r.calls.status(id)).answeredBy,answeredBy);
+    });
+  }
+});
+
+test('a person, or no answer-by value, still gets the live model',async t=>{
+  for (const answeredBy of ['human','unknown',undefined]) {
+    await t.test(String(answeredBy),async t=>{
+      const r=await answered(t,{voicemail:message,answeredBy});
+      assert.match(r.text,/<Connect><Stream /);
+    });
+  }
+});
+
+test('the voicemail message is validated, bound to its request ID, and read from a plain file by the CLI',async t=>{
+  const {directory,calls}=await fixture(t);
+  await assert.rejects(()=>calls.call({requestId:id,to,voicemail:'  '},()=>false),/1\.\.1000/);
+  await assert.rejects(()=>calls.call({requestId:id,to,voicemail:'x'.repeat(1001)},()=>false),/1\.\.1000/);
+  await assert.rejects(()=>calls.call({requestId:id,to,voicemail:'bad\u0000text'},()=>false),/1\.\.1000/);
+  assert.equal((await calls.call({requestId:id,to,voicemail:message},()=>false)).voicemailRequested,true);
+  assert.equal((await calls.call({requestId:id,to,voicemail:message},()=>false)).created,false);
+  await assert.rejects(()=>calls.call({requestId:id,to,voicemail:'another'},()=>false),/different voicemail/);
+  await assert.rejects(()=>calls.call({requestId:id,to},()=>false),/different voicemail/);
+  assert.deepEqual(callOptions('call',['--to',to,'--request-id',id,'--voicemail-file','/x/m.txt']),{to,requestId:id,voicemailFile:'/x/m.txt'});
+  assert.throws(()=>callOptions('call-status',['--request-id',id,'--voicemail-file','/x/m.txt']),/Use phone call/);
+  const state=await mkdtemp(join(tmpdir(),'voice-cli-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  await assert.rejects(()=>phoneCommand(state,['call','--to',to,'--request-id','cli','--voicemail-file',join(state,'missing.txt')]),/could not be read/);
+  await writeFile(join(state,'empty.txt'),'\n');
+  await assert.rejects(()=>phoneCommand(state,['call','--to',to,'--request-id','cli','--voicemail-file',join(state,'empty.txt')]),/1\.\.1000/);
+});
+
+test('an existing request database gains the voicemail columns without losing its rows',async t=>{
+  const directory=await mkdtemp(join(tmpdir(),'voice-migrate-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+  const old=new DatabaseSync(join(directory,'calls.sqlite'));
+  old.exec('CREATE TABLE requests (id TEXT PRIMARY KEY, recipient TEXT NOT NULL, call_sid TEXT UNIQUE, status TEXT NOT NULL, at TEXT NOT NULL)');
+  old.prepare('INSERT INTO requests VALUES(?,?,?,?,?)').run(id,to,callSid,'completed','2026-10-25T00:00:00.000Z');old.close();
+  const calls=new PhoneCalls(directory,config,new TwilioProvider());
+  try {const row=calls.receipt(calls.row(id));assert.equal(row.status,'completed');assert.equal(row.answeredBy,null);assert.equal(row.voicemailRequested,false);}
+  finally {calls.close();}
 });
 
 test('control shutdown rejects late frames from existing idle clients and waits for admitted work',async t=>{

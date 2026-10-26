@@ -86,13 +86,32 @@ outbound answer and terminal-status callbacks. Ringing is limited to twenty
 seconds and the call to three minutes. Outbound calls are recorded at Twilio like
 inbound calls (see Recording).
 
+### Voicemail
+
+Every outbound call runs Twilio answering-machine detection before the answer webhook, so the live model only ever
+hears a person. The recipient hears silence for a few seconds while it runs. `call-status` and the private receipt
+report `answeredBy` (`human`, `machine_end_beep`, `machine_end_silence`, `machine_end_other`, `machine_start`, `fax` or
+`unknown`; `unknown` is treated as a person).
+
+```sh
+ez voice phone call --to +15551230002 --request-id owner-call-002 --voicemail-file message.txt
+```
+
+`--voicemail-file` is a plain-text file of 1 to 1000 characters that the agent writes. When the greeting ends in a beep,
+silence or other (`machine_end_*`), Twilio speaks the text (`<Say>`, Polly Joanna) and the call ends; the plugin starts
+one recording of that leg and the receipt gains `voicemail: left` with the recording outcome. Without the file, or for
+`machine_start` and fax, the call ends at once and nothing is recorded. Detection waits for the end of the greeting only
+when a message was asked for. Whether to leave a message, what it says (including any AI disclosure) and to whom is the
+caller's decision, not the plugin's. The request ID is bound to its message: reuse it with a different message and the
+request fails. `unknown` and `human` connect the live model as before.
+
 Use one stable request ID per intended call. Repeating it returns the original
 attempt and never dials again, including after a service restart. Reusing it with
 a different destination fails. Creation is durably recorded before the provider
 request; an ambiguous network failure remains uncertain, with no automatic retry.
 Inspect that request and Twilio before attempting another call. Status reads the
 provider when the Call SID is known. Hangup cancels a ringing call or ends an
-answered call. Completion at Twilio alone does not prove a person answered;
+answered call. Completion at Twilio alone does not prove a person answered (see `answeredBy` below);
 voicemail may answer too. The private audio receipt must match the Call SID.
 
 The CLI talks to the running phone process through a mode-0600 Unix socket in

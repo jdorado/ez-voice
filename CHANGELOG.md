@@ -10,7 +10,13 @@
   receipt (`phone receipt`, and `call-status` for the same Call SID) gains `recording`
   with `state: started` and the Recording SID, or `state: failed` and an `HTTP_<status>`
   or `ERROR` code. Outbound creation keeps `Record=false`.
-- QA candidate `0.1.0-beta.8.rc.1`; not tagged or published.
+- Detect answering machines on every outbound call (Twilio `MachineDetection`, before the answer webhook). A person
+  gets the live model; a machine never does. `phone call --voicemail-file PATH` gives a plain-text message (1..1000
+  characters) that is spoken after the beep by Twilio `<Say>`, then the call ends; without it the call ends at once.
+  Fax and an unfinished greeting get no message. A message left is recorded like any other call (one recording request)
+  and the private receipt and `call-status` report `answeredBy` and `voicemail: left`. A request ID is bound to its
+  message. The recipient waits a few seconds in silence while detection runs.
+- QA candidate `0.1.0-beta.8.rc.2`; not tagged or published.
 
 ## 0.1.0-beta.7
 

@@ -7,7 +7,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
-import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL} from './phone-calls.mjs';
+import {PhoneCalls, callOptions, servePhoneControl, phoneControl, voicemailText, messageEnd, machine, LAST_CALL} from './phone-calls.mjs';
 const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone call. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
@@ -87,6 +87,10 @@ const startRecording = (provider, callSid) => Promise.resolve().then(() => provi
   recording => ({state: 'started', sid: recording.sid}),
   error => ({state: 'failed', code: Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'ERROR'}));
 
+const xml = text => text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+// The message is the agent's own text, spoken by Twilio after the beep; the pause lets the recording start first.
+const voicemailTwiml = message => `<Response><Pause length="1"/><Say voice="Polly.Joanna">${xml(message)}</Say><Hangup/></Response>`;
+
 export async function servePhone(config, {port = 8080, host = '0.0.0.0', record = async () => {}, socketFactory, calls, provider = new PhoneNumber(config)} = {}) {
   const tickets = new Map(); let active, admitted = 0, unavailable = false, receiptError = false, closing;
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.expires<Date.now())tickets.delete(token);};
@@ -102,6 +106,16 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
       if (outbound) {
         if (!calls || [...url.searchParams.keys()].some(key=>!['outbound','status'].includes(key)) || [...url.searchParams.keys()].length!==(isStatus?2:1) || !calls.accept(outbound,params,isStatus)) { response.writeHead(403); return response.end(); }
         if (isStatus) { response.writeHead(204);return response.end(); }
+        // A machine never gets the live model: leave the agent's message after the beep, or hang up.
+        const answeredBy = params.get('AnsweredBy');
+        if (machine(answeredBy)) {
+          const message = messageEnd(answeredBy) ? calls.voicemail(outbound) : null;
+          response.setHeader('Content-Type', 'text/xml');
+          response.end(message ? voicemailTwiml(message) : '<Response><Hangup/></Response>');
+          if (message) startRecording(provider, params.get('CallSid')).then(recording => record({callSid: params.get('CallSid'), answeredBy, voicemail: 'left', recording, at: new Date().toISOString()}))
+            .catch(() => { unavailable = true; receiptError = true; });
+          return;
+        }
       } else if (url.search || params.get('To')!==config.number) { response.writeHead(403);return response.end(); }
       response.setHeader('Content-Type', 'text/xml');
       pruneTickets();
@@ -159,14 +173,18 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
 export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   const directory = join(state, 'phone');
   const path = join(directory, 'config.json'), [command, ...rest] = args;
-  if (['call','call-status','hangup'].includes(command)) return phoneControl(directory,command,callOptions(command,rest));
+  if (['call','call-status','hangup'].includes(command)) {
+    const {voicemailFile, ...options} = callOptions(command,rest);
+    if (voicemailFile) options.voicemail = voicemailText(await readFile(voicemailFile,'utf8').catch(() => {throw Error('Voicemail file could not be read');}));
+    return phoneControl(directory,command,options);
+  }
   if (rest.length) throw Error('Only call, call-status and hangup accept flags; credentials and configuration use private stdin');
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
-    'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID',
+    'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID [--voicemail-file PATH]',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey','accountSid','authToken','number','origin'], optional: ['instructions']},
     limits: 'Direct Twilio Media Streams to gpt-live-1; no native tools, history or Retell/Vapi; every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each; listener stays available until stopped',
-    outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
+    outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation. Answering-machine detection runs on every outbound call: a person gets the live model; a machine never does. With --voicemail-file PATH (plain text, 1..1000 characters) the text is spoken after the beep and the call ends; without it the call ends at once. call-status reports answeredBy (human, machine_end_beep, machine_end_silence, machine_end_other, machine_start, fax or unknown) and, once left, voicemail. The recipient hears nothing for a few seconds while detection runs.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
     let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 16000) throw Error('Phone configuration too large'); }
@@ -194,7 +212,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
       web=await servePhone(config, {calls,provider,record: value => save(join(directory, LAST_CALL), value)});
       control=await servePhoneControl(directory,frame=>{
         const {action,...options}=frame;
-        if (!['call','call-status','hangup'].includes(action) || Object.keys(options).some(key=>!['requestId',...(action==='call'?['to']:[])].includes(key))) throw Error('Invalid phone control command');
+        if (!['call','call-status','hangup'].includes(action) || Object.keys(options).some(key=>!['requestId',...(action==='call'?['to','voicemail']:[])].includes(key))) throw Error('Invalid phone control command');
         return action==='call'?calls.call(options,web.busy):action==='call-status'?calls.status(options.requestId):calls.hangup(options.requestId);
       });
     } catch (error) { await web?.close();calls.close();throw error; }

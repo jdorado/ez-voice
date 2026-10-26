@@ -22,10 +22,13 @@ export class PhoneNumber {
     if (!row || !sid(row.sid, 'PN') || row.capabilities?.voice !== true) throw Error('Configured number is not voice-capable in this Twilio account');
     return {numberSid: row.sid, number: row.phone_number, route: routeFields(row)};
   }
-  async createCall(to, requestId) {
+  // Answering-machine detection runs before the answer webhook, so the bridge only opens for a person. A message is
+  // left after the beep, so a request with one waits for the greeting to end; without one the first sign is enough.
+  async createCall(to, requestId, {voicemail = false} = {}) {
     const url = this.config.origin + '/incoming?' + new URLSearchParams({outbound: requestId});
     return this.request('/Calls.json', {To: to, From: this.config.number, Url: url, Method: 'POST',
-      StatusCallback: url + '&status=1', StatusCallbackMethod: 'POST', Timeout: '20', TimeLimit: '180', Record: 'false'});
+      StatusCallback: url + '&status=1', StatusCallbackMethod: 'POST', Timeout: '20', TimeLimit: '180', Record: 'false',
+      MachineDetection: voicemail ? 'DetectMessageEnd' : 'Enable'});
   }
   async getCall(callSid) {
     if (!sid(callSid, 'CA')) throw Error('Invalid Call SID');
