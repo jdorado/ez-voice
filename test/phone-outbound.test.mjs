@@ -74,7 +74,7 @@ test('private call command dials once, signed answer streams audio, and terminal
 test('an outbound answer starts exactly one recording for its Call SID and call-status reports its outcome',async t=>{
   const {directory,provider,calls}=await fixture(t),{requests,provider:twilio}=recorder();let audio,receipt,ws;
   const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:twilio,socketFactory:()=>audio=new AudioProvider(),
-    record:async value=>{receipt=value;await writeFile(join(directory,LAST_CALL),JSON.stringify(value));}});
+    record:async value=>{await writeFile(join(directory,LAST_CALL),JSON.stringify(value));receipt=value;}});
   try {
     await calls.call({requestId:id,to},web.busy);provider.value.status='in-progress';
     const path='/incoming?outbound='+id;
@@ -162,7 +162,7 @@ test('Twilio create request pins caller ID, existing signed endpoint, Record=fal
   const form=new URLSearchParams(requests[0].options.body);
   assert.equal(requests[0].url,`https://api.twilio.com/2010-04-01/Accounts/${config.accountSid}/Calls.json`);
   assert.equal(form.get('To'),to);assert.equal(form.get('From'),config.number);assert.equal(form.get('Url'),config.origin+'/incoming?outbound='+id);
-  assert.equal(form.get('StatusCallback'),form.get('Url')+'&status=1');assert.equal(form.get('TimeLimit'),'180');assert.equal(form.get('Timeout'),'30');assert.equal(form.get('Record'),'false');
+  assert.equal(form.get('StatusCallback'),form.get('Url')+'&status=1');assert.equal(form.get('TimeLimit'),'180');assert.equal(form.get('Timeout'),'45');assert.equal(form.get('Record'),'false');
   assert.equal(form.has('SmsUrl'),false);
 });
 
