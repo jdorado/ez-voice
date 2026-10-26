@@ -282,7 +282,7 @@ async function bridge(settings) {
   let provider; const twilioSocket = Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [],
     send(raw) {this.sent.push(JSON.parse(raw));}, close() {this.readyState = WebSocket.CLOSED;}});
   const {PhoneAudio} = await import('../src/phone-audio.mjs');
-  const audio = new PhoneAudio(twilioSocket, {...config, streamSid, ...settings}, async () => {}, {socketFactory: () => provider = new ProviderSocket()});
+  const audio = new PhoneAudio(twilioSocket, {...config, streamSid, ...settings}, async () => {}, {socketFactory: () => provider = new ProviderSocket()}); audio.providerSocket = provider;
   await wait(() => provider?.events.some(e => e.type === 'session.start')); await new Promise(r => setTimeout(r, 20));
   const emit = event => provider.emit('message', Buffer.from(JSON.stringify(event)));
   return {audio, emit, twilioSocket};
@@ -322,4 +322,50 @@ test('maxCallSeconds and idleSeconds are validated, default to 180 and 20, and r
   const requests = [];
   await new PhoneNumber({...config, maxCallSeconds: 900}, async (url, options) => {requests.push(options); return new Response(JSON.stringify({sid: callSid}));}).createCall('+15551230002', 'id1');
   assert.equal(new URLSearchParams(requests[0].body).get('TimeLimit'), '915');
+});
+
+const functionCall = (call_id = 'call_end1', name = 'end_call') => ({type: 'response.event', delegation_id: 'item_1', event: {type: 'response.output_item.done', item: {type: 'function_call', call_id, name, arguments: '{}'}}});
+
+test('the phone session declares end_call on Responses delegation; tools false keeps client delegation', async () => {
+  const on = await bridge({}), off = await bridge({tools: false}), model = await bridge({toolModel: 'gpt-6-sol'});
+  try {
+    const start = b => b.audio.provider.events.find(e => e.type === 'session.start').session.delegation;
+    const d = start(on);
+    assert.equal(d.type, 'responses'); assert.equal(d.responses.model, 'gpt-6-luna'); assert.equal(d.responses.tool_choice, 'auto');
+    assert.deepEqual(d.responses.tools.map(t => [t.type, t.name]), [['function', 'end_call']]);
+    assert.deepEqual(d.responses.tools[0].parameters, {type: 'object', properties: {}, additionalProperties: false});
+    assert.deepEqual(start(off), {type: 'client'}); assert.equal(start(model).responses.model, 'gpt-6-sol');
+  } finally {for (const b of [on, off, model]) await b.audio.close('test_done');}
+});
+
+test('end_call returns its output, lets the model finish its goodbye, then hangs up; unknown tools do nothing', async () => {
+  const {audio, emit} = await bridge({endCallGraceMs: 100, endCallQuietMs: 300, endCallMaxMs: 5000, idleSeconds: 0});
+  const sent = () => audio.provider.events.filter(e => e.type === 'response.item.create' || e.type === 'response.create');
+  try {
+    emit(functionCall('call_other', 'search_library')); emit(functionCall('bad id!', 'end_call'));
+    await new Promise(r => setTimeout(r, 50));
+    assert.deepEqual(sent().map(e => e.type === 'response.create' ? 'create' : JSON.parse(e.item.output)), [{error: 'unknown_tool'}, 'create']);
+    assert.equal(audio.endingAt, undefined);
+    emit(functionCall('call_end1'));
+    await new Promise(r => setTimeout(r, 50));
+    const out = sent().slice(2); assert.equal(out[0].item.call_id, 'call_end1'); assert.deepEqual(JSON.parse(out[0].item.output), {status: 'ending'}); assert.equal(out[1].type, 'response.create');
+    // the model keeps talking, so the call stays open until it has been quiet
+    for (let i = 0; i < 4; i++) {await new Promise(r => setTimeout(r, 100)); emit({type: 'session.output_transcript.delta', delta: 'Goodbye'}); assert.equal(audio.closing, undefined);}
+    for (let i = 0; i < 300 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(audio.stats.reason, 'end_call'); assert.deepEqual(audio.stats.tools, ['unknown', 'end_call']);
+  } finally {await audio.close('test_done');}
+});
+
+test('end_call hangs up even if the model never goes quiet, and the legacy client delegation still gets its commentary', async () => {
+  const {audio, emit} = await bridge({endCallGraceMs: 50, endCallQuietMs: 10000, endCallMaxMs: 300, idleSeconds: 0});
+  try {
+    emit(functionCall());
+    for (let i = 0; i < 300 && !audio.closing; i++) {emit({type: 'session.output_transcript.delta', delta: '...'}); await new Promise(r => setTimeout(r, 10));}
+    assert.equal(audio.stats.reason, 'end_call');
+  } finally {await audio.close('test_done');}
+  const legacy = await bridge({tools: false});
+  try {
+    legacy.emit({type: 'session.delegation.created', delegation: {id: 'item_9', type: 'delegation', target: 'client'}});
+    await wait(() => legacy.audio.provider.events.some(e => e.type === 'session.commentary.append'));
+  } finally {await legacy.audio.close('test_done');}
 });

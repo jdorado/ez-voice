@@ -77,6 +77,19 @@ silence included, so it says nothing about who is speaking). The rule arms only 
 (`inputTranscriptEvents`), so a session that streams none is bounded by `maxCallSeconds` alone. It ends a voicemail whose
 mailbox stays open after the message, and a dead line. GPT-Live has no model-callable hang-up.
 
+## Tools
+
+GPT-Live has no direct function calling; tools run on its backend (Responses delegation). The phone session starts with
+`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6-luna`), instructions that say the backend
+can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
+backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a
+`function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`.
+`tools: false` in the private configuration keeps the earlier client delegation, with no tools.
+
+`end_call` marks the call as ending; the model may say a goodbye, and once it has been quiet for two seconds (at most
+twelve after the call) the plugin closes the stream, which ends the call (close reason `end_call`). The receipt lists the
+tools called (`tools`). When to end a call is the phone `instructions`' decision; `idleSeconds` stays as the backstop.
+
 ## Place a call
 
 Use the installed CLI from the same agent environment while the phone service is running:
@@ -143,7 +156,8 @@ that apply to recording; the phone `instructions` can state the notice.
 
 Phone callers are external callers, not authenticated Ez owners. This channel has
 no native-agent delegation, owner history, workspace access or external-action
-tools. Client delegations receive a fixed capability-unavailable result. There
+tools. Its one tool is `end_call` (see Tools); a legacy client delegation
+(`tools: false`) receives a fixed capability-unavailable result. There
 is no conversation store, and this plugin stores no audio; Twilio holds the call
 recording. The latest private receipt holds call and provider IDs, input/output
 byte counts, provider error code, final usage and the recording outcome.

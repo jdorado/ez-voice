@@ -3,7 +3,7 @@
 Experimental [direct Twilio phone service](docs/phone.md): connect an approved
 Twilio number directly to GPT-Live for inbound and outbound calls with
 `voice phone --help`. This is an
-audio-only phone channel; callers receive no native-agent tools or context.
+audio-only phone channel; callers receive no native-agent tools or context (the model has one tool, `end_call`).
 Every phone call is recorded at Twilio; this plugin stores no audio.
 
 Owner-authenticated GPT-Live voice for an Ez agent. `gpt-live-1` owns the

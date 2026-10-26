@@ -43,7 +43,7 @@ core application administration; installation alone grants no task access.
 One browser call can be active per Voice runtime. End it before another begins.
 
 `ez voice phone --help` describes the separate inbound/outbound Twilio audio channel. It
-connects directly to GPT-Live and has no native-agent delegation, owner history,
+connects directly to GPT-Live and has no native-agent delegation (its one tool is `end_call`), owner history,
 workspace access or action tools. Its private configuration needs the OpenAI
 key, Twilio Account SID and account Auth Token, voice-capable number and HTTPS
 origin. Number routing requires deployment-owner authority. Preview/readback and
