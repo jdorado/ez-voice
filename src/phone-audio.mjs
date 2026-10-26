@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import {PHONE_TOOLS, toolDefinitions, BACKEND_INSTRUCTIONS, DEFAULT_TOOL_MODEL} from './phone-tools.mjs';
+import {PHONE_TOOLS, toolDefinitions, BACKEND_INSTRUCTIONS, DEFAULT_TOOL_MODEL, DEFAULT_TOOL_EFFORT} from './phone-tools.mjs';
 
 // Twilio and GPT-Live both carry raw mono G.711 mu-law at 8 kHz.
 // Voice relays bytes; the model owns the spoken conversation.
@@ -19,7 +19,7 @@ export class PhoneAudio {
       model: 'gpt-live-1', instructions: config.instructions,
       audio: {format: {type: 'audio/pcmu', rate: 8000}, output: {voice: 'marin'}},
       delegation: config.tools === false ? {type: 'client'} : {type: 'responses', responses: {model: config.toolModel ?? DEFAULT_TOOL_MODEL,
-        instructions: BACKEND_INSTRUCTIONS, tools: toolDefinitions(), tool_choice: 'auto'}}, store: false,
+        instructions: BACKEND_INSTRUCTIONS, tools: toolDefinitions(), tool_choice: 'auto', reasoning: {effort: config.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
     }}));
     this.provider.on('message', raw => {
       try { this.event(JSON.parse(raw.toString())); } catch { this.close('invalid_provider_event'); }
