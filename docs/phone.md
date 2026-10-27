@@ -6,13 +6,15 @@ at a time and caps each call at three minutes by default (`maxCallSeconds`), in 
 Audible quality, interruption handling and latency require separate acceptance.
 
 ```text
-telephone ↔ Twilio number ↔ Twilio Media Streams ↔ Ez Voice ↔ gpt-live-1
+telephone ↔ Twilio number ↔ Twilio Media Streams ↔ Ez Voice ↔ speech provider
+                                                       (gpt-live-1 | ElevenLabs Realtime | Gemini Live)
 ```
 
-Twilio and GPT-Live both use raw G.711 mu-law, mono, 8 kHz. Voice forwards the
+Twilio, GPT-Live and ElevenLabs Realtime use raw G.711 mu-law, mono, 8 kHz. Voice forwards the
 base64 audio without STT/TTS services, transcoding, a hosted agent definition or
-another voice platform. The short instructions live in the private Voice phone
-configuration and go directly to OpenAI at call startup. Twilio and OpenAI still
+another voice platform. Gemini Live takes 16-bit PCM at 16 kHz and answers with PCM (24 kHz), never G.711,
+so Voice converts both ways in pure JavaScript (no service, no native dependency). The short instructions live in the
+private Voice phone configuration and go directly to the provider at call startup. Twilio and the provider still
 bill their own usage, including call recording and its storage at Twilio.
 Removing Retell/Vapi does not make a call free.
 
@@ -24,7 +26,8 @@ test registry for development. Keep credentials and runtime state outside the ag
 
 ```json
 {
-  "apiKey": "OPENAI_PROJECT_KEY",
+  "provider": "openai",
+  "apiKey": "PROVIDER_API_KEY",
   "accountSid": "TWILIO_ACCOUNT_SID",
   "authToken": "TWILIO_ACCOUNT_AUTH_TOKEN",
   "number": "+15551230001",
@@ -33,7 +36,7 @@ test registry for development. Keep credentials and runtime state outside the ag
 }
 ```
 
-The number must belong to that account and support voice. An account auth token
+`provider` is optional (default `openai`); `model`, `voice` and `language` are optional too (see Providers). The number must belong to that account and support voice. An account auth token
 is needed to validate Twilio signatures; a Twilio API key cannot validate them.
 The origin must terminate HTTPS and forward HTTP/WebSocket upgrades to the
 loopback publication. No request bodies, authorization headers or audio in logs.
@@ -67,23 +70,58 @@ callers receive busy; each admitted call remains limited to `maxCallSeconds`.
 `/health` reports local readiness and returns 503 after a receipt-storage failure.
 A health response does not prove provider connectivity; `phone probe` does.
 
+## Providers
+
+One provider serves a call, chosen by `provider` in the private configuration. `PhoneAudio` owns the Twilio bridge, timers,
+tool registry and receipt; each provider's wire protocol is an adapter in `src/phone-providers/` (its contract is documented
+in `index.mjs`). A new speech-to-speech service is one more adapter file and a registry line. `apiKey` is that provider's key,
+checked against its key shape. `model` must be one the adapter lists; the default is the first column below.
+
+| `provider` | Default and allowed `model` | Default `voice` | Audio | Tools | Close |
+| --- | --- | --- | --- | --- | --- |
+| `openai` | `gpt-live-1` | `marin` | mu-law 8 kHz both ways | Responses backend (`toolModel`, `toolEffort`), see Tools | `session.close` / `session.closed`, with final usage |
+| `elevenlabs` | `eleven_realtime_v1_mini` or `eleven_realtime_v1_max` | `brian`, or an ElevenLabs voice id | mu-law 8 kHz both ways | native function calls on `eleven_realtime_v1_max` only | socket close; no usage |
+| `gemini` | `gemini-3.8-live` or `gemini-3.8-live-extended-thinking` (`thinking` low, medium or high, default low) | `Kore` | PCM 16 kHz in, PCM out (24 kHz), converted | native, `BLOCKING` (not on the thinking variant) | socket close; the last reported usage |
+
+ElevenLabs Realtime is the OpenAI Realtime protocol over WebSocket. Its socket refuses the account key, so each call first mints
+a short-lived client secret (`POST /v1/convai/realtime/client_secrets`, needing an ElevenLabs key with ElevenAgents write
+access) and connects with that. ElevenLabs documents Realtime as a cascaded stack, not native audio to audio. Its Mini model does
+not call tools (it writes the tool name into its speech), so Voice declares none for Mini: use Max where the model must call
+`end_call` (`phone doctor` shows `tools` as false then). `language` (default `en`) is the transcription language. The thinking variant needs a level at setup and the plain model refuses one, so `thinking` applies to the variant only (thinking adds delay). Gemini Live carries the key in the WebSocket URL: Voice
+never logs it, and no error text or receipt includes it.
+
+Known limits: the bridge does not wait for Twilio to finish playing queued audio before it hangs up, so a provider that sends
+speech faster than realtime (Gemini does) can have its last words cut off after `end_call`; a Twilio `mark` handshake would fix
+it and needs a live call to verify. `firstAudioMs` is the first audio frame, not a turn latency: GPT-Live streams silence from
+the start, so there it is close to `readyMs`. The provider's own session cap applies too (ElevenLabs follows `maxCallSeconds`
+up to 7200 s; Gemini audio sessions end after about 15 minutes).
+
+A provider with no close handshake cannot confirm finalization: the receipt shows `finalized: false`, and `phone probe` proves
+only that the session started. The receipt names the `provider` and `model`, and records `readyMs` and `firstAudioMs`
+(milliseconds from the start of the bridge). A provider that reports when the caller starts talking over the model
+(ElevenLabs voice activity, Gemini `interrupted`) makes Voice send Twilio a `clear` so audio queued at Twilio stops.
+
 ## Call length and idle hang-up
 
 Two optional private configuration fields bound a call: `maxCallSeconds` (30 to 3600, default 180; the Twilio call limit
 is that plus 15 seconds) and `idleSeconds` (0 to turn off, otherwise 5 to 300, default 20). A call ends with the close
-reason `idle_timeout` when nobody has spoken for `idleSeconds`: the contact's speech is the provider's
-`session.input_transcript.delta`, the model's is `session.output_transcript.delta` (its output audio flows nonstop,
-silence included, so it says nothing about who is speaking). The rule arms only after the first transcript event, and the receipt counts them
-(`inputTranscriptEvents`), so a session that streams none is bounded by `maxCallSeconds` alone. It ends a voicemail whose
-mailbox stays open after the message, and a dead line. GPT-Live has no model-callable hang-up.
+reason `idle_timeout` when nobody has spoken for `idleSeconds`. Each adapter turns its provider's signals into "the contact
+spoke" and "the model spoke" (GPT-Live: `session.input_transcript.delta` and `session.output_transcript.delta`; ElevenLabs: voice
+activity, the input transcript and `response.output_audio_transcript.delta`; Gemini: its input and output transcriptions). Output
+audio flows nonstop on some providers, silence included, so it says nothing about who is speaking. The rule arms only after the first
+contact-speech signal, and the receipt counts them (`inputTranscriptEvents`), so a session that streams none is bounded by
+`maxCallSeconds` alone. It ends a voicemail whose mailbox stays open after the message, and a dead line.
 
 ## Tools
 
-GPT-Live has no direct function calling; tools run on its backend (Responses delegation). The phone session starts with
+GPT-Live has no direct function calling; tools run on its backend (Responses delegation). ElevenLabs Max and Gemini call
+the tools natively: the adapter declares them in the session and answers each call (a `function_call_output` at ElevenLabs, a
+`toolResponse` matched by `id` at Gemini), with no backend model. After `end_call` (a final tool) ElevenLabs is not asked to continue and Gemini gets no tool response (it narrated "the call has
+ended" when it did), so the goodbye spoken before the call is the last thing said. With GPT-Live the phone session starts with
 `delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6.1-sol` at reasoning effort `toolEffort`, default `low`), instructions that say the backend
 can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
 backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a
-`function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`.
+`function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`; every provider declares it.
 `tools: false` in the private configuration keeps the earlier client delegation, with no tools.
 
 `end_call` marks the call as ending; the model may say a goodbye, and once it has been quiet for two seconds (at most
@@ -167,14 +205,14 @@ No automatic dialing, redial, replacement provider or model fallback exists.
 The signed HTTP webhook creates a short-lived single-use ticket bound to the
 Twilio Call SID. The signed media upgrade must present it in its start event,
 with the configured account and the expected audio format. One call runs at a
-time. The provider must report `session.started` before input is forwarded;
-startup buffering is bounded. Caller hangup sends `session.close` and waits for
-`session.closed` to confirm final usage. Service shutdown also waits for this
+time. The provider must report readiness (GPT-Live `session.started`, ElevenLabs
+`session.updated`, Gemini `setupComplete`) before input is forwarded; startup buffering is bounded. With GPT-Live, caller
+hangup sends `session.close` and waits for `session.closed` to confirm final usage. Service shutdown also waits for this
 finalization and durable receipt storage; a receipt write failure is reported.
-A connection failure without that event
-is explicitly unconfirmed. Voice does not yet synchronize Twilio's playback
-buffer with the model's full-duplex output; interruption quality needs later
-work and must not be treated as accepted by synthetic transport tests.
+A connection failure without that event, and any provider with no close handshake,
+is explicitly unconfirmed. Voice does not synchronize Twilio's playback
+buffer with the model's full-duplex output beyond clearing it when ElevenLabs or Gemini report a barge-in; interruption
+quality needs later work and must not be treated as accepted by synthetic transport tests.
 
 Audible acceptance: an authorized person calls the routed number, the model responds
 audibly in the same call, a second turn works, hangup stops the provider session,
@@ -184,6 +222,8 @@ before decommissioning a temporary endpoint. No production readiness or latency 
 is made from unit tests, process health or byte counts.
 
 References: [OpenAI WebSocket audio](https://developers.openai.com/api/docs/guides/voice-websockets?api=live),
+[ElevenLabs Realtime](https://elevenlabs.io/docs/eleven-agents/guides/openai-realtime-compatibility),
+[Gemini Live API](https://ai.google.dev/api/live),
 [Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
 
 Outbound API reference: [Twilio Call resource](https://www.twilio.com/docs/voice/api/call-resource).

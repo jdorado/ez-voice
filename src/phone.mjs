@@ -5,6 +5,7 @@ import {dirname, join} from 'node:path';
 import {WebSocketServer} from 'ws';
 import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
+import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/index.mjs';
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
 import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL} from './phone-calls.mjs';
@@ -21,9 +22,17 @@ async function save(path, value) {
 }
 export function validatePhoneConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config) ||
-      Object.keys(config).some(k => !['apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds','tools','toolModel','toolEffort'].includes(k))) throw Error('Invalid phone configuration fields');
-  if (!/^sk-[A-Za-z0-9_-]{10,}$/.test(config.apiKey || '') || !sid(config.accountSid, 'AC') ||
-      !/^[a-fA-F0-9]{32}$/.test(config.authToken || '') || !phone(config.number)) throw Error('Supply the OpenAI key, Twilio account auth token and configured E.164 number privately');
+      Object.keys(config).some(k => !['provider','model','voice','language','thinking','apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds','tools','toolModel','toolEffort'].includes(k))) throw Error('Invalid phone configuration fields');
+  if (config.provider !== undefined && !Object.hasOwn(PROVIDERS, config.provider)) throw Error(`provider must be one of ${Object.keys(PROVIDERS).join(', ')}`);
+  const Adapter = providerClass(config);
+  if (!Adapter.keyPattern.test(config.apiKey || '') || !sid(config.accountSid, 'AC') ||
+      !/^[a-fA-F0-9]{32}$/.test(config.authToken || '') || !phone(config.number)) throw Error(`Supply the ${Adapter.label} key, Twilio account auth token and configured E.164 number privately`);
+  const model = config.model ?? Adapter.defaultModel, voice = config.voice ?? Adapter.defaultVoice;
+  if (!Adapter.models.includes(model)) throw Error(`model must be one of ${Adapter.models.join(', ')} for provider ${Adapter.id}`);
+  if (typeof voice !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(voice)) throw Error('voice must be a provider voice name or id');
+  if (config.thinking !== undefined && (!['low','medium','high'].includes(config.thinking) || model !== 'gemini-3.8-live-extended-thinking')) throw Error('thinking must be low, medium or high, and applies to gemini-3.8-live-extended-thinking only');
+  if (config.language !== undefined && !/^[a-z]{2}(-[A-Za-z]{2})?$/.test(config.language)) throw Error('language must be a language code such as en');
+  if ((config.toolModel !== undefined || config.toolEffort !== undefined) && Adapter.id !== 'openai') throw Error('toolModel and toolEffort apply to provider openai only');
   const origin = new URL(config.origin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw Error('Use an HTTPS origin without a path');
   const instructions = config.instructions ?? DEFAULT_INSTRUCTIONS;
@@ -34,7 +43,7 @@ export function validatePhoneConfig(config) {
   if (config.tools !== undefined && typeof config.tools !== 'boolean') throw Error('tools must be true or false');
   if (config.toolModel !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(config.toolModel)) throw Error('toolModel must be a model name');
   if (config.toolEffort !== undefined && !['none','minimal','low','medium','high','xhigh','max'].includes(config.toolEffort)) throw Error('toolEffort must be a reasoning effort');
-  return {...config, origin: origin.origin, instructions, maxCallSeconds, idleSeconds};
+  return {...config, provider: Adapter.id, model, voice, origin: origin.origin, instructions, maxCallSeconds, idleSeconds};
 }
 export function twilioSignature(token, url, params = new URLSearchParams()) {
   let data = url;
@@ -99,7 +108,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     try {
-      if (request.method === 'GET' && request.url === '/health') { response.statusCode = unavailable ? 503 : 200; response.setHeader('Content-Type', 'application/json'); return response.end(JSON.stringify({ready: !unavailable, active: Boolean(active), admitted, model: 'gpt-live-1', ...(calls && {outboundPending:Boolean(calls.pending())})})); }
+      if (request.method === 'GET' && request.url === '/health') { response.statusCode = unavailable ? 503 : 200; response.setHeader('Content-Type', 'application/json'); return response.end(JSON.stringify({ready: !unavailable, active: Boolean(active), admitted, provider: config.provider ?? DEFAULT_PROVIDER, model: config.model ?? providerClass(config).defaultModel, ...(calls && {outboundPending:Boolean(calls.pending())})})); }
       const url=new URL(request.url,config.origin);
       if (request.method !== 'POST' || url.origin!==config.origin || url.pathname!=='/incoming' || !request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) { response.writeHead(404); return response.end(); }
       const params = new URLSearchParams(await body(request));
@@ -170,27 +179,30 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
     'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'tools serve 8793:8080 voice phone serve'],
-    configuration: {required: ['apiKey','accountSid','authToken','number','origin'], optional: ['instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call through GPT-Live Responses delegation; false keeps client delegation)','toolModel (default gpt-6.1-sol)','toolEffort (reasoning effort of that model, default low)']},
-    limits: 'Direct Twilio Media Streams to gpt-live-1; no native-agent tools, history or Retell/Vapi (its one tool is end_call, on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
+    configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], optional: [`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
+      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)']},
+    limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent tools, history or Retell/Vapi (its one tool is end_call; with openai it runs on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
     let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 16000) throw Error('Phone configuration too large'); }
     const config = validatePhoneConfig(JSON.parse(raw));
     await mkdir(directory, {recursive: true, mode: 0o700}); await save(path, config);
-    return {configured: true, model: 'gpt-live-1', origin: config.origin, number: config.number};
+    return {configured: true, provider: config.provider, model: config.model, origin: config.origin, number: config.number};
   }
   const stored = await read(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-  if (!stored && command === 'doctor') return {configured: false, model: 'gpt-live-1', nativeTools: false, liveVerified: false};
+  if (!stored && command === 'doctor') return {configured: false, providers: Object.keys(PROVIDERS), model: 'gpt-live-1', nativeTools: false, liveVerified: false};
   if (!stored) throw Error('Phone is not configured; use phone configure with private stdin');
   const config = validatePhoneConfig(stored);
-  if (command === 'doctor') return {configured: true, model: 'gpt-live-1', origin: config.origin, number: config.number, outbound: true, nativeTools: false, liveVerified: false};
+  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, outbound: true, nativeTools: false, liveVerified: false};
   if (command === 'probe') {
     const result = await new Promise(resolve => {
       const audio = new PhoneAudio({readyState: 1, close() {}, send() {}}, config, resolve, {onReady: () => audio.close('probe_complete')});
     });
-    if (!result.ready || !result.finalized) throw Error(`Direct GPT-Live audio probe failed (${result.providerError || result.reason || 'unconfirmed finalization'})`);
-    return {model: 'gpt-live-1', audio: 'pcmu/8000', ready: true, finalized: true, usage: result.usage, phoneCallVerified: false};
+    // A provider with no close handshake cannot confirm finalization or usage; its probe proves the session started.
+    const confirms = providerClass(config).confirmsClose;
+    if (!result.ready || (confirms && !result.finalized)) throw Error(`Direct ${providerClass(config).label} audio probe failed (${result.providerError || result.reason || 'unconfirmed finalization'})`);
+    return {provider: config.provider, model: config.model, audio: 'pcmu/8000', ready: true, finalized: confirms ? true : 'unconfirmed (no provider close handshake)', usage: result.usage, readyMs: result.readyMs, phoneCallVerified: false};
   }
   if (['preview','route','restore','status'].includes(command)) return phoneRoute(directory, config, command);
   if (command === 'serve') {
@@ -204,7 +216,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
         return action==='call'?calls.call(options,web.busy):action==='call-status'?calls.status(options.requestId):calls.hangup(options.requestId);
       });
     } catch (error) { await web?.close();calls.close();throw error; }
-    console.log(JSON.stringify({web: {url: config.origin, model: 'gpt-live-1', limits: 'one inbound or outbound call at a time; maxCallSeconds each (default 3 minutes), ended early after idleSeconds of silence; available until stopped; every call recorded at Twilio', nativeTools: false}}));
+    console.log(JSON.stringify({web: {url: config.origin, provider: config.provider, model: config.model, limits: 'one inbound or outbound call at a time; maxCallSeconds each (default 3 minutes), ended early after idleSeconds of silence; available until stopped; every call recorded at Twilio', nativeTools: false}}));
     let stopping;
     for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => {stopping??=(async()=>{
       const stopped=await Promise.allSettled([web.close(),control.close()]);
