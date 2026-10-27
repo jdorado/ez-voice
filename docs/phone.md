@@ -127,7 +127,9 @@ twelve after the call) the plugin sends Twilio a `mark` behind everything alread
 it, that is, when the last of the goodbye has been played (at most fifteen seconds more), which ends the call (close reason
 `end_call`). Without that wait, a provider that sends speech faster than realtime had a voicemail message cut off after one
 sentence: closing the stream drops what Twilio still has queued. Where a provider's output audio only flows while the model
-speaks (ElevenLabs, Gemini), its arrival counts as the model speaking. The receipt lists the
+speaks (ElevenLabs, Gemini), its arrival counts as the model speaking, and for the idle hang-up the model keeps speaking until
+what it sent has been played (Twilio plays at realtime speed, so a long message that arrived in a burst is not cut by `idleSeconds`;
+a caller talking over the model drops what was queued). The receipt lists the
 tools called (`tools`). When to end a call is the phone `instructions`' decision; `idleSeconds` stays as the backstop.
 
 ## Place a call

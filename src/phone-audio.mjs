@@ -23,7 +23,7 @@ export class PhoneAudio {
       if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up once Twilio has played it
         if (this.drainingAt) { if (now - this.drainingAt > (config.endCallDrainMs ?? 15000)) this.close('end_call'); }
         else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
-      } else if (this.idleMs > 0 && this.stats.inputTranscriptEvents && now - this.activeAt > this.idleMs) this.close('idle_timeout');
+      } else if (this.idleMs > 0 && this.stats.inputTranscriptEvents && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
     // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
     try {
@@ -87,10 +87,12 @@ export class PhoneAudio {
         break;
       case 'audio':
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
-        this.stats.outputBytes += Buffer.from(item.audio, 'base64').length;
+        const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
         this.stats.firstAudioMs ??= Date.now() - this.startedAt;
         // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence).
-        if (this.adapter.constructor.audioMeansSpeech) this.activeAt = Date.now();
+        // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so a provider that sends speech faster than
+        // that has the model speaking until the queue is empty: the idle hang-up must not fire while it is still being played.
+        if (this.adapter.constructor.audioMeansSpeech) { const now = Date.now(); this.activeAt = now; this.speakingUntil = Math.max(this.speakingUntil ?? 0, now) + bytes / 8; }
         if (this.twilio.readyState === WebSocket.OPEN) {
           if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
           this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: item.audio}}));
@@ -103,6 +105,7 @@ export class PhoneAudio {
         break;
       case 'interrupted':
         // The caller talked over the model: what Twilio has queued would play after they stopped.
+        this.speakingUntil = 0;
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
         break;
       case 'tool': this.tool(item); break;
