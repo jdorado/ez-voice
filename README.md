@@ -1,7 +1,8 @@
 # Ez Voice
 
 Experimental [direct Twilio phone service](docs/phone.md): connect an approved
-Twilio number directly to GPT-Live for inbound and outbound calls with
+Twilio number directly to GPT-Live, ElevenLabs Realtime or Gemini Live (`provider` in the private phone
+configuration) for inbound and outbound calls with
 `voice phone --help`. This is an
 audio-only phone channel; callers receive no native-agent tools or context (the model has one tool, `end_call`).
 Every phone call is recorded at Twilio; this plugin stores no audio.

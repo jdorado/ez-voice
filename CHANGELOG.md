@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The phone bridge serves more than one speech provider. `provider` (default `openai`), `model`, `voice` and `language` in the
+  private phone configuration choose it; each provider's wire protocol is an adapter in `src/phone-providers/` and `PhoneAudio`
+  keeps the Twilio bridge, timers, tools and receipt. GPT-Live moves there unchanged. New: **ElevenLabs Realtime**
+  (`eleven_realtime_v1_mini`, `eleven_realtime_v1_max`): mu-law passes straight through, a client secret is minted per call, tools
+  are native on Max (Mini does not call tools, so none are declared for it), no close handshake. **Gemini Live**
+  (`gemini-3.8-live`, `gemini-3.8-live-extended-thinking`): 16 kHz PCM in and 24 kHz PCM out converted in pure JavaScript
+  (`g711.mjs`), native blocking tools, the key in the URL never reaches a log, error text or receipt. A barge-in reported by
+  ElevenLabs or Gemini clears Twilio's queued audio. The receipt gains `provider`, `model`, `readyMs` and `firstAudioMs`, and
+  `/health` and `phone doctor` name the provider. Providers with no close handshake report `finalized: false`; `phone probe`
+  proves the session started. Gemini was written from Google's documentation and is not yet verified on a live call.
+  QA candidate `0.1.0-beta.8.rc.10`; not tagged or published.
+
 - The tools backend model defaults to `gpt-6.1-sol` at reasoning effort `low` (`toolModel`, `toolEffort` in the private
   phone configuration). QA candidate `0.1.0-beta.8.rc.9`; not tagged or published.
 

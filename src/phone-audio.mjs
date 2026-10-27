@@ -1,31 +1,21 @@
 import WebSocket from 'ws';
-import {PHONE_TOOLS, toolDefinitions, BACKEND_INSTRUCTIONS, DEFAULT_TOOL_MODEL, DEFAULT_TOOL_EFFORT} from './phone-tools.mjs';
+import {PHONE_TOOLS} from './phone-tools.mjs';
+import {createAdapter} from './phone-providers/index.mjs';
 
-// Twilio and GPT-Live both carry raw mono G.711 mu-law at 8 kHz.
-// Voice relays bytes; the model owns the spoken conversation.
+// Twilio carries raw mono G.711 mu-law at 8 kHz. This is the bridge between that stream and one speech provider: the
+// timers, the tool registry, the receipt and the hang-up rules are here, and each provider's wire protocol lives in an
+// adapter (src/phone-providers). The model owns the spoken conversation.
 export class PhoneAudio {
-  constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}} = {}) {
-    this.twilio = twilio; this.finish = finish; this.config = config;
-    this.stats = {inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false}; this.onReady = onReady;
+  constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}, adapter, fetch: fetchImpl} = {}) {
+    this.twilio = twilio; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
+    this.adapter = adapter ?? createAdapter(config, fetchImpl && {fetch: fetchImpl});
+    this.startedAt = Date.now();
+    this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
-    // once the provider has streamed a transcript, so a session without transcripts is never cut short by it.
+    // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
     this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
     this.done = new Promise(resolve => { this.resolveDone = resolve; });
     this.queued = []; this.queuedBytes = 0;
-    this.provider = socketFactory('wss://api.openai.com/v1/live/sessions', {
-      headers: {Authorization: `Bearer ${config.apiKey}`}, maxPayload: 1024 * 1024,
-    });
-    this.provider.on('open', () => this.send({type: 'session.start', session: {
-      model: 'gpt-live-1', instructions: config.instructions,
-      audio: {format: {type: 'audio/pcmu', rate: 8000}, output: {voice: 'marin'}},
-      delegation: config.tools === false ? {type: 'client'} : {type: 'responses', responses: {model: config.toolModel ?? DEFAULT_TOOL_MODEL,
-        instructions: BACKEND_INSTRUCTIONS, tools: toolDefinitions(), tool_choice: 'auto', reasoning: {effort: config.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
-    }}));
-    this.provider.on('message', raw => {
-      try { this.event(JSON.parse(raw.toString())); } catch { this.close('invalid_provider_event'); }
-    });
-    this.provider.on('error', () => this.close('provider_connection_failed'));
-    this.provider.on('close', () => this.complete());
     this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000);
     this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000);
     this.idle = setInterval(() => {
@@ -34,69 +24,97 @@ export class PhoneAudio {
         if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.close('end_call');
       } else if (this.idleMs > 0 && this.stats.inputTranscriptEvents && now - this.activeAt > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
+    // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
+    try {
+      const connection = this.adapter.connection();
+      if (typeof connection?.then === 'function') connection.then(value => this.attach(value), error => {
+        this.stats.providerError = Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'connection_failed';
+        this.close('provider_connection_failed');
+      }); else this.attach(connection);
+    } catch { this.close('provider_connection_failed'); }
   }
-  send(event) {
-    if (this.provider.readyState !== WebSocket.OPEN) return false;
+  attach({url, headers}) {
+    if (this.closing || this.completed) return;
+    this.provider = this.socketFactory(url, {headers, maxPayload: 1024 * 1024});
+    this.provider.on('open', () => { for (const message of this.adapter.start()) this.send(message); });
+    this.provider.on('message', raw => {
+      try { this.event(JSON.parse(raw.toString())); } catch { this.close('invalid_provider_event'); }
+    });
+    this.provider.on('error', () => this.close('provider_connection_failed'));
+    this.provider.on('close', code => {
+      // A provider that ends the session by closing the socket says why in the close code only (never keep its text).
+      if (!this.closing && !this.completed && Number.isInteger(code) && ![1000, 1005].includes(code)) this.stats.providerError ??= `WS_${code}`;
+      this.complete();
+    });
+  }
+  send(message) {
+    if (this.provider?.readyState !== WebSocket.OPEN) return false;
     if (this.provider.bufferedAmount > 256000) { this.close('provider_backpressure'); return false; }
-    this.provider.send(JSON.stringify(event)); return true;
+    this.provider.send(JSON.stringify(message)); return true;
   }
   input(payload) {
     if (this.closing) return;
     if (typeof payload !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload) || payload.length > 16000) return this.close('invalid_audio');
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
-    if (this.ready) this.send({type: 'session.input_audio.append', audio: payload});
+    if (this.ready) this.forward(payload);
     else {
       this.queuedBytes += payload.length;
       if (this.queuedBytes > 64000) return this.close('startup_audio_limit');
       this.queued.push(payload);
     }
   }
-  event(event) {
-    if (event.type === 'session.closed') {
-      this.stats.finalized = true; this.stats.usage = event.usage;
-      this.stats.reason ??= event.reason || 'provider_closed';
+  forward(payload) { for (const message of this.adapter.audioIn(payload)) this.send(message); }
+  event(event) { for (const item of this.adapter.parse(event)) this.handle(item); }
+  handle(item) {
+    if (item.type === 'closed') {
+      this.stats.finalized = true; this.stats.usage = item.usage;
+      this.stats.reason ??= item.reason || 'provider_closed';
       this.provider.close(); this.complete(); return;
     }
     if (this.closing) return;
-    if (event.type === 'session.started') {
-      clearTimeout(this.startTimer); this.ready = true; this.stats.providerSessionId = event.session.id;
-      this.stats.ready = true;
-      for (const audio of this.queued) this.send({type: 'session.input_audio.append', audio});
-      this.queued = []; this.queuedBytes = 0;
-      this.onReady();
-    } else if (event.type === 'session.output_audio.delta') {
-      if (typeof event.delta !== 'string' || event.delta.length > 1000000) return this.close('invalid_provider_audio');
-      this.stats.outputBytes += Buffer.from(event.delta, 'base64').length;
-      if (this.twilio.readyState === WebSocket.OPEN) {
-        if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
-        this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: event.delta}}));
-      }
-    } else if (event.type === 'session.input_transcript.delta' || event.type === 'session.output_transcript.delta') {
-      // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
-      if (event.type === 'session.input_transcript.delta') this.stats.inputTranscriptEvents++;
-      this.activeAt = Date.now();
-    } else if (event.type === 'response.event') {
-      const item = event.event?.type === 'response.output_item.done' ? event.event.item : null;
-      if (item?.type === 'function_call') this.tool(item);
-    } else if (event.type === 'session.delegation.created' && event.delegation?.target !== 'responses') {
-      // Public phone callers have no owner identity, workspace or tool grants.
-      const id = event.delegation?.id;
-      if (typeof id === 'string') this.send({type: 'session.commentary.append', delegation_id: id,
-        content: 'This is an audio-only phone call. No backend, tools, private information or actions are connected.'});
-    } else if (event.type === 'error') {
-      this.stats.providerError = typeof event.error?.code === 'string' ? event.error.code.slice(0,100) : 'provider_error';
-      this.close('provider_rejected');
+    switch (item.type) {
+      case 'send': this.send(item.message); break;
+      case 'ready':
+        clearTimeout(this.startTimer); this.ready = true; this.stats.providerSessionId = item.id;
+        this.stats.ready = true; this.stats.readyMs = Date.now() - this.startedAt;
+        for (const payload of this.queued) this.forward(payload);
+        this.queued = []; this.queuedBytes = 0;
+        this.onReady();
+        break;
+      case 'audio':
+        if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
+        this.stats.outputBytes += Buffer.from(item.audio, 'base64').length;
+        this.stats.firstAudioMs ??= Date.now() - this.startedAt;
+        if (this.twilio.readyState === WebSocket.OPEN) {
+          if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
+          this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: item.audio}}));
+        }
+        break;
+      case 'speech':
+        // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
+        if (item.who === 'caller') this.stats.inputTranscriptEvents++;
+        this.activeAt = Date.now();
+        break;
+      case 'interrupted':
+        // The caller talked over the model: what Twilio has queued would play after they stopped.
+        if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
+        break;
+      case 'tool': this.tool(item); break;
+      case 'error':
+        this.stats.providerError = item.code;
+        this.close('provider_rejected');
+        break;
+      case 'fatal': this.close(item.reason); break;
     }
   }
-  // A finished tool call from the backend: run it here and hand its output back so the backend can resume.
+  // A finished tool call from the model: run it here and hand its output back so the model can resume.
   tool(item) {
-    if (typeof item.call_id !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(item.call_id) || typeof item.name !== 'string') return;
+    if (typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(item.id) || typeof item.name !== 'string') return;
     const tool = Object.hasOwn(PHONE_TOOLS, item.name) ? PHONE_TOOLS[item.name] : null;
     let output;
     try { output = tool ? tool.run(this) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
     (this.stats.tools ??= []).length < 20 && this.stats.tools.push(tool ? item.name : 'unknown');
-    this.send({type: 'response.item.create', item: {type: 'function_call_output', call_id: item.call_id, output: JSON.stringify(output)}});
-    this.send({type: 'response.create'});
+    for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
   close(reason = 'caller_hangup') {
@@ -104,15 +122,19 @@ export class PhoneAudio {
     this.closing = true; this.stats.reason = reason;
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
-    if (this.provider.readyState === WebSocket.OPEN) {
-      this.closeTimer = setTimeout(() => { this.provider.terminate(); this.complete(); }, 15000);
-      this.provider.send(JSON.stringify({type: 'session.close'}));
-    } else { this.provider.terminate(); this.complete(); }
+    if (this.provider?.readyState === WebSocket.OPEN) {
+      const messages = this.adapter.closeMessages();
+      // A provider with a close handshake gets time to confirm and report usage; the others end with the socket.
+      this.closeTimer = setTimeout(() => { this.provider.terminate(); this.complete(); }, messages.length ? 15000 : 2000);
+      if (messages.length) for (const message of messages) this.provider.send(JSON.stringify(message)); else this.provider.close();
+    } else { this.provider?.terminate(); this.complete(); }
     return this.done;
   }
   complete() {
     if (this.completed) return this.done;
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer);
+    // A provider with no close handshake may still have reported usage along the way.
+    if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     Promise.resolve().then(() => this.finish(this.stats)).catch(() => {
       this.stats.receiptError = true;
