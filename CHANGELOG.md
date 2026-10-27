@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.9
+
+GitHub release only (no npm), as beta.8.
+
+- `end_call` no longer cuts off what the model was saying. A live voicemail call on ElevenLabs lost all but the first sentence of
+  its message: the provider sends speech faster than realtime, so seconds of it were still queued at Twilio when the bridge closed
+  the stream. After the model has been quiet, Voice now sends Twilio a `mark` behind the queued audio and closes when Twilio echoes
+  it (at most 15 seconds more). Where output audio only flows while the model speaks (ElevenLabs, Gemini), its arrival counts as
+  the model speaking. GPT-Live is unchanged apart from the extra echo wait, which is immediate for its realtime-paced audio.
+
 ## 0.1.0-beta.8
 
 GitHub release only (no npm), as beta.7. It rolls up the QA candidates rc.1 to rc.10 below.

@@ -14,6 +14,7 @@ export class ElevenLabsAdapter {
   static defaultVoice = 'brian';
   static keyPattern = /^sk_[A-Za-z0-9]{20,100}$/;
   static confirmsClose = false;
+  static audioMeansSpeech = true;
   // Mini does not call tools: given end_call it writes "[end_call]" into its speech instead, while Max issues real function calls.
   static toolModels = ['eleven_realtime_v1_max'];
   static supportsTools(model) { return ElevenLabsAdapter.toolModels.includes(model); }

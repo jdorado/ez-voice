@@ -23,6 +23,7 @@ export class GeminiAdapter {
   // Google issues two key shapes: the classic AIza... and the newer AQ.... (the one Quarre's production key has).
   static keyPattern = /^(AIza[A-Za-z0-9_-]{30,60}|AQ\.[A-Za-z0-9_.-]{30,100})$/;
   static confirmsClose = false;
+  static audioMeansSpeech = true;
   static supportsTools() { return true; }
 
   constructor(config) {

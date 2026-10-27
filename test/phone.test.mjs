@@ -339,7 +339,7 @@ test('the phone session declares end_call on Responses delegation; tools false k
 });
 
 test('end_call returns its output, lets the model finish its goodbye, then hangs up; unknown tools do nothing', async () => {
-  const {audio, emit} = await bridge({endCallGraceMs: 100, endCallQuietMs: 300, endCallMaxMs: 5000, idleSeconds: 0});
+  const {audio, emit} = await bridge({endCallGraceMs: 100, endCallQuietMs: 300, endCallMaxMs: 5000, endCallDrainMs: 100, idleSeconds: 0});
   const sent = () => audio.provider.events.filter(e => e.type === 'response.item.create' || e.type === 'response.create');
   try {
     emit(functionCall('call_other', 'search_library')); emit(functionCall('bad id!', 'end_call'));
@@ -357,7 +357,7 @@ test('end_call returns its output, lets the model finish its goodbye, then hangs
 });
 
 test('end_call hangs up even if the model never goes quiet, and the legacy client delegation still gets its commentary', async () => {
-  const {audio, emit} = await bridge({endCallGraceMs: 50, endCallQuietMs: 10000, endCallMaxMs: 300, idleSeconds: 0});
+  const {audio, emit} = await bridge({endCallGraceMs: 50, endCallQuietMs: 10000, endCallMaxMs: 300, endCallDrainMs: 100, idleSeconds: 0});
   try {
     emit(functionCall());
     for (let i = 0; i < 300 && !audio.closing; i++) {emit({type: 'session.output_transcript.delta', delta: '...'}); await new Promise(r => setTimeout(r, 10));}
@@ -368,4 +368,23 @@ test('end_call hangs up even if the model never goes quiet, and the legacy clien
     legacy.emit({type: 'session.delegation.created', delegation: {id: 'item_9', type: 'delegation', target: 'client'}});
     await wait(() => legacy.audio.provider.events.some(e => e.type === 'session.commentary.append'));
   } finally {await legacy.audio.close('test_done');}
+});
+
+test('through the phone service, end_call waits for Twilio to echo its mark before the stream closes', async () => {
+  const receipts = []; let provider; const settings = {...config, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 5000, endCallDrainMs: 5000, idleSeconds: 0};
+  const server = await servePhone(settings, {port: 0, host: '127.0.0.1', provider: twilio().provider, socketFactory: () => provider = new ProviderSocket(), record: async r => {receipts.push(r);}});
+  let ws; const received = [];
+  try {
+    ws = await connectCall(server.port);
+    ws.on('message', raw => received.push(JSON.parse(raw.toString())));
+    await wait(() => provider?.events.some(e => e.type === 'session.start'));
+    provider.emit('message', Buffer.from(JSON.stringify(functionCall('call_end1'))));
+    await wait(() => received.some(m => m.event === 'mark'));
+    assert.deepEqual(received.find(m => m.event === 'mark'), {event: 'mark', streamSid, mark: {name: 'end_call'}});
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(receipts.length, 0, 'it waits for the mark');
+    ws.send(JSON.stringify({event: 'mark', streamSid, mark: {name: 'end_call'}}));
+    await wait(() => receipts.length === 1);
+    assert.equal(receipts[0].reason, 'end_call');
+  } finally {ws?.close(); await server.close();}
 });

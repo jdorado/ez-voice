@@ -20,8 +20,9 @@ export class PhoneAudio {
     this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000);
     this.idle = setInterval(() => {
       const now = Date.now();
-      if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up
-        if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.close('end_call');
+      if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up once Twilio has played it
+        if (this.drainingAt) { if (now - this.drainingAt > (config.endCallDrainMs ?? 15000)) this.close('end_call'); }
+        else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
       } else if (this.idleMs > 0 && this.stats.inputTranscriptEvents && now - this.activeAt > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
     // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
@@ -88,6 +89,8 @@ export class PhoneAudio {
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
         this.stats.outputBytes += Buffer.from(item.audio, 'base64').length;
         this.stats.firstAudioMs ??= Date.now() - this.startedAt;
+        // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence).
+        if (this.adapter.constructor.audioMeansSpeech) this.activeAt = Date.now();
         if (this.twilio.readyState === WebSocket.OPEN) {
           if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
           this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: item.audio}}));
@@ -120,6 +123,14 @@ export class PhoneAudio {
     for (const message of this.adapter.toolResult(item.id, item.name, output, {final: Boolean(tool?.final)})) this.send(message);
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
+  // Audio a provider sent faster than realtime is still queued at Twilio, and closing the stream drops it (a voicemail message
+  // was cut after one sentence). A mark queued behind that audio comes back from Twilio once everything before it has played.
+  drain() {
+    this.drainingAt = Date.now();
+    if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'mark', streamSid: this.config.streamSid, mark: {name: 'end_call'}}));
+    else this.close('end_call');
+  }
+  mark(name) { if (name === 'end_call' && this.drainingAt) this.close('end_call'); }
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.closing = true; this.stats.reason = reason;
