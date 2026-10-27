@@ -81,13 +81,13 @@ checked against its key shape. `model` must be one the adapter lists; the defaul
 | --- | --- | --- | --- | --- | --- |
 | `openai` | `gpt-live-1` | `marin` | mu-law 8 kHz both ways | Responses backend (`toolModel`, `toolEffort`), see Tools | `session.close` / `session.closed`, with final usage |
 | `elevenlabs` | `eleven_realtime_v1_mini` or `eleven_realtime_v1_max` | `brian`, or an ElevenLabs voice id | mu-law 8 kHz both ways | native function calls on `eleven_realtime_v1_max` only | socket close; no usage |
-| `gemini` | `gemini-3.8-live` or `gemini-3.8-live-extended-thinking` | `Kore` | PCM 16 kHz in, PCM out (24 kHz), converted | native, `BLOCKING` (not on the thinking variant) | socket close; the last reported usage |
+| `gemini` | `gemini-3.8-live` or `gemini-3.8-live-extended-thinking` (`thinking` low, medium or high, default low) | `Kore` | PCM 16 kHz in, PCM out (24 kHz), converted | native, `BLOCKING` (not on the thinking variant) | socket close; the last reported usage |
 
 ElevenLabs Realtime is the OpenAI Realtime protocol over WebSocket. Its socket refuses the account key, so each call first mints
 a short-lived client secret (`POST /v1/convai/realtime/client_secrets`, needing an ElevenLabs key with ElevenAgents write
 access) and connects with that. ElevenLabs documents Realtime as a cascaded stack, not native audio to audio. Its Mini model does
 not call tools (it writes the tool name into its speech), so Voice declares none for Mini: use Max where the model must call
-`end_call` (`phone doctor` shows `tools` as false then). `language` (default `en`) is the transcription language. Gemini Live carries the key in the WebSocket URL: Voice
+`end_call` (`phone doctor` shows `tools` as false then). `language` (default `en`) is the transcription language. The thinking variant needs a level at setup and the plain model refuses one, so `thinking` applies to the variant only (thinking adds delay). Gemini Live carries the key in the WebSocket URL: Voice
 never logs it, and no error text or receipt includes it.
 
 Known limits: the bridge does not wait for Twilio to finish playing queued audio before it hangs up, so a provider that sends
@@ -116,8 +116,8 @@ contact-speech signal, and the receipt counts them (`inputTranscriptEvents`), so
 
 GPT-Live has no direct function calling; tools run on its backend (Responses delegation). ElevenLabs Max and Gemini call
 the tools natively: the adapter declares them in the session and answers each call (a `function_call_output` at ElevenLabs, a
-`toolResponse` matched by `id` at Gemini), with no backend model. After `end_call` (a final tool) ElevenLabs is not asked to continue,
-so the goodbye it spoke before the call is the last thing said. With GPT-Live the phone session starts with
+`toolResponse` matched by `id` at Gemini), with no backend model. After `end_call` (a final tool) ElevenLabs is not asked to continue and Gemini gets no tool response (it narrated "the call has
+ended" when it did), so the goodbye spoken before the call is the last thing said. With GPT-Live the phone session starts with
 `delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6.1-sol` at reasoning effort `toolEffort`, default `low`), instructions that say the backend
 can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
 backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a

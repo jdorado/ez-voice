@@ -20,7 +20,8 @@ export class GeminiAdapter {
   static models = ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking'];
   static defaultModel = 'gemini-3.8-live';
   static defaultVoice = 'Kore';
-  static keyPattern = /^AIza[A-Za-z0-9_-]{30,60}$/;
+  // Google issues two key shapes: the classic AIza... and the newer AQ.... (the one Quarre's production key has).
+  static keyPattern = /^(AIza[A-Za-z0-9_-]{30,60}|AQ\.[A-Za-z0-9_.-]{30,100})$/;
   static confirmsClose = false;
   static supportsTools() { return true; }
 
@@ -33,7 +34,9 @@ export class GeminiAdapter {
   start() {
     const c = this.config;
     return [{setup: {model: `models/${c.model}`,
-      generationConfig: {responseModalities: ['AUDIO'], speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: c.voice}}}},
+      generationConfig: {responseModalities: ['AUDIO'], speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: c.voice}}},
+        // The thinking variant refuses a session without a level (close 1007); the plain model refuses one with it.
+        ...(c.model.endsWith('-extended-thinking') ? {thinkingConfig: {thinkingLevel: c.thinking ?? 'low'}} : {})},
       systemInstruction: {parts: [{text: c.instructions}]},
       ...(c.tools === false ? {} : {tools: [{functionDeclarations: toolDefinitions().map(tool => declaration(tool, c.model))}]}),
       // Transcripts of both sides are what the idle hang-up and the receipt use to tell who is speaking.
@@ -74,8 +77,9 @@ export class GeminiAdapter {
     if (message.goAway) items.push({type: 'fatal', reason: 'provider_go_away'});
     return items;
   }
-  toolResult(id, name, output) {
-    return [{toolResponse: {functionResponses: [{id, name, response: {result: output}}]}}];
+  // A final tool (end_call) gets no answer: with one, the model narrates it ("The call has ended") after its goodbye.
+  toolResult(id, name, output, {final = false} = {}) {
+    return final ? [] : [{toolResponse: {functionResponses: [{id, name, response: {result: output}}]}}];
   }
   // No close handshake: closing the socket ends the session. The last usage the model reported stands in for final usage.
   closeMessages() { return []; }

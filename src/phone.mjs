@@ -22,7 +22,7 @@ async function save(path, value) {
 }
 export function validatePhoneConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config) ||
-      Object.keys(config).some(k => !['provider','model','voice','language','apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds','tools','toolModel','toolEffort'].includes(k))) throw Error('Invalid phone configuration fields');
+      Object.keys(config).some(k => !['provider','model','voice','language','thinking','apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds','tools','toolModel','toolEffort'].includes(k))) throw Error('Invalid phone configuration fields');
   if (config.provider !== undefined && !Object.hasOwn(PROVIDERS, config.provider)) throw Error(`provider must be one of ${Object.keys(PROVIDERS).join(', ')}`);
   const Adapter = providerClass(config);
   if (!Adapter.keyPattern.test(config.apiKey || '') || !sid(config.accountSid, 'AC') ||
@@ -30,6 +30,7 @@ export function validatePhoneConfig(config) {
   const model = config.model ?? Adapter.defaultModel, voice = config.voice ?? Adapter.defaultVoice;
   if (!Adapter.models.includes(model)) throw Error(`model must be one of ${Adapter.models.join(', ')} for provider ${Adapter.id}`);
   if (typeof voice !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(voice)) throw Error('voice must be a provider voice name or id');
+  if (config.thinking !== undefined && (!['low','medium','high'].includes(config.thinking) || model !== 'gemini-3.8-live-extended-thinking')) throw Error('thinking must be low, medium or high, and applies to gemini-3.8-live-extended-thinking only');
   if (config.language !== undefined && !/^[a-z]{2}(-[A-Za-z]{2})?$/.test(config.language)) throw Error('language must be a language code such as en');
   if ((config.toolModel !== undefined || config.toolEffort !== undefined) && Adapter.id !== 'openai') throw Error('toolModel and toolEffort apply to provider openai only');
   const origin = new URL(config.origin);
@@ -179,7 +180,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], optional: [`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
-      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)']},
+      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent tools, history or Retell/Vapi (its one tool is end_call; with openai it runs on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};

@@ -78,13 +78,14 @@ test('provider, model, voice and key shape are validated per provider', () => {
   assert.equal(ok('openai').model, 'gpt-live-1'); assert.equal(ok('openai').voice, 'marin');
   assert.equal(ok('elevenlabs').model, 'eleven_realtime_v1_mini'); assert.equal(ok('elevenlabs').voice, 'brian');
   assert.equal(ok('gemini').model, 'gemini-3.8-live'); assert.equal(ok('gemini').voice, 'Kore');
+  assert.equal(validatePhoneConfig({...base, apiKey: 'AQ.' + 'Ab8-x_y'.repeat(7), provider: 'gemini'}).provider, 'gemini', 'the newer AQ. key shape is accepted');
   assert.equal(validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', voice: 'vOZtmBu4RanHWgj2KUOY'}).model, 'eleven_realtime_v1_max');
   assert.equal(validatePhoneConfig({...base, apiKey: keys.gemini, provider: 'gemini', model: 'gemini-3.8-live-extended-thinking'}).model, 'gemini-3.8-live-extended-thinking');
   for (const [provider, apiKey] of [['openai', keys.gemini], ['elevenlabs', keys.openai], ['gemini', keys.elevenlabs]])
     assert.throws(() => validatePhoneConfig({...base, provider, apiKey}), error => /Supply the .* key/.test(error.message) && !error.message.includes(apiKey));
   assert.equal(validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', voice: '21m00Tcm4TlvDq8ikWAM'}).voice, '21m00Tcm4TlvDq8ikWAM');
   for (const bad of [{provider: 'grok'}, {provider: 'elevenlabs', model: 'gpt-live-1'}, {provider: 'gemini', voice: 'no spaces'}, {provider: 'gemini', language: 'english'},
-    {provider: 'gemini', toolModel: 'gpt-6-sol'}, {provider: 'elevenlabs', toolEffort: 'low'}])
+    {provider: 'gemini', toolModel: 'gpt-6-sol'}, {provider: 'gemini', thinking: 'high'}, {provider: 'gemini', model: 'gemini-3.8-live-extended-thinking', thinking: 'extreme'}, {provider: 'elevenlabs', toolEffort: 'low'}])
     assert.throws(() => validatePhoneConfig({...base, apiKey: keys[bad.provider] ?? keys.openai, ...bad}), /must be|apply to/);
   assert.equal(validatePhoneConfig({...base, apiKey: keys.openai, toolModel: 'gpt-6-sol'}).toolModel, 'gpt-6-sol');
 });
@@ -204,7 +205,12 @@ test('gemini sets up native tools and converts caller audio to 16 kHz PCM', asyn
   const thinking = await call('gemini', {model: 'gemini-3.8-live-extended-thinking'});
   await wait(() => thinking.socket()?.events.length);
   assert.equal(thinking.socket().events[0].setup.tools[0].functionDeclarations[0].behavior, undefined);
+  assert.deepEqual(thinking.socket().events[0].setup.generationConfig.thinkingConfig, {thinkingLevel: 'low'});
+  assert.equal('thinkingConfig' in (await call('gemini', {}).then(async c => {await wait(() => c.socket()?.events.length); await c.audio.close('test_done'); return c.socket().events[0].setup.generationConfig;})), false, 'the plain model refuses a thinking level');
   await thinking.audio.close('test_done');
+  const high = await call('gemini', {model: 'gemini-3.8-live-extended-thinking', thinking: 'high'});
+  await wait(() => high.socket()?.events.length);
+  assert.deepEqual(high.socket().events[0].setup.generationConfig.thinkingConfig, {thinkingLevel: 'high'}); await high.audio.close('test_done');
 });
 
 test('gemini model audio becomes whole 20 ms mu-law frames, a barge-in clears Twilio, and tools answer by id', async () => {
@@ -225,7 +231,8 @@ test('gemini model audio becomes whole 20 ms mu-law frames, a barge-in clears Tw
   socket().receive({usageMetadata: {totalTokenCount: 42}});
   socket().receive({toolCall: {functionCalls: [{id: 'fc-1', name: 'search_library', args: {}}, {id: 'fc-2', name: 'end_call', args: {}}]}});
   assert.deepEqual(socket().events.filter(e => e.toolResponse).map(e => e.toolResponse.functionResponses[0]),
-    [{id: 'fc-1', name: 'search_library', response: {result: {error: 'unknown_tool'}}}, {id: 'fc-2', name: 'end_call', response: {result: {status: 'ending'}}}]);
+    [{id: 'fc-1', name: 'search_library', response: {result: {error: 'unknown_tool'}}}], 'end_call is final: it gets no answer to narrate');
+  assert(audio.endingAt > 0);
   for (let i = 0; i < 300 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
   assert.equal(audio.stats.reason, 'end_call');
   const stats = await audio.done;
