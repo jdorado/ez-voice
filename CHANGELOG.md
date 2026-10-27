@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.8
+
+GitHub release only (no npm), as beta.7. It rolls up the QA candidates rc.1 to rc.10 below.
 
 - The phone bridge serves more than one speech provider. `provider` (default `openai`), `model`, `voice` and `language` in the
   private phone configuration choose it; each provider's wire protocol is an adapter in `src/phone-providers/` and `PhoneAudio`
@@ -15,7 +17,7 @@
   After `end_call` ElevenLabs is no longer asked to keep talking (a live call showed a second goodbye three seconds after the first)
   and Gemini gets no tool response (it narrated "the call has ended").
   Gemini accepts both key shapes (`AIza...` and the newer `AQ....`), and its thinking variant takes a `thinking` level.
-  QA candidate `0.1.0-beta.8.rc.10`; not tagged or published.
+  Released as `0.1.0-beta.8`.
 
 - The tools backend model defaults to `gpt-6.1-sol` at reasoning effort `low` (`toolModel`, `toolEffort` in the private
   phone configuration). QA candidate `0.1.0-beta.8.rc.9`; not tagged or published.
