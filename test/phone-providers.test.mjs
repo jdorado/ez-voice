@@ -336,3 +336,22 @@ test('where audio only flows while the model speaks, audio arriving after end_ca
   await wait(() => markSent(twilio)); audio.mark('end_call'); await audio.done;
   assert.equal(audio.stats.reason, 'end_call');
 });
+
+test('the idle hang-up waits for queued speech to finish playing, and a barge-in drops what was queued', async () => {
+  const burst = seconds => ({type: 'response.output_audio.delta', delta: Buffer.alloc(8000 * seconds, 0x55).toString('base64')});
+  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0.4}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  socket().receive({type: 'input_audio_buffer.speech_stopped'}); // somebody spoke: the idle rule is armed
+  socket().receive(burst(3)); // 3 s of speech arrives at once, as a provider that runs faster than realtime sends it
+  await new Promise(r => setTimeout(r, 1500));
+  assert.equal(audio.closing, undefined, 'still being played, so not idle (it arrived 1.5 s ago, played for 3 s)');
+  for (let i = 0; i < 400 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(audio.stats.reason, 'idle_timeout'); await audio.done;
+  const barge = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0.4}, {fetch: mintOk().fetch});
+  await wait(() => barge.socket()); barge.socket().receive({type: 'session.created'}); barge.socket().receive({type: 'session.updated'});
+  barge.socket().receive(burst(30)); barge.socket().receive({type: 'input_audio_buffer.speech_started'});
+  const started = Date.now();
+  for (let i = 0; i < 400 && !barge.audio.closing; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(barge.audio.stats.reason, 'idle_timeout'); assert(Date.now() - started < 3000, 'the 30 s that were queued were cleared, not waited for');
+  await barge.audio.done;
+});

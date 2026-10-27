@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.10
+
+GitHub release only (no npm), as beta.8 and beta.9.
+
+- The idle hang-up (`idleSeconds`) no longer cuts a long message. Where a provider sends speech faster than realtime (ElevenLabs,
+  Gemini) the idle timer counted from when the audio arrived, not from when Twilio finished playing it, so a message longer than
+  `idleSeconds` could be hung up on while still being played (a live call ended `idle_timeout` while the model was still talking).
+  The model now counts as speaking until everything it sent has been played (8 bytes of mu-law a millisecond); a caller talking
+  over it drops what was queued. `end_call` is unchanged (it waits for the mark since beta.9). GPT-Live is unchanged.
+
 ## 0.1.0-beta.9
 
 GitHub release only (no npm), as beta.8.
