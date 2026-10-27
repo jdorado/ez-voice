@@ -154,6 +154,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
           }, {socketFactory}); active = bridge;
           recording = startRecording(provider, start.callSid);
         } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
+        else if (message.event === 'mark') bridge?.mark(message.mark?.name);
         else if (message.event === 'stop') bridge?.close();
       } catch { ws.close(); bridge?.close('invalid_twilio_event'); }
     });

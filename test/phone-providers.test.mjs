@@ -143,7 +143,7 @@ test('elevenlabs mints a client secret, configures the session natively and pass
 });
 
 test('elevenlabs runs end_call natively and answers the function call', async () => {
-  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 3000}, {fetch: mintOk().fetch});
+  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 3000, endCallDrainMs: 100}, {fetch: mintOk().fetch});
   await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
   const done = (call_id, name) => ({type: 'response.output_item.done', item: {type: 'function_call', call_id, name, arguments: '{}'}});
   socket().receive(done('end_call_1', 'search_library')); socket().receive(done('bad id!', 'end_call')); socket().receive({type: 'response.output_item.done', item: {type: 'message'}});
@@ -214,7 +214,7 @@ test('gemini sets up native tools and converts caller audio to 16 kHz PCM', asyn
 });
 
 test('gemini model audio becomes whole 20 ms mu-law frames, a barge-in clears Twilio, and tools answer by id', async () => {
-  const {audio, twilio, socket, ready} = await call('gemini', {idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 3000});
+  const {audio, twilio, socket, ready} = await call('gemini', {idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 3000, endCallDrainMs: 100});
   await wait(() => socket()?.events.length); socket().receive({setupComplete: {}}); await wait(() => ready() === 1);
   const chunk = pcm => ({serverContent: {modelTurn: {parts: [{inlineData: {mimeType: 'audio/pcm;rate=24000', data: pcmBytes(pcm).toString('base64')}}]}}});
   for (let i = 0; i < 10; i++) socket().receive(chunk(tone(500, 24000, 20)));
@@ -300,4 +300,39 @@ test('a provider that closes the session by itself leaves a reason, and duplicat
   socket().emit('close', 1000, Buffer.from(''));
   const stats = await audio.done;
   assert.equal(stats.reason, 'provider_closed'); assert.equal(stats.providerError, undefined); assert.equal(stats.finalized, false);
+});
+
+const endCallItem = id => ({type: 'response.output_item.done', item: {type: 'function_call', call_id: id, name: 'end_call', arguments: '{}'}});
+const markSent = twilio => twilio.sent.some(m => m.event === 'mark');
+
+test('end_call waits for Twilio to play what was queued: a mark goes out, and only its echo hangs up', async () => {
+  const {audio, twilio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 5000, endCallDrainMs: 5000}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  socket().receive({type: 'response.output_audio.delta', delta: '//8='}); socket().receive(endCallItem('end_call_a'));
+  await wait(() => markSent(twilio));
+  assert.deepEqual(twilio.sent.find(m => m.event === 'mark'), {event: 'mark', streamSid, mark: {name: 'end_call'}});
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(audio.closing, undefined, 'the call stays up until Twilio has played the audio');
+  audio.mark('other'); assert.equal(audio.closing, undefined, 'another mark name does not count');
+  audio.mark('end_call');
+  assert.equal(audio.stats.reason, 'end_call'); await audio.done;
+});
+
+test('a Twilio that never echoes the mark cannot keep the call up past endCallDrainMs, and no mark before end_call hangs up', async () => {
+  const {audio, twilio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 5000, endCallDrainMs: 200}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  audio.mark('end_call'); assert.equal(audio.closing, undefined, 'a stray mark echo before end_call does nothing');
+  socket().receive(endCallItem('end_call_a'));
+  for (let i = 0; i < 300 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
+  assert(markSent(twilio)); assert.equal(audio.stats.reason, 'end_call'); await audio.done;
+});
+
+test('where audio only flows while the model speaks, audio arriving after end_call keeps the hang-up waiting', async () => {
+  const {audio, twilio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 300, endCallMaxMs: 10000, endCallDrainMs: 5000}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  socket().receive(endCallItem('end_call_a'));
+  for (let i = 0; i < 12; i++) { socket().receive({type: 'response.output_audio.delta', delta: '//8='}); await new Promise(r => setTimeout(r, 100)); }
+  assert.equal(markSent(twilio), false, 'the goodbye was still arriving, so no mark yet');
+  await wait(() => markSent(twilio)); audio.mark('end_call'); await audio.done;
+  assert.equal(audio.stats.reason, 'end_call');
 });

@@ -10,6 +10,7 @@ export class OpenAIAdapter {
   static defaultVoice = 'marin';
   static keyPattern = /^sk-[A-Za-z0-9_-]{10,}$/;
   static confirmsClose = true;
+  static audioMeansSpeech = false; // GPT-Live streams output audio nonstop, silence included
   static supportsTools() { return true; }
 
   constructor(config) { this.config = config; }

@@ -90,9 +90,7 @@ not call tools (it writes the tool name into its speech), so Voice declares none
 `end_call` (`phone doctor` shows `tools` as false then). `language` (default `en`) is the transcription language. The thinking variant needs a level at setup and the plain model refuses one, so `thinking` applies to the variant only (thinking adds delay). Gemini Live carries the key in the WebSocket URL: Voice
 never logs it, and no error text or receipt includes it.
 
-Known limits: the bridge does not wait for Twilio to finish playing queued audio before it hangs up, so a provider that sends
-speech faster than realtime (Gemini does) can have its last words cut off after `end_call`; a Twilio `mark` handshake would fix
-it and needs a live call to verify. `firstAudioMs` is the first audio frame, not a turn latency: GPT-Live streams silence from
+Known limits: `firstAudioMs` is the first audio frame, not a turn latency: GPT-Live streams silence from
 the start, so there it is close to `readyMs`. The provider's own session cap applies too (ElevenLabs follows `maxCallSeconds`
 up to 7200 s; Gemini audio sessions end after about 15 minutes).
 
@@ -125,7 +123,11 @@ backend calls a tool (`response.output_item.done` with a `function_call`) the pl
 `tools: false` in the private configuration keeps the earlier client delegation, with no tools.
 
 `end_call` marks the call as ending; the model may say a goodbye, and once it has been quiet for two seconds (at most
-twelve after the call) the plugin closes the stream, which ends the call (close reason `end_call`). The receipt lists the
+twelve after the call) the plugin sends Twilio a `mark` behind everything already queued and closes the stream when Twilio echoes
+it, that is, when the last of the goodbye has been played (at most fifteen seconds more), which ends the call (close reason
+`end_call`). Without that wait, a provider that sends speech faster than realtime had a voicemail message cut off after one
+sentence: closing the stream drops what Twilio still has queued. Where a provider's output audio only flows while the model
+speaks (ElevenLabs, Gemini), its arrival counts as the model speaking. The receipt lists the
 tools called (`tools`). When to end a call is the phone `instructions`' decision; `idleSeconds` stays as the backstop.
 
 ## Place a call
@@ -211,7 +213,8 @@ hangup sends `session.close` and waits for `session.closed` to confirm final usa
 finalization and durable receipt storage; a receipt write failure is reported.
 A connection failure without that event, and any provider with no close handshake,
 is explicitly unconfirmed. Voice does not synchronize Twilio's playback
-buffer with the model's full-duplex output beyond clearing it when ElevenLabs or Gemini report a barge-in; interruption
+buffer with the model's full-duplex output beyond clearing it when ElevenLabs or Gemini report a barge-in and waiting for it
+to drain before an `end_call` hangup; interruption
 quality needs later work and must not be treated as accepted by synthetic transport tests.
 
 Audible acceptance: an authorized person calls the routed number, the model responds

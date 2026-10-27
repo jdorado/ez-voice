@@ -5,7 +5,8 @@ import {GeminiAdapter} from './gemini.mjs';
 // A phone provider is one speech-to-speech (or cascaded speech) service behind a WebSocket. PhoneAudio owns the Twilio bridge,
 // the timers, the tool registry and the receipt; an adapter owns one provider's wire protocol and nothing else. Each call gets a
 // fresh adapter (they hold stream state). The adapter has static `id`, `label`, `models`, `defaultModel`, `defaultVoice`,
-// `keyPattern`, `confirmsClose` (true when the provider reports a final session.closed with usage) and `supportsTools(model)`;
+// `keyPattern`, `confirmsClose` (true when the provider reports a final session.closed with usage), `audioMeansSpeech` (true when
+// its output audio only flows while the model speaks) and `supportsTools(model)`;
 // its constructor keeps the validated `config` (model and voice resolved) as `this.config`; and:
 //   connection()                 -> {url, headers}, or a promise of it (ElevenLabs mints a client secret first)
 //   start()                      -> messages sent as soon as the socket opens
