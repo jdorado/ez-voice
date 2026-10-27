@@ -30,6 +30,10 @@ listener and Voice service must share a deployment-owned private Docker network;
 do not expose that listener publicly. Host-owned network bindings must be pinned
 to the reviewed Voice revision.
 
+On the phone channel the configured speech provider (GPT-Live, ElevenLabs Realtime or Gemini Live) receives the call audio and
+the phone instructions, and its credential stays in the private phone configuration. The deployment's host-owned network binding
+must allow that provider's hosts (api.openai.com, api.elevenlabs.io, generativelanguage.googleapis.com).
+
 GPT-Live receives audio, compact bound identity, retained voice text and concise
 native-agent results. It cannot invoke installed plugins directly. Delegated
 transcript text enters the normal Ez application channel, where the native engine

@@ -82,6 +82,7 @@ test('provider, model, voice and key shape are validated per provider', () => {
   assert.equal(validatePhoneConfig({...base, apiKey: keys.gemini, provider: 'gemini', model: 'gemini-3.8-live-extended-thinking'}).model, 'gemini-3.8-live-extended-thinking');
   for (const [provider, apiKey] of [['openai', keys.gemini], ['elevenlabs', keys.openai], ['gemini', keys.elevenlabs]])
     assert.throws(() => validatePhoneConfig({...base, provider, apiKey}), error => /Supply the .* key/.test(error.message) && !error.message.includes(apiKey));
+  assert.equal(validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', voice: '21m00Tcm4TlvDq8ikWAM'}).voice, '21m00Tcm4TlvDq8ikWAM');
   for (const bad of [{provider: 'grok'}, {provider: 'elevenlabs', model: 'gpt-live-1'}, {provider: 'gemini', voice: 'no spaces'}, {provider: 'gemini', language: 'english'},
     {provider: 'gemini', toolModel: 'gpt-6-sol'}, {provider: 'elevenlabs', toolEffort: 'low'}])
     assert.throws(() => validatePhoneConfig({...base, apiKey: keys[bad.provider] ?? keys.openai, ...bad}), /must be|apply to/);
@@ -256,4 +257,40 @@ test('createAdapter fills the model and voice defaults and rejects an unknown pr
   const adapter = createAdapter({apiKey: keys.openai}, {});
   assert.equal(adapter.config.model, 'gpt-live-1'); assert.equal(adapter.config.voice, 'marin');
   assert.throws(() => createAdapter({provider: 'grok'}), /provider must be one of/);
+});
+
+test('doctor shows whether tools are declared, and elevenlabs sizes its session to the call', async () => {
+  const state = await mkdtemp(join(tmpdir(), 'ez-voice-tools-'));
+  try {
+    await mkdir(join(state, 'phone'), {recursive: true});
+    const doctor = async config => {await writeFile(join(state, 'phone', 'config.json'), JSON.stringify({...base, ...config})); return phoneCommand(state, ['doctor']);};
+    assert.equal((await doctor({apiKey: keys.elevenlabs, provider: 'elevenlabs'})).tools, false);
+    assert.equal((await doctor({apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max'})).tools, true);
+    assert.equal((await doctor({apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', tools: false})).tools, false);
+    assert.equal((await doctor({apiKey: keys.openai})).tools, true);
+  } finally {await rm(state, {recursive: true, force: true});}
+  const long = await call('elevenlabs', {maxCallSeconds: 900}, {fetch: mintOk().fetch}), short = await call('elevenlabs', {maxCallSeconds: 30}, {fetch: mintOk().fetch}), huge = await call('elevenlabs', {maxCallSeconds: 3600}, {fetch: mintOk().fetch});
+  for (const [c, seconds] of [[long, 915], [short, 60], [huge, 3615]]) {
+    await wait(() => c.socket()); c.socket().receive({type: 'session.created'});
+    assert.equal(c.socket().events[0].session.max_duration_seconds, seconds); await c.audio.close('test_done');
+  }
+});
+
+test('a call closed while the client secret is pending never opens a socket', async () => {
+  let release; const gate = new Promise(resolve => {release = resolve;});
+  const {audio, sockets} = await call('elevenlabs', {}, {fetch: async () => {await gate; return new Response(JSON.stringify({value: secret}), {status: 200});}});
+  await audio.close('caller_hangup');
+  release(); await new Promise(r => setTimeout(r, 30));
+  assert.equal(sockets.length, 0); assert.equal(audio.stats.reason, 'caller_hangup');
+});
+
+test('a provider that closes the session by itself leaves a reason, and duplicate end_call answers are harmless', async () => {
+  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  const done = id => ({type: 'response.output_item.done', item: {type: 'function_call', call_id: id, name: 'end_call', arguments: '{}'}});
+  socket().receive(done('end_call_a')); socket().receive(done('end_call_b'));
+  assert.deepEqual(audio.stats.tools, ['end_call', 'end_call']); assert.equal(audio.endingAt > 0, true);
+  socket().emit('close', 1000, Buffer.from(''));
+  const stats = await audio.done;
+  assert.equal(stats.reason, 'provider_closed'); assert.equal(stats.providerError, undefined); assert.equal(stats.finalized, false);
 });

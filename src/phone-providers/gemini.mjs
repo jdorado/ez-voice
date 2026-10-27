@@ -22,6 +22,7 @@ export class GeminiAdapter {
   static defaultVoice = 'Kore';
   static keyPattern = /^AIza[A-Za-z0-9_-]{30,60}$/;
   static confirmsClose = false;
+  static supportsTools() { return true; }
 
   constructor(config) {
     this.config = config;
@@ -67,7 +68,7 @@ export class GeminiAdapter {
         if (audio === null) items.push({type: 'fatal', reason: 'unsupported_provider_audio'});
         else if (audio.length) items.push({type: 'audio', audio: audio.toString('base64')});
       }
-      if (content.turnComplete) { const tail = this.framer.flush(); if (tail.length) items.push({type: 'audio', audio: tail.toString('base64')}); }
+      if (content.turnComplete) { for (const down of this.downsamplers.values()) down.reset(); const tail = this.framer.flush(); if (tail.length) items.push({type: 'audio', audio: tail.toString('base64')}); }
     }
     for (const call of message.toolCall?.functionCalls ?? []) items.push({type: 'tool', id: call.id, name: call.name});
     if (message.goAway) items.push({type: 'fatal', reason: 'provider_go_away'});

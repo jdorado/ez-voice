@@ -87,8 +87,14 @@ ElevenLabs Realtime is the OpenAI Realtime protocol over WebSocket. Its socket r
 a short-lived client secret (`POST /v1/convai/realtime/client_secrets`, needing an ElevenLabs key with ElevenAgents write
 access) and connects with that. ElevenLabs documents Realtime as a cascaded stack, not native audio to audio. Its Mini model does
 not call tools (it writes the tool name into its speech), so Voice declares none for Mini: use Max where the model must call
-`end_call`. `language` (default `en`) is the transcription language. Gemini Live carries the key in the WebSocket URL: Voice
+`end_call` (`phone doctor` shows `tools` as false then). `language` (default `en`) is the transcription language. Gemini Live carries the key in the WebSocket URL: Voice
 never logs it, and no error text or receipt includes it.
+
+Known limits: the bridge does not wait for Twilio to finish playing queued audio before it hangs up, so a provider that sends
+speech faster than realtime (Gemini does) can have its last words cut off after `end_call`; a Twilio `mark` handshake would fix
+it and needs a live call to verify. `firstAudioMs` is the first audio frame, not a turn latency: GPT-Live streams silence from
+the start, so there it is close to `readyMs`. The provider's own session cap applies too (ElevenLabs follows `maxCallSeconds`
+up to 7200 s; Gemini audio sessions end after about 15 minutes).
 
 A provider with no close handshake cannot confirm finalization: the receipt shows `finalized: false`, and `phone probe` proves
 only that the session started. The receipt names the `provider` and `model`, and records `readyMs` and `firstAudioMs`

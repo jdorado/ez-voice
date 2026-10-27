@@ -29,7 +29,7 @@ export function validatePhoneConfig(config) {
       !/^[a-fA-F0-9]{32}$/.test(config.authToken || '') || !phone(config.number)) throw Error(`Supply the ${Adapter.label} key, Twilio account auth token and configured E.164 number privately`);
   const model = config.model ?? Adapter.defaultModel, voice = config.voice ?? Adapter.defaultVoice;
   if (!Adapter.models.includes(model)) throw Error(`model must be one of ${Adapter.models.join(', ')} for provider ${Adapter.id}`);
-  if (typeof voice !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(voice)) throw Error('voice must be a provider voice name or id');
+  if (typeof voice !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(voice)) throw Error('voice must be a provider voice name or id');
   if (config.language !== undefined && !/^[a-z]{2}(-[A-Za-z]{2})?$/.test(config.language)) throw Error('language must be a language code such as en');
   if ((config.toolModel !== undefined || config.toolEffort !== undefined) && Adapter.id !== 'openai') throw Error('toolModel and toolEffort apply to provider openai only');
   const origin = new URL(config.origin);
@@ -193,7 +193,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!stored && command === 'doctor') return {configured: false, providers: Object.keys(PROVIDERS), model: 'gpt-live-1', nativeTools: false, liveVerified: false};
   if (!stored) throw Error('Phone is not configured; use phone configure with private stdin');
   const config = validatePhoneConfig(stored);
-  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, origin: config.origin, number: config.number, outbound: true, nativeTools: false, liveVerified: false};
+  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, outbound: true, nativeTools: false, liveVerified: false};
   if (command === 'probe') {
     const result = await new Promise(resolve => {
       const audio = new PhoneAudio({readyState: 1, close() {}, send() {}}, config, resolve, {onReady: () => audio.close('probe_complete')});

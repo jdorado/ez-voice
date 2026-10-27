@@ -43,7 +43,10 @@ export class PhoneAudio {
     this.provider.on('error', () => this.close('provider_connection_failed'));
     this.provider.on('close', code => {
       // A provider that ends the session by closing the socket says why in the close code only (never keep its text).
-      if (!this.closing && !this.completed && Number.isInteger(code) && ![1000, 1005].includes(code)) this.stats.providerError ??= `WS_${code}`;
+      if (!this.closing && !this.completed) {
+        this.stats.reason ??= 'provider_closed';
+        if (Number.isInteger(code) && ![1000, 1005].includes(code)) this.stats.providerError ??= `WS_${code}`;
+      }
       this.complete();
     });
   }

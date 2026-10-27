@@ -16,6 +16,7 @@ export class ElevenLabsAdapter {
   static confirmsClose = false;
   // Mini does not call tools: given end_call it writes "[end_call]" into its speech instead, while Max issues real function calls.
   static toolModels = ['eleven_realtime_v1_max'];
+  static supportsTools(model) { return ElevenLabsAdapter.toolModels.includes(model); }
 
   constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; }
 
@@ -32,8 +33,10 @@ export class ElevenLabsAdapter {
   start() { return []; }
   configure() {
     const c = this.config;
+    // ElevenLabs closes a session after max_duration_seconds (default 600, range 60..7200): follow the call length.
     return {type: 'session.update', session: {type: 'realtime', model: c.model, instructions: c.instructions, output_modalities: ['audio'],
-      ...(c.tools === false || !ElevenLabsAdapter.toolModels.includes(c.model) ? {} : {tools: toolDefinitions(), tool_choice: 'auto'}),
+      max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15)),
+      ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(), tool_choice: 'auto'}),
       audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
   audioIn(audio) { return [{type: 'input_audio_buffer.append', audio}]; }
