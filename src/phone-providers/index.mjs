@@ -19,7 +19,7 @@ import {GeminiAdapter} from './gemini.mjs';
 //     {type: 'send', message}    a message to send back now
 //     {type: 'closed', usage}    the provider confirmed the end of the session
 //     {type: 'error', code} / {type: 'fatal', reason}   a provider error / end the call
-//   toolResult(id, name, output) -> messages that hand a tool's output back
+//   toolResult(id, name, output, {final}) -> messages that hand a tool's output back (`final`: the call ends, no follow-up needed)
 //   closeMessages()              -> messages that ask the provider to finish ([] when the socket close is the end)
 export const PROVIDERS = {
   [OpenAIAdapter.id]: OpenAIAdapter,

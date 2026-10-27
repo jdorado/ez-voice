@@ -12,6 +12,7 @@
   ElevenLabs or Gemini clears Twilio's queued audio. The receipt gains `provider`, `model`, `readyMs` and `firstAudioMs`, and
   `/health` and `phone doctor` name the provider. Providers with no close handshake report `finalized: false`; `phone probe`
   proves the session started. Gemini was written from Google's documentation and is not yet verified on a live call.
+  After `end_call` ElevenLabs is no longer asked to keep talking (a live call showed a second goodbye three seconds after the first).
   QA candidate `0.1.0-beta.8.rc.10`; not tagged or published.
 
 - The tools backend model defaults to `gpt-6.1-sol` at reasoning effort `low` (`toolModel`, `toolEffort` in the private

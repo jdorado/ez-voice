@@ -116,7 +116,8 @@ contact-speech signal, and the receipt counts them (`inputTranscriptEvents`), so
 
 GPT-Live has no direct function calling; tools run on its backend (Responses delegation). ElevenLabs Max and Gemini call
 the tools natively: the adapter declares them in the session and answers each call (a `function_call_output` at ElevenLabs, a
-`toolResponse` matched by `id` at Gemini), with no backend model. With GPT-Live the phone session starts with
+`toolResponse` matched by `id` at Gemini), with no backend model. After `end_call` (a final tool) ElevenLabs is not asked to continue,
+so the goodbye it spoke before the call is the last thing said. With GPT-Live the phone session starts with
 `delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6.1-sol` at reasoning effort `toolEffort`, default `low`), instructions that say the backend
 can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
 backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a

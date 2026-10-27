@@ -150,7 +150,7 @@ test('elevenlabs runs end_call natively and answers the function call', async ()
   socket().receive(done('end_call_2', 'end_call'));
   const outputs = socket().events.filter(e => e.type === 'conversation.item.create').map(e => [e.item.call_id, JSON.parse(e.item.output)]);
   assert.deepEqual(outputs, [['end_call_1', {error: 'unknown_tool'}], ['end_call_2', {status: 'ending'}]]);
-  assert.equal(socket().events.filter(e => e.type === 'response.create').length, 2);
+  assert.equal(socket().events.filter(e => e.type === 'response.create').length, 1, 'only the unknown tool asks the model to continue; end_call is final');
   for (let i = 0; i < 300 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
   assert.equal(audio.stats.reason, 'end_call'); assert.deepEqual(audio.stats.tools, ['unknown', 'end_call']);
   await audio.done;

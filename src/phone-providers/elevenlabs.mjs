@@ -59,8 +59,9 @@ export class ElevenLabsAdapter {
       default: return [];
     }
   }
-  toolResult(id, name, output) {
-    return [{type: 'conversation.item.create', item: {type: 'function_call_output', call_id: id, output: JSON.stringify(output)}}, {type: 'response.create'}];
+  toolResult(id, name, output, {final = false} = {}) {
+    const answer = {type: 'conversation.item.create', item: {type: 'function_call_output', call_id: id, output: JSON.stringify(output)}};
+    return final ? [answer] : [answer, {type: 'response.create'}];
   }
   // No close handshake: closing the socket ends the session, and no usage is reported.
   closeMessages() { return []; }

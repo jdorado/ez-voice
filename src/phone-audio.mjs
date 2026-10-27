@@ -117,7 +117,7 @@ export class PhoneAudio {
     let output;
     try { output = tool ? tool.run(this) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
     (this.stats.tools ??= []).length < 20 && this.stats.tools.push(tool ? item.name : 'unknown');
-    for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
+    for (const message of this.adapter.toolResult(item.id, item.name, output, {final: Boolean(tool?.final)})) this.send(message);
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
   close(reason = 'caller_hangup') {
