@@ -10,8 +10,10 @@ export const LAST_CALL = 'last-call.json';
 const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected']);
 const statuses = new Set(['queued','initiated','ringing','in-progress',...terminal]);
 const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
-// A per-call brief replaces the configured instructions for that outbound call only.
+// A per-call brief is added to the configured instructions (the line's identity and conduct) for that
+// outbound call only; where the two differ, the brief wins.
 export const MAX_CALL_INSTRUCTIONS = 12000;
+export const withBrief = (instructions, brief) => brief ? `${instructions}\n\nBrief for this call (where it differs from the instructions above, it wins):\n${brief}` : instructions;
 const brief = value => value === undefined || (typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_CALL_INSTRUCTIONS);
 const rank = value => terminal.has(value) ? 4 : value === 'in-progress' ? 3 : value === 'ringing' ? 2 : value === 'queued' || value === 'initiated' ? 1 : 0;
 

@@ -3,9 +3,9 @@
 ## 0.1.0-beta.11.rc.3
 
 - `phone call --instructions -` takes a per-call brief (1..12000 characters) on stdin. It is saved with the request
-  before dialing and replaces the configured instructions for that outbound call only; inbound calls keep the
-  configuration. ElevenLabs Realtime Max accepted a 12000-character brief in a live probe (ready in 3.7 s).
-  QA candidate only; not tagged or published.
+  before dialing and added after the configured instructions for that outbound call only (the brief wins where they
+  differ); inbound calls keep the configuration alone. ElevenLabs Realtime Max accepted 16000 characters of
+  instructions in a live probe. QA candidate only; not tagged or published.
 
 ## 0.1.0-beta.11.rc.2
 

@@ -153,9 +153,10 @@ ez voice phone receipt
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
 instructions. `--instructions -` reads a per-call brief (1..12000 characters) on
-stdin; it is saved with the request before dialing and replaces the configured
-instructions for that call only (inbound calls and other requests keep the
-configuration). A repeated request ID keeps its original brief. The brief is the
+stdin; it is saved with the request before dialing and added after the configured
+instructions for that call only, under a heading that says the brief wins where
+the two differ (the configuration stays the line's identity and conduct; inbound
+calls and other requests get the configuration alone). A repeated request ID keeps its original brief. The brief is the
 caller's: Voice adds no context, tools or history of its own. No new application,
 provider or inbound number route is created. The existing HTTPS `/incoming` endpoint also receives the signed
 outbound answer and terminal-status callbacks. Ringing is limited to forty-five

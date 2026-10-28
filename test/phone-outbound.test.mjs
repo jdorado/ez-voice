@@ -94,7 +94,7 @@ test('an outbound answer starts exactly one recording for its Call SID and call-
   } finally {ws?.terminate();await web.close();}
 });
 
-test('a per-call brief replaces the configured instructions for that outbound call only',async t=>{
+test('a per-call brief is added to the configured instructions for that outbound call only',async t=>{
   const {directory,provider,calls}=await fixture(t);let audio,receipt,ws;
   const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:recorder().provider,socketFactory:()=>audio=new AudioProvider(),record:async value=>{receipt=value;}});
   try {
@@ -109,8 +109,8 @@ test('a per-call brief replaces the configured instructions for that outbound ca
     ws.send(JSON.stringify({event:'start',start:{accountSid:config.accountSid,callSid,streamSid,customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
     await wait(()=>audio?.events.some(event=>event.type==='session.start'));
     const session=audio.events.find(event=>event.type==='session.start').session;
-    assert(session.instructions.startsWith('Call brief: Sharon calls back about 12 Main Street.'));
-    assert(!session.instructions.includes(config.instructions));
+    assert(session.instructions.startsWith(config.instructions+'\n\nBrief for this call'));
+    assert(session.instructions.includes('\nCall brief: Sharon calls back about 12 Main Street.'));
     ws.close();await wait(()=>receipt);
     const restarted=new PhoneCalls(directory,config,provider);
     try { assert.equal(restarted.instructions(id),'Call brief: Sharon calls back about 12 Main Street.');assert.equal(restarted.instructions('unknown'),undefined); }

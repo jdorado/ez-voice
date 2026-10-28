@@ -8,7 +8,7 @@ import {PhoneAudio} from './phone-audio.mjs';
 import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/index.mjs';
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
-import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL, MAX_CALL_INSTRUCTIONS} from './phone-calls.mjs';
+import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL, MAX_CALL_INSTRUCTIONS, withBrief} from './phone-calls.mjs';
 const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone call. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
@@ -155,7 +155,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           if (!ticket || ticket.expires < Date.now() || ticket.callSid !== start.callSid || start.accountSid !== config.accountSid ||
               active || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
           tickets.delete(start.customParameters.ticket); admitted++;
-          bridge = new PhoneAudio(ws, {...config, ...(ticket.instructions && {instructions: ticket.instructions}), streamSid: start.streamSid}, async stats => {
+          bridge = new PhoneAudio(ws, {...config, instructions: withBrief(config.instructions, ticket.instructions), streamSid: start.streamSid}, async stats => {
             try { await record({callSid: start.callSid, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (active === bridge) active = undefined; }
@@ -199,7 +199,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], optional: [`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
       ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent tools, history or Retell/Vapi (its one tool is end_call; with openai it runs on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
-    outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin that replaces the configured instructions for that call only. Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
+    outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin, added to the configured instructions for that call only (the brief wins where they differ). Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
     let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 16000) throw Error('Phone configuration too large'); }
