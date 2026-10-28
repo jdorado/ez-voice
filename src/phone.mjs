@@ -22,7 +22,7 @@ async function save(path, value) {
 }
 export function validatePhoneConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config) ||
-      Object.keys(config).some(k => !['provider','model','voice','language','thinking','apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds','tools','toolModel','toolEffort'].includes(k))) throw Error('Invalid phone configuration fields');
+      Object.keys(config).some(k => !['provider','model','voice','language','thinking','apiKey','accountSid','authToken','number','origin','instructions','maxCallSeconds','idleSeconds','tools','toolModel','toolEffort','pathPrefix'].includes(k))) throw Error('Invalid phone configuration fields');
   if (config.provider !== undefined && !Object.hasOwn(PROVIDERS, config.provider)) throw Error(`provider must be one of ${Object.keys(PROVIDERS).join(', ')}`);
   const Adapter = providerClass(config);
   if (!Adapter.keyPattern.test(config.apiKey || '') || !sid(config.accountSid, 'AC') ||
@@ -35,6 +35,7 @@ export function validatePhoneConfig(config) {
   if ((config.toolModel !== undefined || config.toolEffort !== undefined) && Adapter.id !== 'openai') throw Error('toolModel and toolEffort apply to provider openai only');
   const origin = new URL(config.origin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw Error('Use an HTTPS origin without a path');
+  if (config.pathPrefix !== undefined && (typeof config.pathPrefix !== 'string' || !/^\/[A-Za-z0-9_-]{1,64}$/.test(config.pathPrefix))) throw Error('pathPrefix must be one URL path segment, such as /voice-a');
   const instructions = config.instructions ?? DEFAULT_INSTRUCTIONS;
   if (typeof instructions !== 'string' || !instructions.trim() || instructions.length > 4000) throw Error('Phone instructions must contain 1..4000 characters');
   const maxCallSeconds = config.maxCallSeconds ?? 180, idleSeconds = config.idleSeconds ?? 20;
@@ -54,7 +55,7 @@ function authentic(config, signature, path, params) {
   if (typeof signature !== 'string' || signature.length > 100) return false;
   // Twilio's HTTP upgrade signature uses its externally visible URL. Accept
   // either spelling of that fixed TLS endpoint, never request-supplied Host.
-  return [config.origin + path, ...(path === '/media' ? [config.origin.replace('https:', 'wss:') + path] : [])].some(url => {
+  return [config.origin + path, ...(path === (config.pathPrefix || '') + '/media' ? [config.origin.replace('https:', 'wss:') + path] : [])].some(url => {
     const expected = Buffer.from(twilioSignature(config.authToken, url, params)); const actual = Buffer.from(signature);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   });
@@ -102,15 +103,17 @@ const startRecording = (provider, callSid) => Promise.resolve().then(() => provi
   recording => ({state: 'started', sid: recording.sid}),
   error => ({state: 'failed', code: Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'ERROR'}));
 
-export async function servePhone(config, {port = 8080, host = '0.0.0.0', record = async () => {}, socketFactory, calls, provider = new PhoneNumber(config)} = {}) {
-  const tickets = new Map(); let active, admitted = 0, unavailable = false, receiptError = false, closing;
+export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, provider = new PhoneNumber(config)} = {}) {
+  const prefix = config.pathPrefix || '', mediaPath = prefix + '/media';
+  const tickets = new Map(); let active, admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.expires<Date.now())tickets.delete(token);};
+  const capacity=()=>{pruneTickets();return {accepting:!unavailable && !draining,active:Boolean(active),tickets:tickets.size,outboundPending:Boolean(calls?.pending()),idle:!active && tickets.size===0 && !calls?.pending()};};
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     try {
       if (request.method === 'GET' && request.url === '/health') { response.statusCode = unavailable ? 503 : 200; response.setHeader('Content-Type', 'application/json'); return response.end(JSON.stringify({ready: !unavailable, active: Boolean(active), admitted, provider: config.provider ?? DEFAULT_PROVIDER, model: config.model ?? providerClass(config).defaultModel, ...(calls && {outboundPending:Boolean(calls.pending())})})); }
       const url=new URL(request.url,config.origin);
-      if (request.method !== 'POST' || url.origin!==config.origin || url.pathname!=='/incoming' || !request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) { response.writeHead(404); return response.end(); }
+      if (request.method !== 'POST' || url.origin!==config.origin || !['/incoming',prefix+'/incoming'].includes(url.pathname) || !request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) { response.writeHead(404); return response.end(); }
       const params = new URLSearchParams(await body(request));
       if (!authentic(config, request.headers['x-twilio-signature'], request.url, params) || params.get('AccountSid') !== config.accountSid || !sid(params.get('CallSid'), 'CA')) { response.writeHead(403); return response.end(); }
       const outbound=url.searchParams.get('outbound'), isStatus=url.searchParams.get('status')==='1';
@@ -121,15 +124,20 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
       response.setHeader('Content-Type', 'text/xml');
       pruneTickets();
       const existing = [...tickets].find(([, ticket]) => ticket.callSid === params.get('CallSid'))?.[0];
-      if (unavailable || active || (!existing && tickets.size) || (!outbound && calls?.pending())) return response.end('<Response><Reject reason="busy"/></Response>');
+      // An admitted outbound call or ticket still belongs here after ingress switches.
+      if (draining && !outbound && !existing) { response.statusCode=503;return response.end('<Response/>'); }
+      if (unavailable || active || (!existing && tickets.size) || (!outbound && calls?.pending())) {
+        if (prefix && !outbound) response.statusCode=503;
+        return response.end('<Response><Reject reason="busy"/></Response>');
+      }
       const token = existing || randomBytes(32).toString('hex');
       tickets.set(token, {callSid: params.get('CallSid'), expires: Date.now() + 60000});
-      response.end(`<Response><Connect><Stream url="${config.origin.replace('https:', 'wss:')}/media"><Parameter name="ticket" value="${token}"/></Stream></Connect><Hangup/></Response>`);
+      response.end(`<Response><Connect><Stream url="${config.origin.replace('https:', 'wss:')}${mediaPath}"><Parameter name="ticket" value="${token}"/></Stream></Connect><Hangup/></Response>`);
     } catch { response.writeHead(400); response.end(); }
   });
   const sockets = new WebSocketServer({noServer: true, maxPayload: 32000});
   server.on('upgrade', (request, socket, head) => {
-    if (unavailable || active || request.url !== '/media' || !authentic(config, request.headers['x-twilio-signature'], '/media')) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
+    if (unavailable || active || request.url !== mediaPath || !authentic(config, request.headers['x-twilio-signature'], mediaPath)) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
     sockets.handleUpgrade(request, socket, head, ws => sockets.emit('connection', ws));
   });
   sockets.on('connection', ws => {
@@ -161,7 +169,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', record 
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000;
   await new Promise((resolve,reject) => { server.once('error',reject); server.listen(port, host, resolve); });
-  return {port: server.address().port, busy:()=>{pruneTickets();return unavailable || Boolean(active) || tickets.size>0;}, close: () => closing ??= (async () => {
+  return {port: server.address().port, capacity, drain:()=>{draining=true;return capacity();}, resume:()=>{draining=false;return capacity();}, busy:()=>{pruneTickets();return unavailable || draining || Boolean(active) || tickets.size>0;}, close: () => closing ??= (async () => {
     unavailable = true;
     const stopped = new Promise(resolve => server.close(resolve));
     server.closeAllConnections();
@@ -176,10 +184,11 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   const directory = join(state, 'phone');
   const path = join(directory, 'config.json'), [command, ...rest] = args;
   if (['call','call-status','hangup'].includes(command)) return phoneControl(directory,command,callOptions(command,rest));
+  if (['capacity','drain','resume'].includes(command) && !rest.length) return phoneControl(directory,command,{});
   if (rest.length) throw Error('Only call, call-status and hangup accept flags; credentials and configuration use private stdin');
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
     'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID',
-    'phone call-status --request-id ID', 'phone hangup --request-id ID', 'tools serve 8793:8080 voice phone serve'],
+    'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], optional: [`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
       ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent tools, history or Retell/Vapi (its one tool is end_call; with openai it runs on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; one call at a time, 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
@@ -210,9 +219,18 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     const provider=new PhoneNumber(config),calls=new PhoneCalls(directory,config,provider);let web,control;
     try {
       await calls.recover();
-      web=await servePhone(config, {calls,provider,record: value => save(join(directory, LAST_CALL), value)});
-      control=await servePhoneControl(directory,frame=>{
+      const admission=await read(join(directory,'admission.json')).catch(error=>{if(error.code==='ENOENT')return {draining:false};throw error;});
+      if (typeof admission.draining!=='boolean') throw Error('Invalid saved phone admission state');
+      web=await servePhone(config, {calls,provider,startDrained:admission.draining,record: async value => {
+        const receipts=join(directory,'receipts');await mkdir(receipts,{recursive:true,mode:0o700});
+        await save(join(receipts,value.callSid+'.json'),value);await save(join(directory,LAST_CALL),value);
+      }});
+      control=await servePhoneControl(directory,async frame=>{
         const {action,...options}=frame;
+        if (['capacity','drain','resume'].includes(action) && !Object.keys(options).length) {
+          if (action!=='capacity') await save(join(directory,'admission.json'),{draining:action==='drain'});
+          return web[action]();
+        }
         if (!['call','call-status','hangup'].includes(action) || Object.keys(options).some(key=>!['requestId',...(action==='call'?['to']:[])].includes(key))) throw Error('Invalid phone control command');
         return action==='call'?calls.call(options,web.busy):action==='call-status'?calls.status(options.requestId):calls.hangup(options.requestId);
       });

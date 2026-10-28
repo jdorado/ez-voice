@@ -23,7 +23,7 @@ export class PhoneNumber {
     return {numberSid: row.sid, number: row.phone_number, route: routeFields(row)};
   }
   async createCall(to, requestId) {
-    const url = this.config.origin + '/incoming?' + new URLSearchParams({outbound: requestId});
+    const url = this.config.origin + (this.config.pathPrefix || '') + '/incoming?' + new URLSearchParams({outbound: requestId});
     return this.request('/Calls.json', {To: to, From: this.config.number, Url: url, Method: 'POST',
       StatusCallback: url + '&status=1', StatusCallbackMethod: 'POST', Timeout: '45', TimeLimit: String((this.config.maxCallSeconds ?? 180) + 15), Record: 'false'});
   }
