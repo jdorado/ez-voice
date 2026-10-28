@@ -122,6 +122,12 @@ backend calls a tool (`response.output_item.done` with a `function_call`) the pl
 `function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`; every provider declares it.
 `tools: false` in the private configuration keeps the earlier client delegation, with no tools.
 
+With GPT-Live, the adapter also declares the backend hang-up capability and the documented `<|SpawnThinking|>` trigger
+to the live voice model. Registering `end_call` only on the Responses backend is insufficient: the voice model must
+delegate before the backend can run it. This declaration is omitted with `tools: false`. The transport executes only
+an actual backend function call; it never treats a transcript goodbye as a hang-up command. Acceptance requires
+`tools: ["end_call"]` and close reason `end_call`, rather than the idle timer eventually closing a silent line.
+
 `end_call` marks the call as ending; the model may say a goodbye, and once it has been quiet for two seconds (at most
 twelve after the call) the plugin sends Twilio a `mark` behind everything already queued and closes the stream when Twilio echoes
 it, that is, when the last of the goodbye has been played (at most fifteen seconds more), which ends the call (close reason

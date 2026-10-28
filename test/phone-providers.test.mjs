@@ -104,6 +104,18 @@ test('doctor reports the configured provider and model', async () => {
 const secret = 'client_secret_synthetic';
 const mintOk = () => { const requests = []; return {requests, fetch: async (url, options) => {requests.push({url, options}); return new Response(JSON.stringify({value: secret, expires_at: 1}), {status: 200});}}; };
 
+test('GPT-Live exposes backend hang-up delegation to the voice model only with tools enabled', () => {
+  const config = {...base, provider: 'openai', apiKey: keys.openai};
+  const session = createAdapter(config).start()[0].session;
+  assert(session.instructions.startsWith(base.instructions + '\n\n'));
+  assert.match(session.instructions, /Generate <\|SpawnThinking\|> when:/);
+  for (const tool of session.delegation.responses.tools) assert(session.instructions.includes(tool.name));
+  assert.match(session.instructions, /Do not generate <\|SpawnThinking\|> when:/);
+  const disabled = createAdapter({...config, tools: false}).start()[0].session;
+  assert.equal(disabled.instructions, base.instructions);
+  assert.deepEqual(disabled.delegation, {type: 'client'});
+});
+
 test('elevenlabs mints a client secret, configures the session natively and passes mu-law straight through', async () => {
   const mint = mintOk();
   const {audio, twilio, socket, finished, ready} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', voice: 'vOZtmBu4RanHWgj2KUOY', idleSeconds: 0.4, language: 'es'}, {fetch: mint.fetch});

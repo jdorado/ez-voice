@@ -1,5 +1,15 @@
 import {toolDefinitions, BACKEND_INSTRUCTIONS, DEFAULT_TOOL_MODEL, DEFAULT_TOOL_EFFORT} from '../phone-tools.mjs';
 
+// Live must be told when to delegate; registering tools on its Responses backend
+// alone does not expose them to the voice model. This is provider capability wiring.
+const PHONE_DELEGATION = `Delegation policy:
+Backend tools:
+- end_call: hang up this phone call after your goodbye.
+Generate <|SpawnThinking|> when:
+- The caller asks you to hang up, the conversation has finished, or you have left a voicemail message. Ask the backend to run end_call.
+Do not generate <|SpawnThinking|> when:
+- Having ordinary conversation. No other backend tools, private records or actions are connected.`;
+
 // GPT-Live (OpenAI /v1/live/sessions). It carries mu-law 8 kHz both ways and has no direct function calling: tools run on
 // its Responses backend (delegation), which hands finished calls back to the plugin.
 export class OpenAIAdapter {
@@ -21,7 +31,7 @@ export class OpenAIAdapter {
   start() {
     const c = this.config;
     return [{type: 'session.start', session: {
-      model: c.model, instructions: c.instructions,
+      model: c.model, instructions: c.tools === false ? c.instructions : `${c.instructions}\n\n${PHONE_DELEGATION}`,
       audio: {format: {type: 'audio/pcmu', rate: 8000}, output: {voice: c.voice}},
       delegation: c.tools === false ? {type: 'client'} : {type: 'responses', responses: {model: c.toolModel ?? DEFAULT_TOOL_MODEL,
         instructions: BACKEND_INSTRUCTIONS, tools: toolDefinitions(), tool_choice: 'auto', reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,

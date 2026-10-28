@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.2
+
+- Declare the backend `end_call` capability and GPT-Live's delegation trigger to the live model, as well as registering
+  the function on its Responses backend. Without the live declaration, it could say goodbye but never delegate the
+  hang-up; the call then waited for `idle_timeout`. The bridge still waits for the tool and Twilio playback acknowledgement.
+  No declaration is added when tools are disabled. QA candidate only; not tagged or published.
+
 ## 0.1.0-beta.11.rc.1
 
 - Private control-socket admission drain, resume and capacity read for safe listener replacement.
