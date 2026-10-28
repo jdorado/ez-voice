@@ -36,6 +36,13 @@ test registry for development. Keep credentials and runtime state outside the ag
 }
 ```
 
+One install can serve several numbers: give `lines` (1..8 entries, each with its own `number`, `apiKey`, and optional
+`provider`, `model`, `voice`, `language`, `instructions`, `tools`...) instead of those fields at the top level; the
+account, auth token, origin and limits are shared. An inbound call takes the line of the number called; an outbound
+call takes `--from LINE` (default: the first line). `maxCalls` (1..8, default 1) is how many calls run at once across
+all lines, inbound and outbound together: an outbound call holds its place from creation to its end. The single-line
+form keeps working unchanged.
+
 `provider` is optional (default `openai`); `model`, `voice` and `language` are optional too (see Providers). The number must belong to that account and support voice. An account auth token
 is needed to validate Twilio signatures; a Twilio API key cannot validate them.
 The origin must terminate HTTPS and forward HTTP/WebSocket upgrades to the
@@ -145,6 +152,7 @@ Use the installed CLI from the same agent environment while the phone service is
 ```sh
 ez voice phone call --to +15551230002 --request-id owner-call-001
 ez voice phone call --to +15551230002 --request-id owner-call-002 --instructions - < brief.txt
+ez voice phone call --to +15551230002 --request-id owner-call-003 --from +15551230009
 ez voice phone call-status --request-id owner-call-001
 ez voice phone hangup --request-id owner-call-001
 ez voice phone receipt

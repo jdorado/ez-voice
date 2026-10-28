@@ -220,3 +220,45 @@ test('real phone-number lookup retains inbound preview and restoration fields',a
   assert.equal(result.numberSid,row.sid);assert.equal(result.number,config.number);
   assert.deepEqual(result.route,{VoiceUrl:row.voice_url,VoiceMethod:'POST',VoiceFallbackUrl:'',VoiceFallbackMethod:'POST',VoiceApplicationSid:'',TrunkSid:''});
 });
+
+test('one install serves several lines: inbound takes the called line, outbound --from its line, calls run in parallel up to maxCalls',async t=>{
+  const {validatePhoneConfig}=await import('../src/phone.mjs');
+  const second='+15551230009';
+  const lines=validatePhoneConfig({accountSid:config.accountSid,authToken:config.authToken,origin:config.origin,maxCalls:2,
+    lines:[{apiKey:config.apiKey,number:config.number,instructions:'Line one persona'},{apiKey:config.apiKey,number:second,instructions:'Line two persona'}]});
+  assert.equal(lines.number,config.number);assert.deepEqual(lines.lines.map(l=>l.number),[config.number,second]);
+  assert.throws(()=>validatePhoneConfig({...lines,lines:[lines.lines[0],{...lines.lines[1],number:config.number}]}),/own number/);
+  assert.throws(()=>validatePhoneConfig({...lines,maxCalls:9}),/maxCalls/);
+  assert.deepEqual(validatePhoneConfig(validatePhoneConfig(lines)).lines,lines.lines);
+  const directory=await mkdtemp(join(tmpdir(),'voice-lines-'));
+  const provider=new TwilioProvider();let from;
+  provider.createCall=async(_to,_id,line)=>{provider.creates++;from=line;return {...provider.value,from:line};};
+  provider.getCall=async()=>({...provider.value,from});
+  const calls=new PhoneCalls(directory,lines,provider);const sessions=[];
+  t.after(async()=>{calls.close();await rm(directory,{recursive:true,force:true});});
+  const web=await servePhone(lines,{port:0,host:'127.0.0.1',calls,provider:recorder().provider,socketFactory:()=>{const s=new AudioProvider();sessions.push(s);return s;},record:async()=>{}});
+  const sockets=[];
+  try {
+    await assert.rejects(()=>calls.call({requestId:id,to,from:'+15551230007'},web.busy),/configured lines/);
+    const created=await calls.call({requestId:id,to,from:second},web.busy);
+    assert.equal(created.from,second);assert.equal(from,second);
+    // an inbound call to the first line while the outbound call to the second is pending: room for both
+    const inboundSid='CA'+'6'.repeat(32);
+    const inbound=new URLSearchParams({AccountSid:config.accountSid,CallSid:inboundSid,To:config.number});
+    const inTicket=(await (await post(web.port,'/incoming',inbound)).text()).match(/value="([a-f0-9]+)"/)[1];
+    // a third call has no room
+    const third=new URLSearchParams({AccountSid:config.accountSid,CallSid:'CA'+'7'.repeat(32),To:second});
+    assert.match(await (await post(web.port,'/incoming',third)).text(),/Reject reason="busy"/);
+    const answer=params();answer.set('From',second);
+    const outTicket=(await (await post(web.port,'/incoming?outbound='+id,answer)).text()).match(/value="([a-f0-9]+)"/)[1];
+    for (const [n,[ticket,sid,stream]] of [[inTicket,inboundSid,'MZ'+'1'.repeat(32)],[outTicket,callSid,streamSid]].entries()) {
+      const ws=new WebSocket(`ws://127.0.0.1:${web.port}/media`,{headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/media')}});sockets.push(ws);
+      await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+      ws.send(JSON.stringify({event:'start',start:{accountSid:config.accountSid,callSid:sid,streamSid:stream,customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
+      await wait(()=>sessions[n]?.events.some(event=>event.type==='session.start'));
+    }
+    const started=sessions.map(s=>s.events.find(e=>e.type==='session.start').session.instructions);
+    assert(started[0].startsWith('Line one persona'));assert(started[1].startsWith('Line two persona'));
+    assert.equal(web.capacity().calls,2);
+  } finally {for(const ws of sockets)ws.terminate();await web.close();}
+});

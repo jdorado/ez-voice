@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.4
+
+- One install serves several numbers (`lines`), each with its own provider, voice, key and instructions; an inbound
+  call takes the called number's line, an outbound call `phone call --from LINE`. `maxCalls` (default 1, unchanged
+  behavior) lets inbound and outbound calls run at once. The request journal records each call's line; a request ID
+  reused with another line is refused. `probe` checks every line. QA candidate only; not tagged or published.
+
 ## 0.1.0-beta.11.rc.3
 
 - `phone call --instructions -` takes a per-call brief (1..12000 characters) on stdin. It is saved with the request

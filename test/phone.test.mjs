@@ -62,7 +62,7 @@ test('inbound listener admits calls after thirty minutes and more than five comp
     }
     const health=await fetch(`http://127.0.0.1:${server.port}/health`);
     assert.equal(health.status,200);
-    assert.deepEqual(await health.json(),{ready:true,active:false,admitted:7,provider:'openai',model:'gpt-live-1'});
+    assert.deepEqual(await health.json(),{ready:true,active:false,calls:0,admitted:7,provider:'openai',model:'gpt-live-1',lines:[config.number]});
   } finally {await server.close();}
 });
 test('signed inbound HTTP + real media socket relays mu-law both ways and finalizes without native tools', async () => {
