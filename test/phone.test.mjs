@@ -116,6 +116,48 @@ test('voice routing saves restoration data, changes only voice fields, and refus
 test('phone configuration rejects transport downgrade and unknown authority fields', () => {
   assert.throws(()=>validatePhoneConfig({...config,origin:'http://phone.example.com'}),/HTTPS/);
   assert.throws(()=>validatePhoneConfig({...config,followOwner:true}),/fields/);
+  for (const pathPrefix of ['/../a','/a/b','/a?x=1','//host','']) assert.throws(()=>validatePhoneConfig({...config,pathPrefix}),/pathPrefix/);
+});
+
+test('two listeners preserve signed media affinity and admitted calls across an admission drain', async () => {
+  const a=await servePhone({...config,pathPrefix:'/voice-a'},{port:0,host:'127.0.0.1',provider:twilio().provider,socketFactory:()=>new ProviderSocket()});
+  const b=await servePhone({...config,pathPrefix:'/voice-b'},{port:0,host:'127.0.0.1',provider:twilio().provider,socketFactory:()=>new ProviderSocket()});
+  let wa,wb;
+  const admit=async(server,id)=>{
+    const params=new URLSearchParams({AccountSid:config.accountSid,To:config.number,CallSid:id});
+    return fetch(`http://127.0.0.1:${server.port}/incoming`,{method:'POST',body:params,headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/incoming',params)}});
+  };
+  const connect=async(server,prefix,ticket,id)=>{
+    const ws=new WebSocket(`ws://127.0.0.1:${server.port}${prefix}/media`,{headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+prefix+'/media')}});
+    await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    ws.send(startEvent(ticket,id));return ws;
+  };
+  try {
+    const text=await (await admit(a,callSid)).text();
+    assert.ok(text.includes('wss://phone.example.com/voice-a/media'));
+    const ticket=text.match(/value="([a-f0-9]+)"/)[1];
+    assert.equal(a.drain().idle,false); // The ticket was admitted before the switch.
+    assert.equal(a.busy(),true);
+    assert.equal((await admit(a,'CA'+'9'.repeat(32))).status,503);
+    wa=await connect(a,'/voice-a',ticket,callSid);
+    await wait(()=>a.capacity().active);
+    const other='CA'+'6'.repeat(32),otherText=await (await admit(b,other)).text();
+    wb=await connect(b,'/voice-b',otherText.match(/value="([a-f0-9]+)"/)[1],other);
+    await wait(()=>b.capacity().active);
+    wa.close();await wait(()=>a.capacity().idle);
+    await a.close();assert.equal(b.capacity().active,true);
+  } finally {wa?.terminate();wb?.terminate();await a.close();await b.close();}
+});
+
+test('a listener restarted with its saved admission barrier refuses new calls until resumed', async () => {
+  const server=await servePhone(config,{port:0,host:'127.0.0.1',startDrained:true});
+  try {
+    const params=new URLSearchParams({AccountSid:config.accountSid,To:config.number,CallSid:callSid});
+    const post=()=>fetch(`http://127.0.0.1:${server.port}/incoming`,{method:'POST',body:params,headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/incoming',params)}});
+    assert.equal(server.capacity().accepting,false);assert.equal(server.busy(),true);
+    assert.equal((await post()).status,503);
+    assert.equal(server.resume().accepting,true);assert.equal((await post()).status,200);
+  } finally {await server.close();}
 });
 test('interrupted route and restore remain recoverable by canonical readback without another write', async () => {
   const directory=await mkdtemp(join(tmpdir(),'voice-phone-recovery-'));

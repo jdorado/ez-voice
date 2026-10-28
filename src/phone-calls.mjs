@@ -48,7 +48,10 @@ export class PhoneCalls {
   // The recording outcome comes from the private audio receipt of the same Call SID.
   recorded(receipt) {
     try {
-      const last=JSON.parse(readFileSync(join(this.directory,LAST_CALL),'utf8'));
+      let raw;
+      try { raw=readFileSync(join(this.directory,'receipts',receipt.callSid+'.json'),'utf8'); }
+      catch { raw=readFileSync(join(this.directory,LAST_CALL),'utf8'); }
+      const last=JSON.parse(raw);
       return last.callSid && last.callSid===receipt.callSid && last.recording ? {...receipt,recording:last.recording} : receipt;
     } catch { return receipt; }
   }

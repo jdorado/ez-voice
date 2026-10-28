@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.1
+
+- Private control-socket admission drain, resume and capacity read for safe listener replacement.
+  Admitted tickets, ringing calls, active audio and receipt finalization remain with their listener.
+- Optional signed public path prefix pins media and outbound callbacks across ingress switches.
+  A prefixed listener returns 503 for new inbound calls when busy or draining so ingress may try another.
+- Retain per-call metadata receipts alongside the compatible latest receipt. The caller retains task
+  ownership and the original listener/request ID; no queue or automatic redial is introduced.
+
 ## 0.1.0-beta.10
 
 GitHub release only (no npm), as beta.8 and beta.9.

@@ -166,6 +166,29 @@ single-call capacity. Stop the phone supervisor before replacing the plugin;
 shutdown attempts to finalize audio and terminate its outstanding outbound call.
 No service restart or transport loss automatically redials an uncertain attempt.
 
+## Updating a live listener
+
+Two listeners may run on one stable host behind its existing ingress. Optional private
+`pathPrefix` (one segment, for example `/voice-a`) pins a listener's media and outbound
+callbacks to that listener. The unprefixed `/incoming` remains the public inbound entry;
+ingress selects its current listener. Forward the original signed URL unchanged.
+
+`phone drain` atomically refuses new inbound admissions and outbound starts without
+closing admitted tickets, ringing calls or audio. `phone capacity` reports `idle` only
+after that listener's tickets, audio/receipt work and pending outbound attempt clear.
+`phone resume` reopens admission. The barrier is saved privately before acknowledgment,
+so a supervisor restart cannot reopen a drained listener. These operations use the private control socket.
+Switch new inbound calls to a verified replacement before draining the old listener;
+stop it only once idle. An uncertain outbound attempt keeps it non-idle until reconciled.
+SIGTERM itself still terminates calls: it is not a drain operation.
+
+Keep each listener's private volume across replacement, including its request journal.
+Call receipts also live under `phone/receipts/<CallSid>.json`; `phone receipt` retains
+the latest-receipt interface. The caller owns the shared task/claim and records the
+listener and original request ID before dialing. Recovery inspects that same attempt
+through its owning listener before any new action. Separate listener journals alone
+do not deduplicate a request sent to both listeners. This plugin creates no task queue.
+
 ## Recording
 
 Every call the bridge admits, inbound or outbound, is recorded at Twilio. When the
