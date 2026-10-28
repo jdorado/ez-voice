@@ -144,6 +144,7 @@ Use the installed CLI from the same agent environment while the phone service is
 
 ```sh
 ez voice phone call --to +15551230002 --request-id owner-call-001
+ez voice phone call --to +15551230002 --request-id owner-call-002 --instructions - < brief.txt
 ez voice phone call-status --request-id owner-call-001
 ez voice phone hangup --request-id owner-call-001
 ez voice phone receipt
@@ -151,8 +152,12 @@ ez voice phone receipt
 
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
-instructions. No new application, agent context, provider or inbound number route
-is created. The existing HTTPS `/incoming` endpoint also receives the signed
+instructions. `--instructions -` reads a per-call brief (1..12000 characters) on
+stdin; it is saved with the request before dialing and replaces the configured
+instructions for that call only (inbound calls and other requests keep the
+configuration). A repeated request ID keeps its original brief. The brief is the
+caller's: Voice adds no context, tools or history of its own. No new application,
+provider or inbound number route is created. The existing HTTPS `/incoming` endpoint also receives the signed
 outbound answer and terminal-status callbacks. Ringing is limited to forty-five
 seconds (long enough for a carrier voicemail to pick up) and the call to `maxCallSeconds`. Outbound calls are recorded at Twilio like
 inbound calls (see Recording).

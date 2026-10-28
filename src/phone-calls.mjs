@@ -10,13 +10,16 @@ export const LAST_CALL = 'last-call.json';
 const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected']);
 const statuses = new Set(['queued','initiated','ringing','in-progress',...terminal]);
 const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
+// A per-call brief replaces the configured instructions for that outbound call only.
+export const MAX_CALL_INSTRUCTIONS = 12000;
+const brief = value => value === undefined || (typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_CALL_INSTRUCTIONS);
 const rank = value => terminal.has(value) ? 4 : value === 'in-progress' ? 3 : value === 'ringing' ? 2 : value === 'queued' || value === 'initiated' ? 1 : 0;
 
 export function callOptions(action, args) {
   const result = {};
   for (let i=0; i<args.length; i+=2) {
-    const key = args[i] === '--request-id' ? 'requestId' : args[i] === '--to' && action === 'call' ? 'to' : null;
-    if (!key || result[key] !== undefined || !args[i+1]) throw Error('Use phone call --to E.164 --request-id ID; call-status/hangup require --request-id ID');
+    const key = args[i] === '--request-id' ? 'requestId' : args[i] === '--to' && action === 'call' ? 'to' : args[i] === '--instructions' && action === 'call' ? 'instructions' : null;
+    if (!key || result[key] !== undefined || !args[i+1] || (key === 'instructions' && args[i+1] !== '-')) throw Error('Use phone call --to E.164 --request-id ID [--instructions - < brief.txt]; call-status/hangup require --request-id ID');
     result[key] = args[i+1];
   }
   if (!requestId(result.requestId) || (action === 'call' && !phone(result.to))) throw Error('Supply an E.164 destination and a stable request ID (1..100 letters, digits, _ or -)');
@@ -30,9 +33,11 @@ export class PhoneCalls {
     const path=join(directory,'calls.sqlite');closeSync(openSync(path,'a',0o600));
     this.db = new DatabaseSync(path, {timeout:0});
     this.db.exec('CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, recipient TEXT NOT NULL, call_sid TEXT UNIQUE, status TEXT NOT NULL, at TEXT NOT NULL)');
+    if (!this.db.prepare('PRAGMA table_info(requests)').all().some(column=>column.name==='instructions')) this.db.exec('ALTER TABLE requests ADD COLUMN instructions TEXT');
   }
   row(id) { if (!requestId(id)) throw Error('Invalid request ID'); return this.db.prepare('SELECT * FROM requests WHERE id=?').get(id); }
-  receipt(row) { if (!row) throw Error('Unknown outbound request ID'); return {requestId:row.id,to:row.recipient,from:this.config.number,callSid:row.call_sid,status:row.status,at:row.at}; }
+  receipt(row) { if (!row) throw Error('Unknown outbound request ID'); return {requestId:row.id,to:row.recipient,from:this.config.number,callSid:row.call_sid,status:row.status,at:row.at,brief:Boolean(row.instructions)}; }
+  instructions(id) { return requestId(id) ? this.row(id)?.instructions ?? undefined : undefined; }
   pending() { return this.db.prepare("SELECT * FROM requests WHERE status NOT IN ('completed','busy','failed','no-answer','canceled','rejected') LIMIT 1").get(); }
   update(row, callSid, status) {
     const current=this.row(row.id);
@@ -61,7 +66,8 @@ export class PhoneCalls {
   }
   async recover() { const row=this.pending(); if (row?.call_sid) await this.status(row.id); }
   async call(options, isBusy) {
-    if (!options || Object.keys(options).some(key=>!['to','requestId'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || options.to===this.config.number) throw Error('Supply a destination other than the configured number and a stable request ID');
+    if (!options || Object.keys(options).some(key=>!['to','requestId','instructions'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || options.to===this.config.number) throw Error('Supply a destination other than the configured number and a stable request ID');
+    if (!brief(options.instructions)) throw Error(`Call instructions must contain 1..${MAX_CALL_INSTRUCTIONS} characters`);
     this.db.exec('BEGIN IMMEDIATE');
     let existing;
     try {
@@ -69,7 +75,7 @@ export class PhoneCalls {
       if (existing && existing.recipient!==options.to) throw Error('Request ID was already used for a different destination');
       if (!existing) {
         if (isBusy() || this.pending()) throw Error('Phone line is busy; inspect the existing call before dialing');
-        this.db.prepare('INSERT INTO requests(id,recipient,status,at) VALUES(?,?,?,?)').run(options.requestId,options.to,'uncertain',new Date().toISOString());
+        this.db.prepare('INSERT INTO requests(id,recipient,status,at,instructions) VALUES(?,?,?,?,?)').run(options.requestId,options.to,'uncertain',new Date().toISOString(),options.instructions ?? null);
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK');throw error; }

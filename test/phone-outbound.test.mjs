@@ -94,6 +94,36 @@ test('an outbound answer starts exactly one recording for its Call SID and call-
   } finally {ws?.terminate();await web.close();}
 });
 
+test('a per-call brief replaces the configured instructions for that outbound call only',async t=>{
+  const {directory,provider,calls}=await fixture(t);let audio,receipt,ws;
+  const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:recorder().provider,socketFactory:()=>audio=new AudioProvider(),record:async value=>{receipt=value;}});
+  try {
+    await assert.rejects(()=>calls.call({requestId:id,to,instructions:' '},web.busy),/1\.\.12000/);
+    await assert.rejects(()=>calls.call({requestId:id,to,instructions:'x'.repeat(12001)},web.busy),/1\.\.12000/);
+    const created=await calls.call({requestId:id,to,instructions:'Call brief: Sharon calls back about 12 Main Street.'},web.busy);
+    assert.equal(created.brief,true);
+    const path='/incoming?outbound='+id;
+    const ticket=(await (await post(web.port,path,params())).text()).match(/value="([a-f0-9]+)"/)[1];
+    ws=new WebSocket(`ws://127.0.0.1:${web.port}/media`,{headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/media')}});
+    await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    ws.send(JSON.stringify({event:'start',start:{accountSid:config.accountSid,callSid,streamSid,customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
+    await wait(()=>audio?.events.some(event=>event.type==='session.start'));
+    const session=audio.events.find(event=>event.type==='session.start').session;
+    assert(session.instructions.startsWith('Call brief: Sharon calls back about 12 Main Street.'));
+    assert(!session.instructions.includes(config.instructions));
+    ws.close();await wait(()=>receipt);
+    const restarted=new PhoneCalls(directory,config,provider);
+    try { assert.equal(restarted.instructions(id),'Call brief: Sharon calls back about 12 Main Street.');assert.equal(restarted.instructions('unknown'),undefined); }
+    finally { restarted.close(); }
+  } finally {ws?.terminate();await web.close();}
+});
+
+test('the call CLI reads a brief only from stdin',()=>{
+  assert.deepEqual(callOptions('call',['--to',to,'--request-id',id,'--instructions','-']),{to,requestId:id,instructions:'-'});
+  assert.throws(()=>callOptions('call',['--to',to,'--request-id',id,'--instructions','brief.txt']),/--instructions -/);
+  assert.throws(()=>callOptions('call-status',['--request-id',id,'--instructions','-']),/Use phone call/);
+});
+
 test('uncertain creation survives restart and cannot redial under the same or another request ID',async t=>{
   const {directory,provider,calls}=await fixture(t);
   provider.createCall=async()=>{provider.creates++;throw Error('synthetic network loss');};
