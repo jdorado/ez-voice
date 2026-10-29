@@ -430,3 +430,18 @@ test('through the phone service, end_call waits for Twilio to echo its mark befo
     assert.equal(receipts[0].reason, 'end_call');
   } finally {ws?.close(); await server.close();}
 });
+
+test('caller audio that arrives before the provider is ready is held for as long as the start timeout allows, not closed after six seconds', async () => {
+  class SilentProvider extends ProviderSocket {send(raw) {this.events.push(JSON.parse(raw));}} // opens, never says it is ready
+  const {PhoneAudio} = await import('../src/phone-audio.mjs');
+  const twilioSocket = Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}});
+  let provider; const audio = new PhoneAudio(twilioSocket, {...config, streamSid}, async () => {}, {socketFactory: () => provider = new SilentProvider()});
+  const second = Buffer.alloc(8000, 0xff).toString('base64'); // one second of the caller's line
+  try {
+    await wait(() => provider);
+    for (let i = 0; i < 12; i++) audio.input(second); // twelve seconds of it
+    assert.equal(audio.closing, undefined);
+    for (let i = 0; i < 12; i++) audio.input(second); // far past any start timeout
+    assert.equal(audio.stats.reason, 'startup_audio_limit');
+  } finally {await audio.close('test_done');}
+});

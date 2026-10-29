@@ -67,7 +67,9 @@ export class PhoneAudio {
     if (this.ready) this.forward(payload);
     else {
       this.queuedBytes += payload.length;
-      if (this.queuedBytes > 64000) return this.close('startup_audio_limit');
+      // Twilio streams the caller's line nonstop (about 10,700 base64 characters a second): hold what arrives until the provider is
+      // ready, as long as the start timeout (15 s) allows; that timeout, not this, ends a call whose provider never comes up.
+      if (this.queuedBytes > 200000) return this.close('startup_audio_limit');
       this.queued.push(payload);
     }
   }

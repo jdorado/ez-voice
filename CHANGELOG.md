@@ -8,7 +8,7 @@
   greeting (local read, no network call, no model); the receipt records `callerContext`; on a line with contexts every inbound call is told it is incoming with no brief, and whether its number matched. A call from another number can name
   a property to the `find_case` tool (declared on inbound calls only, at most 3 tries a call), which answers with the
   `claim` of each context whose address matches (the house number said first, and the street name or the street's own number). Tool calls now hand their arguments to the
-  bridge on every provider. QA candidate only; not tagged or published.
+  bridge on every provider. Caller audio that arrives before the provider is ready is held for up to 200,000 characters (about 18 s of the line, past the 15 s start timeout) instead of 64,000 (about 6 s), after which a slow provider start closed the call as `startup_audio_limit`; GPT-Live is told to run `end_call` right after its goodbye. QA candidate only; not tagged or published.
 
 ## 0.1.0-beta.11.rc.5
 
