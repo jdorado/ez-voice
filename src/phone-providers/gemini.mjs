@@ -39,7 +39,7 @@ export class GeminiAdapter {
         // The thinking variant refuses a session without a level (close 1007); the plain model refuses one with it.
         ...(c.model.endsWith('-extended-thinking') ? {thinkingConfig: {thinkingLevel: c.thinking ?? 'low'}} : {})},
       systemInstruction: {parts: [{text: c.instructions}]},
-      ...(c.tools === false ? {} : {tools: [{functionDeclarations: toolDefinitions().map(tool => declaration(tool, c.model))}]}),
+      ...(c.tools === false ? {} : {tools: [{functionDeclarations: toolDefinitions(c).map(tool => declaration(tool, c.model))}]}),
       // Transcripts of both sides are what the idle hang-up and the receipt use to tell who is speaking.
       inputAudioTranscription: {}, outputAudioTranscription: {}}}];
   }
@@ -74,7 +74,7 @@ export class GeminiAdapter {
       }
       if (content.turnComplete) { for (const down of this.downsamplers.values()) down.reset(); const tail = this.framer.flush(); if (tail.length) items.push({type: 'audio', audio: tail.toString('base64')}); }
     }
-    for (const call of message.toolCall?.functionCalls ?? []) items.push({type: 'tool', id: call.id, name: call.name});
+    for (const call of message.toolCall?.functionCalls ?? []) items.push({type: 'tool', id: call.id, name: call.name, args: call.args});
     if (message.goAway) items.push({type: 'fatal', reason: 'provider_go_away'});
     return items;
   }

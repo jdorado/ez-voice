@@ -1,5 +1,9 @@
 import WebSocket from 'ws';
 import {PHONE_TOOLS} from './phone-tools.mjs';
+import {MAX_LOOKUPS} from './phone-contexts.mjs';
+
+// A tool call's arguments arrive as a JSON string (ElevenLabs, GPT-Live) or an object (Gemini).
+const parseArgs = value => { try { const args = typeof value === 'string' ? JSON.parse(value) : value; return args && typeof args === 'object' && !Array.isArray(args) ? args : {}; } catch { return {}; } };
 import {createAdapter} from './phone-providers/index.mjs';
 
 // Twilio carries raw mono G.711 mu-law at 8 kHz. This is the bridge between that stream and one speech provider: the
@@ -119,13 +123,21 @@ export class PhoneAudio {
   // A finished tool call from the model: run it here and hand its output back so the model can resume.
   tool(item) {
     if (typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(item.id) || typeof item.name !== 'string') return;
-    const tool = Object.hasOwn(PHONE_TOOLS, item.name) ? PHONE_TOOLS[item.name] : null;
+    const tool = Object.hasOwn(PHONE_TOOLS, item.name) && (!PHONE_TOOLS[item.name].lookup || this.config.lookup) ? PHONE_TOOLS[item.name] : null;
     let output;
-    try { output = tool ? tool.run(this) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
+    try { output = tool ? tool.run(this, parseArgs(item.args)) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
     (this.stats.tools ??= []).length < 20 && this.stats.tools.push(tool ? item.name : 'unknown');
     for (const message of this.adapter.toolResult(item.id, item.name, output, {final: Boolean(tool?.final)})) this.send(message);
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
+  // find_case: what the prepared contexts say to a stranger who names a property, a few tries a call (an address cannot be
+  // guessed one after another).
+  lookup(query) {
+    if ((this.lookups = (this.lookups ?? 0) + 1) > MAX_LOOKUPS) return {error: 'too_many_lookups'};
+    const claims = this.config.lookup(query);
+    this.stats.lookups = this.lookups;
+    return claims.length ? {found: true, matches: claims} : {found: false};
+  }
   // Audio a provider sent faster than realtime is still queued at Twilio, and closing the stream drops it (a voicemail message
   // was cut after one sentence). A mark queued behind that audio comes back from Twilio once everything before it has played.
   drain() {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.6
+
+- Prepared caller contexts (the call centre's "screen pop"). `phone context replace < contexts.json` replaces, atomically,
+  the set of up to 500 `{number, text, claim, find, at?}` the operator prepared; `phone context status` reads its count.
+  An inbound call from a number in the set is answered with its `text` added to the line's instructions before the
+  greeting (local read, no network call, no model); the receipt records `callerContext`. A call from another number can name
+  a property to the `find_case` tool (declared on inbound calls only, at most 3 tries a call), which answers with the
+  `claim` of each context whose address matches (house number and a street word). Tool calls now hand their arguments to the
+  bridge on every provider. QA candidate only; not tagged or published.
+
 ## 0.1.0-beta.11.rc.5
 
 - A line's configured `instructions` take up to 12000 characters (was 4000), the same as a per-call brief, so a line

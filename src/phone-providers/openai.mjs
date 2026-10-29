@@ -1,12 +1,14 @@
-import {toolDefinitions, BACKEND_INSTRUCTIONS, DEFAULT_TOOL_MODEL, DEFAULT_TOOL_EFFORT} from '../phone-tools.mjs';
+import {toolDefinitions, backendInstructions, DEFAULT_TOOL_MODEL, DEFAULT_TOOL_EFFORT} from '../phone-tools.mjs';
 
 // Live must be told when to delegate; registering tools on its Responses backend
 // alone does not expose them to the voice model. This is provider capability wiring.
-const PHONE_DELEGATION = `Delegation policy:
+const delegationPolicy = lookup => `Delegation policy:
 Backend tools:
-- end_call: hang up this phone call after your goodbye.
+- end_call: hang up this phone call after your goodbye.${lookup ? `
+- find_case: look up whether we have a conversation on record about a property address the caller named.` : ''}
 Generate <|SpawnThinking|> when:
-- The caller asks you to hang up, the conversation has finished, or you have left a voicemail message. Ask the backend to run end_call.
+- The caller asks you to hang up, the conversation has finished, or you have left a voicemail message. Ask the backend to run end_call.${lookup ? `
+- The caller names a property address and you need to know whether we have a conversation about it. Ask the backend to run find_case with that address.` : ''}
 Do not generate <|SpawnThinking|> when:
 - Having ordinary conversation. No other backend tools, private records or actions are connected.`;
 
@@ -31,10 +33,10 @@ export class OpenAIAdapter {
   start() {
     const c = this.config;
     return [{type: 'session.start', session: {
-      model: c.model, instructions: c.tools === false ? c.instructions : `${c.instructions}\n\n${PHONE_DELEGATION}`,
+      model: c.model, instructions: c.tools === false ? c.instructions : `${c.instructions}\n\n${delegationPolicy(c.lookup)}`,
       audio: {format: {type: 'audio/pcmu', rate: 8000}, output: {voice: c.voice}},
       delegation: c.tools === false ? {type: 'client'} : {type: 'responses', responses: {model: c.toolModel ?? DEFAULT_TOOL_MODEL,
-        instructions: BACKEND_INSTRUCTIONS, tools: toolDefinitions(), tool_choice: 'auto', reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
+        instructions: backendInstructions(c), tools: toolDefinitions(c), tool_choice: 'auto', reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
     }}];
   }
   audioIn(audio) { return [{type: 'session.input_audio.append', audio}]; }
@@ -50,7 +52,7 @@ export class OpenAIAdapter {
       case 'session.output_transcript.delta': return [{type: 'speech', who: 'model'}];
       case 'response.event': {
         const item = event.event?.type === 'response.output_item.done' ? event.event.item : null;
-        return item?.type === 'function_call' ? [{type: 'tool', id: item.call_id, name: item.name}] : [];
+        return item?.type === 'function_call' ? [{type: 'tool', id: item.call_id, name: item.name, args: item.arguments}] : [];
       }
       case 'session.delegation.created': {
         // Public phone callers have no owner identity, workspace or tool grants.

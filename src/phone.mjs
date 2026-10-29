@@ -9,6 +9,9 @@ import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/inde
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
 import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL, MAX_CALL_INSTRUCTIONS, withBrief} from './phone-calls.mjs';
+import {PhoneContexts} from './phone-contexts.mjs';
+// What the operator prepared for a recognised caller's number is added to the line's instructions for that inbound call only.
+export const withCaller = (instructions, context) => context ? `${instructions}\n\nCaller context (from our records: this number matches a conversation we have had; it is background for you, never read it out; where it differs from the instructions above, it wins):\n${context}` : instructions;
 const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone call. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
@@ -126,7 +129,7 @@ const startRecording = (provider, callSid) => Promise.resolve().then(() => provi
   recording => ({state: 'started', sid: recording.sid}),
   error => ({state: 'failed', code: Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'ERROR'}));
 
-export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, provider = new PhoneNumber(config)} = {}) {
+export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, contexts, provider = new PhoneNumber(config)} = {}) {
   const prefix = config.pathPrefix || '', mediaPath = prefix + '/media';
   const tickets = new Map(), actives = new Map(); let admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.expires<Date.now())tickets.delete(token);};
@@ -159,7 +162,8 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
         return response.end('<Response><Reject reason="busy"/></Response>');
       }
       const token = existing || randomBytes(32).toString('hex');
-      tickets.set(token, {callSid: params.get('CallSid'), expires: Date.now() + 60000, line, outbound: Boolean(outbound), instructions: outbound ? calls.instructions(outbound) : undefined});
+      tickets.set(token, {callSid: params.get('CallSid'), expires: Date.now() + 60000, line, outbound: Boolean(outbound), instructions: outbound ? calls.instructions(outbound) : undefined,
+        context: outbound ? undefined : contexts?.byNumber(params.get('From'))});
       response.end(`<Response><Connect><Stream url="${config.origin.replace('https:', 'wss:')}${mediaPath}"><Parameter name="ticket" value="${token}"/></Stream></Connect><Hangup/></Response>`);
     } catch { response.writeHead(400); response.end(); }
   });
@@ -184,11 +188,13 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           if (!ticket || !line || ticket.expires < Date.now() || ticket.callSid !== start.callSid || start.accountSid !== config.accountSid ||
               actives.has(start.callSid) || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
           tickets.delete(start.customParameters.ticket); admitted++;
-          bridge = new PhoneAudio(ws, {...line, instructions: withBrief(line.instructions, ticket.instructions), streamSid: start.streamSid}, async stats => {
+          bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(line.instructions, ticket.instructions) : withCaller(line.instructions, ticket.context), streamSid: start.streamSid,
+            ...(!ticket.outbound && contexts && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); }
           }, {socketFactory}); actives.set(start.callSid, {bridge, outbound: ticket.outbound});
+          if (!ticket.outbound) bridge.stats.callerContext = Boolean(ticket.context);
           recording = startRecording(provider, start.callSid);
         } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
         else if (message.event === 'mark') bridge?.mark(message.mark?.name);
@@ -220,14 +226,21 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     }
     return phoneControl(directory,command,options);
   }
+  if (command === 'context') {
+    if (rest.join(' ') === 'status') return phoneControl(directory,'contexts-status',{});
+    if (rest.join(' ') !== 'replace') throw Error('Use phone context replace < contexts.json, or phone context status');
+    let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 900000) throw Error('Caller contexts too large'); }
+    return phoneControl(directory,'contexts-replace',{entries: JSON.parse(raw)});
+  }
   if (['capacity','drain','resume'].includes(command) && !rest.length) return phoneControl(directory,command,{});
   if (rest.length) throw Error('Only call, call-status and hangup accept flags; credentials and configuration use private stdin');
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
     'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
-    'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'tools serve 8793:8080 voice phone serve'],
+    'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'phone context replace < contexts.json', 'phone context status', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
       ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent tools, history or Retell/Vapi (its one tool is end_call; with openai it runs on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
+    contexts: 'phone context replace reads on stdin a JSON array of at most 500 caller contexts {number (E.164), text (1..6000 characters), claim (1..600), find (the property address, searchable), at?} and replaces the whole prepared set atomically; an inbound call from a number in it is answered with its text added to the line\'s instructions (before the greeting, no network call), and a caller from another number can name a property to the find_case tool (at most 3 tries a call), which answers with the claims whose address matches. phone context status reads the count and latest time.',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin, added to the configured instructions for that call only (the brief wins where they differ). Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
@@ -259,17 +272,19 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   }
   if (['preview','route','restore','status'].includes(command)) return phoneRoute(directory, config, command);
   if (command === 'serve') {
-    const provider=new PhoneNumber(config),calls=new PhoneCalls(directory,config,provider);let web,control;
+    const provider=new PhoneNumber(config),calls=new PhoneCalls(directory,config,provider),contexts=new PhoneContexts(directory);let web,control;
     try {
       await calls.recover();
       const admission=await read(join(directory,'admission.json')).catch(error=>{if(error.code==='ENOENT')return {draining:false};throw error;});
       if (typeof admission.draining!=='boolean') throw Error('Invalid saved phone admission state');
-      web=await servePhone(config, {calls,provider,startDrained:admission.draining,record: async value => {
+      web=await servePhone(config, {calls,contexts,provider,startDrained:admission.draining,record: async value => {
         const receipts=join(directory,'receipts');await mkdir(receipts,{recursive:true,mode:0o700});
         await save(join(receipts,value.callSid+'.json'),value);await save(join(directory,LAST_CALL),value);
       }});
       control=await servePhoneControl(directory,async frame=>{
         const {action,...options}=frame;
+        if (action==='contexts-replace' && Object.keys(options).join()==='entries') return contexts.replace(options.entries);
+        if (action==='contexts-status' && !Object.keys(options).length) return contexts.status();
         if (['capacity','drain','resume'].includes(action) && !Object.keys(options).length) {
           if (action!=='capacity') await save(join(directory,'admission.json'),{draining:action==='drain'});
           return web[action]();
@@ -277,13 +292,13 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
         if (!['call','call-status','hangup'].includes(action) || Object.keys(options).some(key=>!['requestId',...(action==='call'?['to','from','instructions']:[])].includes(key))) throw Error('Invalid phone control command');
         return action==='call'?calls.call(options,web.busy):action==='call-status'?calls.status(options.requestId):calls.hangup(options.requestId);
       });
-    } catch (error) { await web?.close();calls.close();throw error; }
+    } catch (error) { await web?.close();contexts.close();calls.close();throw error; }
     console.log(JSON.stringify({web: {url: config.origin, provider: config.provider, model: config.model, lines: linesOf(config).map(l => l.number), limits: `${config.maxCalls} inbound or outbound call(s) at a time across its lines; maxCallSeconds each (default 3 minutes), ended early after idleSeconds of silence; available until stopped; every call recorded at Twilio`, nativeTools: false}}));
     let stopping;
     for (const signal of ['SIGTERM','SIGINT']) process.once(signal, () => {stopping??=(async()=>{
       const stopped=await Promise.allSettled([web.close(),control.close()]);
-      try { await calls.stop();if(stopped.some(result=>result.status==='rejected'))throw Error('Unconfirmed shutdown');calls.close();process.exit(0); }
-      catch { console.error('Phone service stopped with unconfirmed call cleanup or receipt storage');calls.close();process.exit(2); }
+      try { await calls.stop();if(stopped.some(result=>result.status==='rejected'))throw Error('Unconfirmed shutdown');contexts.close();calls.close();process.exit(0); }
+      catch { console.error('Phone service stopped with unconfirmed call cleanup or receipt storage');contexts.close();calls.close();process.exit(2); }
     })();});
     return;
   }

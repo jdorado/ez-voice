@@ -158,6 +158,25 @@ ez voice phone hangup --request-id owner-call-001
 ez voice phone receipt
 ```
 
+## Prepared caller contexts
+
+An operator can prepare, for the numbers that may call back, what the line should know before it answers (the call
+centre's "screen pop"). The set is replaced whole, atomically, on stdin:
+
+```sh
+ez voice phone context replace < contexts.json   # [{"number":"+15551230002","text":"...","claim":"...","find":"1450 East 102nd Street","at":"2026-10-29T12:00:00Z"}]
+ez voice phone context status                    # {"count":1,"latest":"..."}
+```
+
+At most 500 entries; `text` 1..6000 characters, `claim` 1..600, `find` a property address (searchable). An inbound call
+from a number in the set is answered with its `text` added to the line's instructions, under a heading that says it is
+background that is never read out; the lookup is local (no network call) and the receipt records `callerContext`. A call
+from any other number gets the line's instructions alone, plus the `find_case` tool (inbound calls only): the model passes
+the property address the caller names, and the tool answers with the `claim` of each context whose address matches (the
+house number said first must be the address's own, and one street word must match), at most three tries a call. A claim is
+the little a stranger who names the property may be told; what `text` and `claim` hold is the operator's policy. A set that
+is never replaced leaves the behavior unchanged, and the plugin decides nothing about what may be said.
+
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
 instructions. `--instructions -` reads a per-call brief (1..12000 characters) on
