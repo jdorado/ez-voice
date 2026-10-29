@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.5
+
+- A line's configured `instructions` take up to 12000 characters (was 4000), the same as a per-call brief, so a line
+  can carry a full persona and call conduct for the calls it answers and places. QA candidate only; not tagged or
+  published.
+
 ## 0.1.0-beta.11.rc.4
 
 - One install serves several numbers (`lines`), each with its own provider, voice, key and instructions; an inbound

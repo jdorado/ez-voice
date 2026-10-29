@@ -36,7 +36,7 @@ function validateLine(line) {
   if (line.language !== undefined && !/^[a-z]{2}(-[A-Za-z]{2})?$/.test(line.language)) throw Error('language must be a language code such as en');
   if ((line.toolModel !== undefined || line.toolEffort !== undefined) && Adapter.id !== 'openai') throw Error('toolModel and toolEffort apply to provider openai only');
   const instructions = line.instructions ?? DEFAULT_INSTRUCTIONS;
-  if (typeof instructions !== 'string' || !instructions.trim() || instructions.length > 4000) throw Error('Phone instructions must contain 1..4000 characters');
+  if (typeof instructions !== 'string' || !instructions.trim() || instructions.length > MAX_CALL_INSTRUCTIONS) throw Error(`Phone instructions must contain 1..${MAX_CALL_INSTRUCTIONS} characters`);
   if (line.tools !== undefined && typeof line.tools !== 'boolean') throw Error('tools must be true or false');
   if (line.toolModel !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(line.toolModel)) throw Error('toolModel must be a model name');
   if (line.toolEffort !== undefined && !['none','minimal','low','medium','high','xhigh','max'].includes(line.toolEffort)) throw Error('toolEffort must be a reasoning effort');
