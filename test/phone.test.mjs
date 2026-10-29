@@ -443,5 +443,19 @@ test('caller audio that arrives before the provider is ready is held for as long
     assert.equal(audio.closing, undefined);
     for (let i = 0; i < 12; i++) audio.input(second); // far past any start timeout
     assert.equal(audio.stats.reason, 'startup_audio_limit');
-  } finally {await audio.close('test_done');}
+  } finally {provider.close(); await audio.close('test_done');}
+});
+
+test('phone receipt --call-sid reads the receipt of that call, not whichever call ended last', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'voice-receipts-')); t.after(() => rm(state, {recursive: true, force: true}));
+  const {mkdir} = await import('node:fs/promises'); await mkdir(join(state, 'phone', 'receipts'), {recursive: true});
+  const first = 'CA' + 'a'.repeat(32), second = 'CA' + 'b'.repeat(32);
+  await writeFile(join(state, 'phone', 'receipts', first + '.json'), JSON.stringify({callSid: first, reason: 'end_call'}));
+  await writeFile(join(state, 'phone', 'receipts', second + '.json'), JSON.stringify({callSid: second, reason: 'duration_limit'}));
+  await writeFile(join(state, 'phone', 'last-call.json'), JSON.stringify({callSid: second, reason: 'duration_limit'}));
+  assert.equal((await phoneCommand(state, ['receipt', '--call-sid', first])).reason, 'end_call');
+  await phoneCommand(state, ['configure'], {stdin: Readable.from([JSON.stringify(config)])});
+  assert.equal((await phoneCommand(state, ['receipt'])).callSid, second);
+  await assert.rejects(() => phoneCommand(state, ['receipt', '--call-sid', 'nope']), /Use phone receipt --call-sid/);
+  await assert.rejects(() => phoneCommand(state, ['receipt', '--call-sid', 'CA' + 'c'.repeat(32)]), /ENOENT/);
 });

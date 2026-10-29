@@ -236,10 +236,15 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 900000) throw Error('Caller contexts too large'); }
     return phoneControl(directory,'contexts-replace',{entries: JSON.parse(raw)});
   }
+  // The receipt of one call, by its Call SID: with several calls at once the last-call receipt is whichever ended last.
+  if (command === 'receipt' && rest[0] === '--call-sid') {
+    if (rest.length !== 2 || !sid(rest[1], 'CA')) throw Error('Use phone receipt --call-sid CA...');
+    return read(join(directory, 'receipts', rest[1] + '.json'));
+  }
   if (['capacity','drain','resume'].includes(command) && !rest.length) return phoneControl(directory,command,{});
   if (rest.length) throw Error('Only call, call-status and hangup accept flags; credentials and configuration use private stdin');
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
-    'phone route', 'phone status', 'phone restore', 'phone receipt', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
+    'phone route', 'phone status', 'phone restore', 'phone receipt [--call-sid CA...]', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'phone context replace < contexts.json', 'phone context status', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
       ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)']},
