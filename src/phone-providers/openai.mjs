@@ -7,7 +7,7 @@ Backend tools:
 - end_call: hang up this phone call after your goodbye.${lookup ? `
 - find_case: look up whether we have a conversation on record about a property address the caller named.` : ''}
 Generate <|SpawnThinking|> when:
-- The caller asks you to hang up, the conversation has finished, or you have left a voicemail message. Ask the backend to run end_call.${lookup ? `
+- The caller asks you to hang up, the conversation has finished, you have said goodbye, or you have left a voicemail message. Ask the backend to run end_call as soon as your goodbye is said: a goodbye that is not followed by end_call leaves the line open.${lookup ? `
 - The caller names a property address and you need to know whether we have a conversation about it. Ask the backend to run find_case with that address.` : ''}
 Do not generate <|SpawnThinking|> when:
 - Having ordinary conversation. No other backend tools, private records or actions are connected.`;

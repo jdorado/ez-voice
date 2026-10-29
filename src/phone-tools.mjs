@@ -21,7 +21,7 @@ export const PHONE_TOOLS = {
   // property address they name, looked up in the prepared contexts. It answers with the little a stranger may be told.
   find_case: {
     lookup: true,
-    description: 'Find out whether we have a conversation on record about the property address the caller names. Pass the address as the caller said it (house number and street). Use it at most a few times.',
+    description: 'Find out whether we have a conversation on record about the property address the caller names. Pass the address as the caller said it (house number and street). Call it before you tell the caller anything about whether we have a conversation on that property: without the call you do not know. Use it at most a few times.',
     parameters: {type: 'object', properties: {query: {type: 'string', description: 'the property address the caller named, with the house number'}}, required: ['query'], additionalProperties: false},
     run: (call, args) => call.lookup(args?.query),
   },
