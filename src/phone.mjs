@@ -10,8 +10,12 @@ import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/inde
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
 import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL, MAX_CALL_INSTRUCTIONS, withBrief} from './phone-calls.mjs';
 import {PhoneContexts} from './phone-contexts.mjs';
-// What the operator prepared for a recognised caller's number is added to the line's instructions for that inbound call only.
-export const withCaller = (instructions, context) => context ? `${instructions}\n\nCaller context (from our records: this number matches a conversation we have had; it is background for you, never read it out; where it differs from the instructions above, it wins):\n${context}` : instructions;
+// Which way a call goes, for the model: the line's instructions are the same for both. On a line with prepared caller contexts, an
+// inbound call says it is incoming, and whether the number matched what the operator prepared for it (that text is background
+// for the model, never read out; where it differs from the instructions above, it wins).
+export const withCaller = (instructions, context) => `${instructions}\n\nThis is an incoming call: someone rang this number, and there is no brief for it.` + (context
+  ? ` The caller's number matches a conversation we had; our records, below, are background for you, never to be read out:\n${context}`
+  : ' The caller\'s number matches nothing we have prepared: you know nothing about the caller beyond what they say.');
 const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone call. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
@@ -188,7 +192,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           if (!ticket || !line || ticket.expires < Date.now() || ticket.callSid !== start.callSid || start.accountSid !== config.accountSid ||
               actives.has(start.callSid) || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
           tickets.delete(start.customParameters.ticket); admitted++;
-          bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(line.instructions, ticket.instructions) : withCaller(line.instructions, ticket.context), streamSid: start.streamSid,
+          bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(line.instructions, ticket.instructions) : contexts ? withCaller(line.instructions, ticket.context) : line.instructions, streamSid: start.streamSid,
             ...(!ticket.outbound && contexts && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }

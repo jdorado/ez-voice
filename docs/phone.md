@@ -169,8 +169,8 @@ ez voice phone context status                    # {"count":1,"latest":"..."}
 ```
 
 At most 500 entries; `text` 1..6000 characters, `claim` 1..600, `find` a property address (searchable). An inbound call
-from a number in the set is answered with its `text` added to the line's instructions, under a heading that says it is
-background that is never read out; the lookup is local (no network call) and the receipt records `callerContext`. A call
+from a number in the set is answered with its `text` added to the line's instructions, as background that is never read out (an inbound call on a line with contexts is
+also told it is incoming, with no brief, and whether its number matched); the lookup is local (no network call) and the receipt records `callerContext`. A call
 from any other number gets the line's instructions alone, plus the `find_case` tool (inbound calls only): the model passes
 the property address the caller names, and the tool answers with the `claim` of each context whose address matches (the
 house number said first must be the address's own, and the street name or the street's own number must match; several properties of a caller are separated by ';' in `find`), at most three tries a call. A claim is

@@ -88,12 +88,13 @@ test('an inbound call from a known number is answered with its context; an unkno
       const last = sockets[n];
       if (from === '+15551230002') {
         const known = last.events[0].session;
-        assert(known.instructions.startsWith('Synthetic line')); assert.match(known.instructions, /Caller context[^]*Gary owns 1450 East 102nd Street/);
+        assert(known.instructions.startsWith('Synthetic line')); assert.match(known.instructions, /This is an incoming call[^]*matches a conversation we had[^]*Gary owns 1450 East 102nd Street/);
         // the caller can also name a property, so the call declares the lookup
         assert.deepEqual(known.delegation.responses.tools.map(tool => tool.name), ['end_call', 'find_case']);
         assert.match(known.instructions, /find_case/);
       } else {
         assert.equal(last.events[0].session.instructions.includes('Gary'), false); assert.match(last.events[0].session.instructions, /find_case/);
+        assert.match(last.events[0].session.instructions, /This is an incoming call[^]*matches nothing we have prepared/);
       }
       ws.close(); await wait(() => receipts.length === (from === '+15551230002' ? 1 : 2));
     }
