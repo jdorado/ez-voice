@@ -55,6 +55,11 @@ test('the prepared set is private, replaced whole, validated and read by number 
   assert.deepEqual(contexts.search('1450'), []);
   assert.deepEqual(contexts.search('1451 East 102nd Street'), []);
   assert.deepEqual(contexts.search(undefined), []);
+  // a caller with two properties is found by either
+  contexts.replace([entry('+15551230005', {find: '1450 East 102nd Street; 88 Jay Street, Brooklyn'})]);
+  assert.equal(contexts.search('88 Jay St').length, 1); assert.equal(contexts.search('1450 East 102nd').length, 1);
+  assert.equal(contexts.search('1450 Jay Street').length, 0);
+  contexts.replace([entry('+15551230002'), entry('+15551230003', {find: '88 Jay Street', text: 'Another case.'})]);
   // the whole set is replaced atomically: an invalid entry changes nothing, a number left out is forgotten
   assert.throws(() => contexts.replace([entry('+15551230004'), {...entry('+15551230005'), text: ''}]), /Invalid caller context/);
   assert.equal(contexts.status().count, 2);

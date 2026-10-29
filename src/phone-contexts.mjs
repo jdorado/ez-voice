@@ -13,6 +13,8 @@ const MAX_FIND = 400;
 export const MAX_LOOKUPS = 3;
 
 const FILLER = new Set(['the', 'a', 'an', 'my', 'our', 'house', 'home', 'property', 'building', 'apartment', 'at', 'on', 'in', 'is', 'it', 'its', 'of', 'and', 'for', 'about', 'to', 'i', 'am', 'calling', 'brooklyn', 'queens', 'bronx', 'manhattan', 'new', 'york', 'nyc', 'ny']);
+// Words that every address has: they alone do not name a street.
+const GENERIC = new Set(['street', 'avenue', 'road', 'boulevard', 'drive', 'lane', 'place', 'court', 'parkway', 'east', 'west', 'north', 'south']);
 const ABBREVIATIONS = {st: 'street', ave: 'avenue', av: 'avenue', rd: 'road', blvd: 'boulevard', dr: 'drive', ln: 'lane', pl: 'place', ct: 'court', pkwy: 'parkway', e: 'east', w: 'west', n: 'north', s: 'south'};
 
 // The words of an address: lower case, abbreviations spelled out, "102nd" as 102, filler dropped.
@@ -21,6 +23,7 @@ export function tokens(value) {
     .filter(Boolean).map(word => ABBREVIATIONS[word] ?? word).filter(word => !FILLER.has(word));
 }
 
+// Several properties of one caller are separated by ';' in `find`.
 const text = (value, max) => typeof value === 'string' && value.trim().length > 0 && value.length <= max && !value.includes('\0');
 
 export function validateEntries(entries) {
@@ -31,7 +34,7 @@ export function validateEntries(entries) {
       || !phone(entry.number) || seen.has(entry.number) || !text(entry.text, MAX_CONTEXT_TEXT) || !text(entry.claim, MAX_CLAIM_TEXT)
       || !text(entry.find, MAX_FIND) || (entry.at !== undefined && !Number.isFinite(Date.parse(entry.at)))) throw Error('Invalid caller context');
     seen.add(entry.number);
-    return {number: entry.number, text: entry.text, claim: entry.claim, find: tokens(entry.find).join(' '), at: entry.at ?? new Date().toISOString()};
+    return {number: entry.number, text: entry.text, claim: entry.claim, find: entry.find.split(';').map(address => tokens(address).join(' ')).filter(Boolean).join(';'), at: entry.at ?? new Date().toISOString()};
   });
 }
 
@@ -59,17 +62,20 @@ export class PhoneContexts {
     return {count: Number(row.count), latest: row.latest ?? null};
   }
   byNumber(number) { return phone(number) ? this.db.prepare('SELECT text FROM contexts WHERE number=?').get(number)?.text : undefined; }
-  // The claims of the contexts whose property the query names: every number in the query must be in the address (a house
-  // number is required) and at least one street word. A claim is the little a stranger who names the property may be told.
+  // The claims of the contexts whose property the query names: every number in the query must be in the address (the first
+  // is the house number), and a street name (or the street's own number, as in "1450 East 102nd") must match. A claim is the little a stranger who names the property may be told.
   search(query) {
     const wanted = new Set(tokens(typeof query === 'string' ? query.slice(0, 200) : ''));
     const digits = [...wanted].filter(word => /^\d+$/.test(word)), words = [...wanted].filter(word => !/^\d+$/.test(word));
     if (!digits.length || !words.length) return [];
     const found = [];
     for (const row of this.db.prepare('SELECT claim, find FROM contexts').all()) {
-      const have = new Set(row.find.split(' '));
       // the first number said is the house number, which must be the address's own
-      if (digits[0] === row.find.split(' ')[0] && digits.every(word => have.has(word)) && words.some(word => have.has(word))) found.push(row.claim);
+      const named = row.find.split(';').some(address => {
+        const list = address.split(' '), have = new Set(list);
+        return digits[0] === list[0] && digits.every(word => have.has(word)) && (digits.length > 1 || words.some(word => !GENERIC.has(word) && have.has(word)));
+      });
+      if (named) found.push(row.claim);
       if (found.length >= MAX_LOOKUPS) break;
     }
     return found;

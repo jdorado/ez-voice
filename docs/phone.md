@@ -173,7 +173,7 @@ from a number in the set is answered with its `text` added to the line's instruc
 background that is never read out; the lookup is local (no network call) and the receipt records `callerContext`. A call
 from any other number gets the line's instructions alone, plus the `find_case` tool (inbound calls only): the model passes
 the property address the caller names, and the tool answers with the `claim` of each context whose address matches (the
-house number said first must be the address's own, and one street word must match), at most three tries a call. A claim is
+house number said first must be the address's own, and the street name or the street's own number must match; several properties of a caller are separated by ';' in `find`), at most three tries a call. A claim is
 the little a stranger who names the property may be told; what `text` and `claim` hold is the operator's policy. A set that
 is never replaced leaves the behavior unchanged, and the plugin decides nothing about what may be said.
 
