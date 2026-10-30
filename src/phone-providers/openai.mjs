@@ -3,17 +3,18 @@ import {words} from './transcript.mjs';
 
 // Live must be told when to delegate; registering tools on its Responses backend
 // alone does not expose them to the voice model. This is provider capability wiring.
-const delegationPolicy = (lookup, information) => information ? `Delegation policy:\nBackend tools: ${information.tools.map(t => t.name + ": " + t.description).join("\n")}\nend_call: hang up after goodbye. Generate <|SpawnThinking|> for facts missing from the screen pop, current property details, prior exchanges, relationships or company guidance. Ask the backend to use the named read tools; use read_record with ref current for the current lead. Generate <|SpawnThinking|> to end_call when the conversation ends. Answer ordinary conversation and facts already supplied directly. Never substitute a guess for a read, and say plainly when a read is unavailable.` : `Delegation policy:
+const endCallDelegation = '- The caller asks you to hang up, the conversation has finished, you have said goodbye, or you have left a voicemail message. Ask the backend to run end_call as soon as your goodbye is said: a goodbye that is not followed by end_call leaves the line open.';
+const delegationPolicy = (lookup, information) => `Delegation policy:
 Backend tools:
 - end_call: hang up this phone call after your goodbye.${lookup ? `
-- find_case: look up whether we have a conversation on record about a property address the caller named.` : ''}
+- find_case: look up whether we have a conversation on record about a property address the caller named.` : ''}${information ? '\n' + information.tools.map(t => '- ' + t.name + ': ' + t.description).join('\n') : ''}
 Generate <|SpawnThinking|> when:
-- The caller asks you to hang up, the conversation has finished, you have said goodbye, or you have left a voicemail message. Ask the backend to run end_call as soon as your goodbye is said: a goodbye that is not followed by end_call leaves the line open.${lookup ? `
-- The caller names a property address and you need to know whether we have a conversation about it. Ask the backend to run find_case with that address.` : ''}
+${endCallDelegation}${information ? `
+- The request needs a listed backend capability or facts missing from the supplied context. Ask the backend to use the appropriate listed tools; never substitute a guess for a read.` : lookup ? `
+- The caller names a property address and you need to know whether a conversation is on record. Ask the backend to run find_case with that address.` : ''}
 Do not generate <|SpawnThinking|> when:
-- Having ordinary conversation, including questions about the caller, their number or an earlier conversation: answer
-  those from your instructions above (what they say about this call is what you know). The backend has no other tools
-  or records.`;
+- Having ordinary conversation, answering from already supplied current information, or asking a brief clarification.
+Generate <|SpawnThinking|> before giving an answer that depends on backend work. Wait for the result and say plainly when it is unavailable.`;
 
 // GPT-Live (OpenAI /v1/live/sessions). It carries mu-law 8 kHz both ways and has no direct function calling: tools run on
 // its Responses backend (delegation), which hands finished calls back to the plugin.

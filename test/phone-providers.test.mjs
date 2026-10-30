@@ -526,6 +526,8 @@ test('both speaking providers receive information tools and GPT-Live delegates m
   const information = {tools: [{type: 'function', name: 'read_record', description: 'Read current records', parameters: {type: 'object', properties: {ref: {type: 'string'}}}}]};
   const openai = createAdapter({...base, provider: 'openai', apiKey: keys.openai, information}).start()[0].session;
   assert(openai.instructions.includes('read_record')); assert(openai.instructions.includes('facts missing'));
+  assert(openai.instructions.includes('a goodbye that is not followed by end_call leaves the line open'));
+  assert(openai.delegation.responses.instructions.includes('run end_call when the conversation is over'));
   assert(openai.delegation.responses.tools.some(t => t.name === 'read_record'));
   const eleven = createAdapter({...base, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', apiKey: keys.elevenlabs, information}).configure().session;
   assert(eleven.tools.some(t => t.name === 'read_record'));
