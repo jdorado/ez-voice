@@ -566,3 +566,17 @@ test('a failed information read is explicit and cannot invoke another command', 
   assert.equal(called, 1); assert(!JSON.stringify(outputs).includes('private failure'));
   await c.audio.close();
 });
+
+
+test('several valid line instructions fit the private configuration input contract', async () => {
+  const state = await mkdtemp(join(tmpdir(), 'voice-profile-size-'));
+  try {
+    const config = {...base, lines: [
+      {number: '+15551230001', apiKey: keys.openai, instructions: 'a'.repeat(10000)},
+      {number: '+15551230002', apiKey: keys.openai, instructions: 'b'.repeat(10000)}]};
+    delete config.number; delete config.instructions;
+    async function* stdin() { yield JSON.stringify(config); }
+    const result = await phoneCommand(state, ['configure'], {stdin: stdin()});
+    assert.equal(result.lines.length, 2);
+  } finally { await rm(state, {recursive: true, force: true}); }
+});

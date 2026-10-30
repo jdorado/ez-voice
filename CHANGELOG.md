@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.12.rc.1
+## 0.1.0-beta.11.rc.12
 
 - Phone sessions can read through an operator-bound installed plugin on both GPT-Live and ElevenLabs Max, with call/turn binding, cancellation and stale-result rejection. Historical context ends before the new-call greeting.
 
