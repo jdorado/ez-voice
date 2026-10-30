@@ -829,3 +829,16 @@ test('a refused provider WebSocket upgrade reports its HTTP code without credent
   assert.equal(c.finished[0].providerError, 'HTTP_403');
   assert(!JSON.stringify(c.finished).includes(keys.deepgram));
 });
+
+test('Gemini JSON in binary WebSocket frames remains JSON, not raw audio', async () => {
+  const c = await call('gemini');
+  try {
+    c.socket().emit('message', Buffer.from(JSON.stringify({setupComplete: {}})), true);
+    assert.equal(c.ready(), 1);
+    assert(!c.audio.closing);
+    c.socket().emit('message', Buffer.from(JSON.stringify({serverContent: {inputTranscription: {text: 'Hello'}}})), true);
+    await c.audio.close();
+    assert.equal(c.finished[0].transcript[0].text, 'Hello');
+    assert.equal(c.finished[0].outputBytes, 0);
+  } finally {await c.audio.close();}
+});

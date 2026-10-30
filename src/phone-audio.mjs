@@ -54,8 +54,7 @@ export class PhoneAudio {
     this.provider.on('open', () => { for (const message of this.adapter.start()) this.send(message); });
     this.provider.on('message', (raw, binary) => {
       try {
-        if (binary && !this.adapter.constructor.binaryAudio) throw Error('Unexpected binary event');
-        this.event(binary ? Buffer.from(raw) : JSON.parse(raw.toString()));
+        this.event(binary && this.adapter.constructor.binaryAudio ? Buffer.from(raw) : JSON.parse(raw.toString()));
       } catch { this.close('invalid_provider_event'); }
     });
     this.provider.on('error', () => this.close('provider_connection_failed'));

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.26
+
+- Preserve binary-framed JSON from Gemini Live while decoding Deepgram binary frames as audio.
+
 ## 0.1.0-beta.11.rc.25
 
 - Report refused provider WebSocket upgrades by HTTP status, without retaining response bodies or credentials.
