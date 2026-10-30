@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.11.rc.21
+## 0.1.0-beta.11.rc.22
 
 - Bind ElevenLabs client secrets to the complete initial call session (instructions, model, tools and audio), as required by the provider contract. Drain startup audio in bounded batches to preserve delayed PCM-provider connections.
 - Preserve caller audio during phone ringback, including speech before provider readiness.

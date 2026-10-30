@@ -695,3 +695,17 @@ test('startup VAD noise still gets a greeting, and ongoing local speech defers i
   assert.equal(s.events.filter(e => e.clientContent).length, 1, 'unconfirmed VAD must not suppress the greeting after quiet');
   audio.close('test'); s.close(); await audio.done;
 });
+
+
+test('continuous unrecognized startup noise cannot leave an answered call silent indefinitely', async () => {
+  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+  await wait(() => socket());
+  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
+  audio.input(frame); s.receive({setupComplete: {}});
+  audio.handle({type: 'speech', who: 'caller', start: true});
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await new Promise(r => setTimeout(r, 5400));
+    assert.equal(s.events.filter(e => e.clientContent).length, 1);
+  } finally { clearInterval(input); audio.close('test'); s.close(); await audio.done; }
+});

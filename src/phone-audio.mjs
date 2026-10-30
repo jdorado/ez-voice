@@ -102,11 +102,15 @@ export class PhoneAudio {
       else {
         this.flushingInput = false;
         // Earlier caller frames must reach the provider before this transport turn.
+        const drainedAt = Date.now();
         const greet = () => {
           if (this.closing || this.completed || !this.config.greet || this.conversationStarted) return;
           // A timeout is not evidence that a caller stopped. Defer until a quiet gap;
           // a raw VAD event alone (cough/noise) does not permanently cancel the opener.
-          if (Date.now() - (this.lastInputSoundAt ?? 0) < 500) {
+          // Without recognized words, energy alone cannot distinguish noise from
+          // speech. After five seconds prefer a greeting to an indefinitely silent
+          // answered call; normal provider barge-in still applies after it starts.
+          if (Date.now() - (this.lastInputSoundAt ?? 0) < 500 && Date.now() - drainedAt < 5000) {
             this.greetingTimer = setTimeout(greet, 250); return;
           }
           for (const message of this.adapter.greet()) this.send(message);
