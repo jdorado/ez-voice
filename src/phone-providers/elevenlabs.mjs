@@ -23,9 +23,11 @@ export class ElevenLabsAdapter {
   constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; }
 
   async connection() {
+    // The mint scopes the authoritative initial session; do not connect with default
+    // instructions/model/tools and rely on a later update to replace them.
     const response = await this.fetch(SECRET_URL, {method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
       headers: {'xi-api-key': this.config.apiKey, 'Content-Type': 'application/json'},
-      body: JSON.stringify({expires_after: {anchor: 'created_at', seconds: 120}})});
+      body: JSON.stringify({session: this.configure().session, expires_after: {anchor: 'created_at', seconds: 120}})});
     if (!response.ok) { const error = Error(`ElevenLabs client secret request failed (HTTP ${response.status})`); error.status = response.status; throw error; }
     const secret = (await response.json())?.value;
     if (typeof secret !== 'string' || !secret) throw Error('ElevenLabs returned no client secret');
@@ -41,8 +43,12 @@ export class ElevenLabsAdapter {
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
       audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
-  // The model speaks first: a response with no caller turn yet is the greeting.
-  greet() { return [{type: 'response.create'}]; }
+  // An empty response request can produce no turn. Supply the actual transport event,
+  // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
+  greet() { return [
+    {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
+    {type: 'response.create'},
+  ]; }
   audioIn(audio) { return [{type: 'input_audio_buffer.append', audio}]; }
   parse(event) {
     switch (event.type) {

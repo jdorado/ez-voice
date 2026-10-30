@@ -131,6 +131,7 @@ test('elevenlabs mints a client secret, configures the session natively and pass
   socket().receive({type: 'session.created', session: {}});
   await wait(() => socket().events.length);
   const update = socket().events[0];
+  assert.deepEqual(JSON.parse(mint.requests[0].options.body).session, update.session, 'the credential is bound to the same persona, call context, model, audio and tools before connecting');
   assert.equal(update.type, 'session.update'); assert.equal(update.session.model, 'eleven_realtime_v1_max'); assert.equal(update.session.audio.output.voice, 'vOZtmBu4RanHWgj2KUOY');
   assert.deepEqual([update.session.audio.input.format, update.session.audio.output.format], [{type: 'audio/pcmu'}, {type: 'audio/pcmu'}]);
   assert.deepEqual(update.session.audio.input.transcription, {language: 'es'});
@@ -371,7 +372,9 @@ test('the idle hang-up waits for queued speech to finish playing, and a barge-in
 test('an answered call is greeted: once the session is ready each provider asks its model to speak first, and a placed call waits', async () => {
   const readyEvents = {openai: [{type: 'session.started', session: {id: 's1'}}], gemini: [{setupComplete: {}}],
     elevenlabs: [{type: 'session.created', session: {}}, {type: 'session.updated', session: {}}]};
-  const greeting = {openai: [{type: 'response.create'}], elevenlabs: [{type: 'response.create'}],
+  const greeting = {openai: [{type: 'response.create'}], elevenlabs: [
+    {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
+    {type: 'response.create'}],
     gemini: [{clientContent: {turns: [{role: 'user', parts: [{text: '(The call has connected: answer it.)'}]}], turnComplete: true}}]};
   for (const provider of ['openai', 'elevenlabs', 'gemini']) {
     for (const greet of [true, false]) {
@@ -473,7 +476,7 @@ test('an answered call rings on while the session starts, through streamed silen
   }
 });
 
-test('the ring is bounded: caller audio waits it out, it stops when nothing sounds after ready, on close, and records why', async () => {
+test('ringback never drops caller audio before or after ready, and still stops on timeout or close', async () => {
   const twilio = () => Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], send(raw) {this.sent.push(JSON.parse(raw));}, close() {this.readyState = WebSocket.CLOSED;}});
   const bridge = (line, settings = {}) => {
     const sockets = [];
@@ -483,10 +486,12 @@ test('the ring is bounded: caller audio waits it out, it stops when nothing soun
   };
   const quiet = twilio(), {audio, socket} = bridge(quiet);
   await wait(() => socket());
-  audio.input('//8='); // the caller's line while it rings: not a turn for the model
+  audio.input('//8='); // before ready: queued, not discarded
   socket().receive({type: 'session.started', session: {id: 's1'}});
   await new Promise(r => setTimeout(r, 30));
-  assert(!socket().events.some(e => e.type === 'session.input_audio.append'), 'nothing the line carried while ringing reached the model');
+  assert.equal(socket().events.filter(e => e.type === 'session.input_audio.append').length, 1);
+  audio.input('//8='); // ready but still ringing: also forwarded
+  assert.equal(socket().events.filter(e => e.type === 'session.input_audio.append').length, 2);
   await wait(() => audio.stats.ringStop);
   assert.equal(audio.stats.ringStop, 'timeout'); assert(quiet.sent.some(m => m.event === 'clear'));
   audio.input('//8='); // answered now: the caller is heard
@@ -619,4 +624,88 @@ test('an old GPT-Live delegation cancellation cannot cancel the current read', a
   assert.equal(c.audio.pendingTools.size, 1);
   finish({status: 'available'}); await wait(() => c.audio.pendingTools.size === 0);
   c.audio.close(); c.socket().receive({type: 'session.closed'}); await c.audio.done;
+});
+
+test('delayed Gemini startup drains preserved audio without overflowing its expanded PCM socket buffer', async () => {
+  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+  await wait(() => socket());
+  const s = socket(), send = s.send.bind(s); let peak = 0;
+  s.send = raw => { s.bufferedAmount += Buffer.byteLength(raw); peak = Math.max(peak, s.bufferedAmount); send(raw); setImmediate(() => {s.bufferedAmount = 0;}); };
+  const frame = Buffer.alloc(160, 0xff).toString('base64');
+  for (let i = 0; i < 600; i++) audio.input(frame); // twelve seconds of real Twilio frame sizes
+  s.receive({setupComplete: {}});
+  audio.input(frame); // arriving during the drain must stay behind the earlier frames
+  await wait(() => !audio.flushingInput || audio.closing);
+  assert.equal(audio.closing, undefined);
+  assert.equal(s.events.filter(e => e.realtimeInput?.audio).length, 601);
+  assert(peak < 256000, `peak buffer ${peak}`);
+  assert.equal(audio.queuedBytes, 0);
+  const greeting = s.events.findIndex(e => e.clientContent);
+  assert(greeting > 0);
+  assert.equal(s.events.slice(0, greeting).filter(e => e.realtimeInput?.audio).length, 601, 'greeting cannot overtake buffered or newly arrived caller frames');
+  audio.close('test'); s.close(); await audio.done;
+});
+
+
+test('a conversation that starts during startup drain does not get a second forced greeting', async () => {
+  for (const who of ['caller', 'model']) {
+    const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+    await wait(() => socket());
+    const s = socket(), frame = Buffer.alloc(160, 0xff).toString('base64');
+    for (let i = 0; i < 80; i++) audio.input(frame);
+    s.receive({setupComplete: {}});
+    assert(audio.flushingInput);
+    audio.handle({type: 'speech', who, start: who === 'caller', delta: 'Hello'});
+    await wait(() => !audio.flushingInput);
+    assert.equal(s.events.filter(e => e.realtimeInput?.audio).length, 80);
+    assert.equal(s.events.filter(e => e.clientContent).length, 0);
+    audio.close('test'); s.close(); await audio.done;
+  }
+});
+
+
+test('audible startup waits for delayed provider speech detection, but noise cannot suppress the greeting forever', async () => {
+  for (const detected of [true, false]) {
+    const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+    await wait(() => socket());
+    audio.input(pcmToUlaw(tone(500, 8000, 20)).toString('base64'));
+    const s = socket(); s.receive({setupComplete: {}});
+    assert.equal(audio.flushingInput, false);
+    assert.equal(s.events.filter(e => e.clientContent).length, 0, 'sending the queue is not speech acknowledgement');
+    await new Promise(r => setTimeout(r, 50));
+    if (detected) audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Hello'});
+    await new Promise(r => setTimeout(r, 1250));
+    assert.equal(s.events.filter(e => e.clientContent).length, detected ? 0 : 1);
+    audio.close('test'); s.close(); await audio.done;
+  }
+});
+
+
+test('startup VAD noise still gets a greeting, and ongoing local speech defers it until quiet', async () => {
+  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+  await wait(() => socket());
+  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
+  audio.input(frame); s.receive({setupComplete: {}});
+  audio.handle({type: 'speech', who: 'caller', start: true}); // VAD alone, no recognized words
+  const input = setInterval(() => audio.input(frame), 20);
+  await new Promise(r => setTimeout(r, 1400));
+  assert.equal(s.events.filter(e => e.clientContent).length, 0, 'do not greet over active input');
+  clearInterval(input);
+  await new Promise(r => setTimeout(r, 800));
+  assert.equal(s.events.filter(e => e.clientContent).length, 1, 'unconfirmed VAD must not suppress the greeting after quiet');
+  audio.close('test'); s.close(); await audio.done;
+});
+
+
+test('continuous unrecognized startup noise cannot leave an answered call silent indefinitely', async () => {
+  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+  await wait(() => socket());
+  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
+  audio.input(frame); s.receive({setupComplete: {}});
+  audio.handle({type: 'speech', who: 'caller', start: true});
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await new Promise(r => setTimeout(r, 5400));
+    assert.equal(s.events.filter(e => e.clientContent).length, 1);
+  } finally { clearInterval(input); audio.close('test'); s.close(); await audio.done; }
 });
