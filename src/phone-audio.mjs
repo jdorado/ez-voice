@@ -74,6 +74,7 @@ export class PhoneAudio {
     if (this.closing) return;
     if (typeof payload !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload) || payload.length > 16000) return this.close('invalid_audio');
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
+    if (this.config.greet && !this.conversationStarted && audible(payload)) this.lastInputSoundAt = Date.now();
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready && !this.flushingInput) this.forward(payload);
@@ -102,8 +103,13 @@ export class PhoneAudio {
         this.flushingInput = false;
         // Earlier caller frames must reach the provider before this transport turn.
         const greet = () => {
-          if (!this.closing && !this.completed && this.config.greet && !this.conversationStarted)
-            for (const message of this.adapter.greet()) this.send(message);
+          if (this.closing || this.completed || !this.config.greet || this.conversationStarted) return;
+          // A timeout is not evidence that a caller stopped. Defer until a quiet gap;
+          // a raw VAD event alone (cough/noise) does not permanently cancel the opener.
+          if (Date.now() - (this.lastInputSoundAt ?? 0) < 500) {
+            this.greetingTimer = setTimeout(greet, 250); return;
+          }
+          for (const message of this.adapter.greet()) this.send(message);
         };
         // Sending audio is not an acknowledgement that server VAD processed it. Give
         // audible startup input a bounded detection window; background noise must not
@@ -150,7 +156,7 @@ export class PhoneAudio {
         }
         break;
       case 'speech':
-        this.conversationStarted = true;
+        if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
           if (item.start) { this.cancelTools(true); this.turn++; }

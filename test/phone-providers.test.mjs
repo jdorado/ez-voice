@@ -679,3 +679,19 @@ test('audible startup waits for delayed provider speech detection, but noise can
     audio.close('test'); s.close(); await audio.done;
   }
 });
+
+
+test('startup VAD noise still gets a greeting, and ongoing local speech defers it until quiet', async () => {
+  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+  await wait(() => socket());
+  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
+  audio.input(frame); s.receive({setupComplete: {}});
+  audio.handle({type: 'speech', who: 'caller', start: true}); // VAD alone, no recognized words
+  const input = setInterval(() => audio.input(frame), 20);
+  await new Promise(r => setTimeout(r, 1400));
+  assert.equal(s.events.filter(e => e.clientContent).length, 0, 'do not greet over active input');
+  clearInterval(input);
+  await new Promise(r => setTimeout(r, 800));
+  assert.equal(s.events.filter(e => e.clientContent).length, 1, 'unconfirmed VAD must not suppress the greeting after quiet');
+  audio.close('test'); s.close(); await audio.done;
+});
