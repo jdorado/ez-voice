@@ -23,9 +23,11 @@ export class ElevenLabsAdapter {
   constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; }
 
   async connection() {
+    // The mint scopes the authoritative initial session; do not connect with default
+    // instructions/model/tools and rely on a later update to replace them.
     const response = await this.fetch(SECRET_URL, {method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
       headers: {'xi-api-key': this.config.apiKey, 'Content-Type': 'application/json'},
-      body: JSON.stringify({expires_after: {anchor: 'created_at', seconds: 120}})});
+      body: JSON.stringify({session: this.configure().session, expires_after: {anchor: 'created_at', seconds: 120}})});
     if (!response.ok) { const error = Error(`ElevenLabs client secret request failed (HTTP ${response.status})`); error.status = response.status; throw error; }
     const secret = (await response.json())?.value;
     if (typeof secret !== 'string' || !secret) throw Error('ElevenLabs returned no client secret');

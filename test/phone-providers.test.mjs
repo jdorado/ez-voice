@@ -131,6 +131,7 @@ test('elevenlabs mints a client secret, configures the session natively and pass
   socket().receive({type: 'session.created', session: {}});
   await wait(() => socket().events.length);
   const update = socket().events[0];
+  assert.deepEqual(JSON.parse(mint.requests[0].options.body).session, update.session, 'the credential is bound to the same persona, call context, model, audio and tools before connecting');
   assert.equal(update.type, 'session.update'); assert.equal(update.session.model, 'eleven_realtime_v1_max'); assert.equal(update.session.audio.output.voice, 'vOZtmBu4RanHWgj2KUOY');
   assert.deepEqual([update.session.audio.input.format, update.session.audio.output.format], [{type: 'audio/pcmu'}, {type: 'audio/pcmu'}]);
   assert.deepEqual(update.session.audio.input.transcription, {language: 'es'});
@@ -623,4 +624,21 @@ test('an old GPT-Live delegation cancellation cannot cancel the current read', a
   assert.equal(c.audio.pendingTools.size, 1);
   finish({status: 'available'}); await wait(() => c.audio.pendingTools.size === 0);
   c.audio.close(); c.socket().receive({type: 'session.closed'}); await c.audio.done;
+});
+
+test('delayed Gemini startup drains preserved audio without overflowing its expanded PCM socket buffer', async () => {
+  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+  await wait(() => socket());
+  const s = socket(), send = s.send.bind(s); let peak = 0;
+  s.send = raw => { s.bufferedAmount += Buffer.byteLength(raw); peak = Math.max(peak, s.bufferedAmount); send(raw); setImmediate(() => {s.bufferedAmount = 0;}); };
+  const frame = Buffer.alloc(160, 0xff).toString('base64');
+  for (let i = 0; i < 600; i++) audio.input(frame); // twelve seconds of real Twilio frame sizes
+  s.receive({setupComplete: {}});
+  audio.input(frame); // arriving during the drain must stay behind the earlier frames
+  await wait(() => !audio.flushingInput || audio.closing);
+  assert.equal(audio.closing, undefined);
+  assert.equal(s.events.filter(e => e.realtimeInput?.audio).length, 601);
+  assert(peak < 256000, `peak buffer ${peak}`);
+  assert.equal(audio.queuedBytes, 0);
+  audio.close('test'); s.close(); await audio.done;
 });
