@@ -327,9 +327,12 @@ Ez `tools.invoke` through its existing `tools serve` connection and the installe
 Call metadata comes from the authenticated Twilio admission ticket, outside model arguments.
 
 GPT-Live exposes these tools through Responses delegation and ElevenLabs Max calls them natively.
-Each bridge cancels pending work on a new caller turn, interruption or close, refuses duplicate
+Each bridge cancels pending work on a superseding request, interruption or close, refuses duplicate
 call IDs, and discards late results. A read has a 15-second deadline; failure is explicitly
-unavailable. Receipts keep tool names and cancellation counts, not retrieved private bodies.
+unavailable. ElevenLabs supplies speech-start boundaries; GPT-Live supplies delegation IDs,
+which bind its backend request generations and scope cancellation. Transcript fragments cannot
+reliably identify complete GPT-Live turns. Receipts keep tool names, status, duration and
+cancellation counts, not retrieved private bodies.
 Prepared context remains immediate and is labelled as historical evidence before a new greeting.
 The bound plugin is trusted operator configuration; its domain read-only enforcement is required
 for speech sessions that must not write. No native-agent delegation is granted to phone callers.
