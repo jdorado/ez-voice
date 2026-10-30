@@ -59,6 +59,11 @@ export class PhoneAudio {
       } catch { this.close('invalid_provider_event'); }
     });
     this.provider.on('error', () => this.close('provider_connection_failed'));
+    this.provider.on('unexpected-response', (_request, response) => {
+      this.stats.providerError = Number.isInteger(response.statusCode) ? `HTTP_${response.statusCode}` : 'upgrade_failed';
+      response.resume();
+      this.close('provider_connection_failed');
+    });
     this.provider.on('close', code => {
       // A provider that ends the session by closing the socket says why in the close code only (never keep its text).
       if (!this.closing && !this.completed) {

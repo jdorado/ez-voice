@@ -819,3 +819,13 @@ test('Deepgram failure stays explicit, unknown tools cannot run, and provider de
     assert(!createAdapter({...base, provider: 'deepgram', ...deepgramKeys, tools: false}).settings().agent.think.functions);
   } finally {await c.audio.close();}
 });
+
+test('a refused provider WebSocket upgrade reports its HTTP code without credentials or body', async () => {
+  const c = await call('deepgram', deepgramKeys);
+  let drained = false;
+  c.socket().emit('unexpected-response', {}, {statusCode: 403, resume() {drained = true;}, body: keys.deepgram});
+  await c.audio.done;
+  assert(drained);
+  assert.equal(c.finished[0].providerError, 'HTTP_403');
+  assert(!JSON.stringify(c.finished).includes(keys.deepgram));
+});

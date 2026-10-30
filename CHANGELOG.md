@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.25
+
+- Report refused provider WebSocket upgrades by HTTP status, without retaining response bodies or credentials.
+
 ## 0.1.0-beta.11.rc.24
 
 - Add a Deepgram Voice Agent adapter for Flux, Gemini 3.8 Flash and ElevenLabs v4 Turbo, with private BYO credentials, binary mu-law audio and the existing installed information tools.
