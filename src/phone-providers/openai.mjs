@@ -55,23 +55,18 @@ export class OpenAIAdapter {
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         return [{type: 'audio', audio: event.delta}];
       // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
-      case 'session.input_transcript.delta': {
-        // Live has no completed-turn event. Group fragments by their audio timeline, not packet arrival
-        // or an interleaved model acknowledgement. A later utterance invalidates in-flight reads.
-        const start = this.inputEnd === undefined || (Number.isFinite(event.start_ms) && event.start_ms > this.inputEnd + 1200);
-        if (Number.isFinite(event.end_ms)) this.inputEnd = Math.max(this.inputEnd ?? 0, event.end_ms);
-        return [{type: 'speech', who: 'caller', start, delta: words(event.delta)}];
-      }
+      case 'session.input_transcript.delta': return [{type: 'speech', who: 'caller', delta: words(event.delta)}];
       case 'session.output_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
-      case 'session.delegation.cancelled': return [{type: 'cancelled'}];
+      case 'session.delegation.cancelled': return [{type: 'cancelled', request: event.delegation_id ?? event.delegation?.id}];
       case 'response.event': {
-        if (event.event?.type === 'response.done' && ['cancelled','failed'].includes(event.event.response?.status)) return [{type: 'cancelled'}];
+        if (event.event?.type === 'response.done' && ['cancelled','failed'].includes(event.event.response?.status)) return [{type: 'cancelled', request: event.delegation_id}];
         const item = event.event?.type === 'response.output_item.done' ? event.event.item : null;
-        return item?.type === 'function_call' ? [{type: 'tool', id: item.call_id, name: item.name, args: item.arguments}] : [];
+        return item?.type === 'function_call' ? [{type: 'tool', id: item.call_id, name: item.name, args: item.arguments, request: event.delegation_id}] : [];
       }
       case 'session.delegation.created': {
         // Public phone callers have no owner identity, workspace or tool grants.
         const id = event.delegation?.id;
+        if (event.delegation?.target === 'responses' && typeof id === 'string') return [{type: 'turn', request: id}];
         return event.delegation?.target !== 'responses' && typeof id === 'string' ? [{type: 'send', message: {type: 'session.commentary.append', delegation_id: id,
           content: 'This is an audio-only phone call. No backend tool or action is connected; answer from your instructions.'}}] : [];
       }

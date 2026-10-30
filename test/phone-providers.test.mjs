@@ -582,16 +582,13 @@ test('several valid line instructions fit the private configuration input contra
 });
 
 
-test('GPT-Live transcript fragments do not become new turns when model speech interleaves', () => {
+test('GPT-Live uses delegation identity, not fragment timing, to bind cancellation', () => {
   const adapter = createAdapter({...base, provider: 'openai', apiKey: keys.openai});
-  const fragment = (start_ms, end_ms) => adapter.parse({type: 'session.input_transcript.delta', delta: 'words', start_ms, end_ms})[0];
-  assert.equal(fragment(1000, 1200).start, true);
-  adapter.parse({type: 'session.output_transcript.delta', delta: 'Checking'});
-  assert.equal(fragment(1200, 1400).start, false);
-  assert.equal(fragment(1400, 1600).start, false);
-  assert.equal(fragment(5000, 5200).start, true);
+  const fragment = adapter.parse({type: 'session.input_transcript.delta', delta: 'continuation', start_ms: 9000, end_ms: 9300})[0];
+  assert.equal(fragment.start, undefined);
+  assert.deepEqual(adapter.parse({type: 'session.delegation.created', delegation: {id: 'turn-b', target: 'responses'}}), [{type: 'turn', request: 'turn-b'}]);
+  assert.deepEqual(adapter.parse({type: 'response.event', delegation_id: 'turn-a', event: {type: 'response.done', response: {status: 'cancelled'}}}), [{type: 'cancelled', request: 'turn-a'}]);
 });
-
 
 test('a bounded pending read is active work, then the ordinary idle timer resumes', async () => {
   let resolve;
@@ -608,4 +605,18 @@ test('a bounded pending read is active work, then the ordinary idle timer resume
   assert.equal(c.audio.stats.informationReads[0].status, 'available');
   await wait(() => c.audio.closing);
   c.socket().receive({type: 'session.closed'}); await c.audio.done;
+});
+
+
+test('an old GPT-Live delegation cancellation cannot cancel the current read', async () => {
+  let finish;
+  const information = {tools: [{name: 'read_record'}], run: () => new Promise(r => {finish = r;})};
+  const c = await call('openai', {information}); await wait(() => c.socket());
+  c.audio.handle({type: 'turn', request: 'current'});
+  c.audio.tool({id: 'bound', name: 'read_record', args: {}, request: 'current'});
+  await wait(() => finish);
+  c.audio.handle({type: 'cancelled', request: 'old'});
+  assert.equal(c.audio.pendingTools.size, 1);
+  finish({status: 'available'}); await wait(() => c.audio.pendingTools.size === 0);
+  c.audio.close(); c.socket().receive({type: 'session.closed'}); await c.audio.done;
 });

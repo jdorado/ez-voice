@@ -133,7 +133,12 @@ export class PhoneAudio {
         this.activeAt = Date.now();
         this.transcript.add(item.who, item);
         break;
-      case 'cancelled': this.cancelTools(); break;
+      case 'turn':
+        if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
+        break;
+      case 'cancelled':
+        if (item.request) this.cancelTools(false, item.request);
+        break;
       case 'interrupted':
         this.cancelTools(true); this.turn++;
         // The caller talked over the model: what Twilio has queued would play after they stopped.
@@ -154,6 +159,7 @@ export class PhoneAudio {
         || !/^[A-Za-z0-9_-]{1,200}$/.test(item.id) || typeof item.name !== 'string'
         || this.seenTools.has(item.id) || this.seenTools.size >= 64) return;
     this.seenTools.add(item.id);
+    if (item.request && this.request && item.request !== this.request) return;
     const tool = Object.hasOwn(PHONE_TOOLS, item.name) && (!PHONE_TOOLS[item.name].lookup || this.config.lookup) ? PHONE_TOOLS[item.name] : null;
     const external = !tool && this.config.information?.tools.some(t => t.name === item.name);
     (this.stats.tools ??= []).length < 64 && this.stats.tools.push(tool || external ? item.name : 'unknown');
@@ -180,16 +186,18 @@ export class PhoneAudio {
         for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
       }).finally(() => { clearTimeout(timer); this.pendingTools.delete(item.id); });
   }
-  cancelTools(notify = false) {
-    for (const abort of this.pendingTools.values()) {
+  cancelTools(notify = false, request) {
+    for (const [id, abort] of this.pendingTools) {
+      if (request && abort.tool.request !== request) continue;
       abort.abort();
+      this.pendingTools.delete(id);
+      this.stats.cancelledTools = (this.stats.cancelledTools ?? 0) + 1;
       // Resolve the backend's pending function with cancellation, never its stale contents.
       // Otherwise a Responses backend can wait forever for the discarded function output.
       if (notify && !this.closing && !this.completed) for (const message of this.adapter.toolResult(
         abort.tool.id, abort.tool.name, {status: 'cancelled', error: 'caller_turn_changed'})) this.send(message);
     }
-    this.stats.cancelledTools = (this.stats.cancelledTools ?? 0) + this.pendingTools.size;
-    this.pendingTools.clear();
+
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
   // find_case: what the prepared contexts say to a stranger who names a property, a few tries a call (an address cannot be
