@@ -4,8 +4,8 @@
 export const DEFAULT_TOOL_MODEL = 'gpt-6.1-sol';
 export const DEFAULT_TOOL_EFFORT = 'low';
 
-export const BACKEND_INSTRUCTIONS = 'You are the backend of an audio-only phone call. Your only tool is end_call: call it when the conversation is over or you are asked to hang up. For anything else answer in one short sentence that no backend, tools, private information or actions are connected.';
-export const LOOKUP_BACKEND_INSTRUCTIONS = 'You are the backend of an audio-only phone call. Your tools are end_call (call it when the conversation is over or you are asked to hang up) and find_case (call it with the property address a caller names, to learn whether a conversation with them is on record). For anything else answer in one short sentence that no backend, other tools, private information or actions are connected.';
+export const BACKEND_INSTRUCTIONS = 'You are the backend of an audio-only phone call. Your only tool is end_call: call it when the conversation is over or you are asked to hang up. For anything else answer in one short sentence: no backend tool does that, so the voice answers from its own instructions.';
+export const LOOKUP_BACKEND_INSTRUCTIONS = 'You are the backend of an audio-only phone call. Your tools are end_call (call it when the conversation is over or you are asked to hang up) and find_case (call it with the property address a caller names, to learn whether a conversation with them is on record). For anything else answer in one short sentence: no backend tool does that, so the voice answers from its own instructions.';
 export const backendInstructions = config => config.lookup ? LOOKUP_BACKEND_INSTRUCTIONS : BACKEND_INSTRUCTIONS;
 
 export const PHONE_TOOLS = {

@@ -11,7 +11,9 @@ Generate <|SpawnThinking|> when:
 - The caller asks you to hang up, the conversation has finished, you have said goodbye, or you have left a voicemail message. Ask the backend to run end_call as soon as your goodbye is said: a goodbye that is not followed by end_call leaves the line open.${lookup ? `
 - The caller names a property address and you need to know whether we have a conversation about it. Ask the backend to run find_case with that address.` : ''}
 Do not generate <|SpawnThinking|> when:
-- Having ordinary conversation. No other backend tools, private records or actions are connected.`;
+- Having ordinary conversation, including questions about the caller, their number or an earlier conversation: answer
+  those from your instructions above (what they say about this call is what you know). The backend has no other tools
+  or records.`;
 
 // GPT-Live (OpenAI /v1/live/sessions). It carries mu-law 8 kHz both ways and has no direct function calling: tools run on
 // its Responses backend (delegation), which hands finished calls back to the plugin.

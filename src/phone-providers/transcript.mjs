@@ -6,21 +6,36 @@ export const MAX_TRANSCRIPT = 100000; // characters across the call; past it the
 // A provider's transcript text, or undefined when it is not one.
 export const words = value => typeof value === 'string' && value.length <= 20000 ? value : undefined;
 
+// Two pieces of one turn: a space between sentences the provider streamed back to back ("call?I can").
+const join = (head, part) => /[.?!]$/.test(head) && /^\S/.test(part) ? `${head} ${part}` : head + part;
+
 export class Transcript {
   constructor(startedAt) { this.startedAt = startedAt; this.turns = []; this.chars = 0; this.truncated = false; }
-  // `delta` continues the speaker's current turn as it streams; `text` is one whole utterance.
-  add(who, {delta, text} = {}) {
+  // `start` marks when the caller began to speak (a provider that sends their words only once an utterance is finished
+  // sends them after the model may have begun to answer: the turn belongs where the speech began). `delta` continues the
+  // speaker's current turn as it streams; `text` is one whole utterance.
+  add(who, {delta, text, start} = {}) {
+    const now = Date.now() - this.startedAt;
+    if (who === 'caller' && start) this.callerSince = now;
     const part = delta ?? text;
     if (!part || (who !== 'caller' && who !== 'model')) return;
     if (this.chars + part.length > MAX_TRANSCRIPT) { this.truncated = true; return; }
     this.chars += part.length;
     const last = this.turns.at(-1);
-    if (last?.who !== who) this.turns.push({who, text: part, atMs: Date.now() - this.startedAt});
-    else last.text += delta !== undefined || /\s$/.test(last.text) ? part : ` ${part}`;
+    if (last?.who === who) { last.text = delta !== undefined || /\s$/.test(last.text) ? join(last.text, part) : `${last.text} ${part}`; return; }
+    const atMs = who === 'caller' ? this.callerSince ?? now : now;
+    if (who === 'caller') this.callerSince = undefined;
+    this.turns.push({who, text: part, atMs});
   }
-  // The turns for the receipt, trimmed; empty when nothing was transcribed.
+  // The turns for the receipt, in the order they were spoken, trimmed; empty when nothing was transcribed.
   receipt() {
-    const turns = this.turns.map(t => ({...t, text: t.text.trim()})).filter(t => t.text);
+    const turns = [];
+    for (const turn of [...this.turns].sort((a, b) => a.atMs - b.atMs)) {
+      const text = turn.text.trim(), last = turns.at(-1);
+      if (!text) continue;
+      if (last?.who === turn.who) last.text = `${last.text} ${text}`;
+      else turns.push({...turn, text});
+    }
     return turns.length ? {transcript: turns, ...(this.truncated ? {transcriptTruncated: true} : {})} : {};
   }
 }

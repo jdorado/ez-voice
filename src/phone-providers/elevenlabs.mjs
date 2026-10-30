@@ -53,7 +53,7 @@ export class ElevenLabsAdapter {
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         return [{type: 'audio', audio: event.delta}];
       // Server-side voice activity says at once when the caller starts talking (a barge-in also stops what is queued at Twilio).
-      case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller'}, {type: 'interrupted'}];
+      case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
       case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller'}];
       // The caller's words arrive whole per utterance, the model's as it speaks.
       case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];

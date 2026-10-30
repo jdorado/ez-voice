@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.9
+
+- GPT-Live no longer tells its voice that no private records are connected: the delegation policy came after an inbound
+  call's caller context and said so, and the backend answered "no private information" to a lookup, so the line said it
+  had nothing on a caller whose context it held. Questions about the caller, their number or an earlier conversation are
+  answered from the instructions; the backend says only that no tool does that.
+- The receipt's transcript places a caller's words where they began to speak (ElevenLabs sends an utterance once it is
+  finished, after the model may have begun to answer), and keeps a space between sentences streamed back to back.
+  QA candidate only; not tagged or published.
+
 ## 0.1.0-beta.11.rc.8
 
 - A call's receipt keeps what each side said, as the provider transcribed it while the call ran (`transcript`: turns of

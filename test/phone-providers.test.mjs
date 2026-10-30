@@ -424,3 +424,23 @@ test('a call nobody spoke on keeps no transcript, and a long one stops at the li
   long.add('narrator', {text: 'not a side of the call'}); // only the caller and the model are sides
   assert(!long.turns.some(t => t.who === 'narrator'));
 });
+
+test('a caller whose words arrive after the model began to answer is placed where they began to speak, and sentences keep a space', async () => {
+  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
+  await wait(() => socket());
+  const later = ms => new Promise(r => setTimeout(r, ms));
+  for (const event of [{type: 'session.created'}, {type: 'session.updated'}]) socket().receive(event);
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'Hi, this is Sharon.'});
+  await later(15);
+  socket().receive({type: 'input_audio_buffer.speech_started', audio_start_ms: 1});
+  await later(15);
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'How can I help?'}); // the model talks on
+  await later(15);
+  socket().receive({type: 'conversation.item.input_audio_transcription.completed', transcript: 'Do you remember me?'});
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'Yes.'});
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'We texted on the 28th.'});
+  audio.close('test'); socket().close();
+  const {transcript} = await audio.done;
+  assert.deepEqual(transcript.map(({who, text}) => [who, text]), [
+    ['model', 'Hi, this is Sharon. How can I help?'], ['caller', 'Do you remember me?'], ['model', 'Yes. We texted on the 28th.']]);
+});
