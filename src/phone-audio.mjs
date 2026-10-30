@@ -74,9 +74,8 @@ export class PhoneAudio {
     if (this.closing) return;
     if (typeof payload !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload) || payload.length > 16000) return this.close('invalid_audio');
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
-    // While the line still rings nobody has answered: what the caller's line carries (the ring echoed back, a cough) is not
-    // a turn, and the model must not answer it before its greeting.
-    if (this.ringing) return;
+    // Twilio has already answered. Ringback is output only: dropping input here clips an
+    // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready) this.forward(payload);
     else {
       this.queuedBytes += payload.length;

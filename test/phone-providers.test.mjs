@@ -371,7 +371,9 @@ test('the idle hang-up waits for queued speech to finish playing, and a barge-in
 test('an answered call is greeted: once the session is ready each provider asks its model to speak first, and a placed call waits', async () => {
   const readyEvents = {openai: [{type: 'session.started', session: {id: 's1'}}], gemini: [{setupComplete: {}}],
     elevenlabs: [{type: 'session.created', session: {}}, {type: 'session.updated', session: {}}]};
-  const greeting = {openai: [{type: 'response.create'}], elevenlabs: [{type: 'response.create'}],
+  const greeting = {openai: [{type: 'response.create'}], elevenlabs: [
+    {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
+    {type: 'response.create'}],
     gemini: [{clientContent: {turns: [{role: 'user', parts: [{text: '(The call has connected: answer it.)'}]}], turnComplete: true}}]};
   for (const provider of ['openai', 'elevenlabs', 'gemini']) {
     for (const greet of [true, false]) {
@@ -473,7 +475,7 @@ test('an answered call rings on while the session starts, through streamed silen
   }
 });
 
-test('the ring is bounded: caller audio waits it out, it stops when nothing sounds after ready, on close, and records why', async () => {
+test('ringback never drops caller audio before or after ready, and still stops on timeout or close', async () => {
   const twilio = () => Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], send(raw) {this.sent.push(JSON.parse(raw));}, close() {this.readyState = WebSocket.CLOSED;}});
   const bridge = (line, settings = {}) => {
     const sockets = [];
@@ -483,10 +485,12 @@ test('the ring is bounded: caller audio waits it out, it stops when nothing soun
   };
   const quiet = twilio(), {audio, socket} = bridge(quiet);
   await wait(() => socket());
-  audio.input('//8='); // the caller's line while it rings: not a turn for the model
+  audio.input('//8='); // before ready: queued, not discarded
   socket().receive({type: 'session.started', session: {id: 's1'}});
   await new Promise(r => setTimeout(r, 30));
-  assert(!socket().events.some(e => e.type === 'session.input_audio.append'), 'nothing the line carried while ringing reached the model');
+  assert.equal(socket().events.filter(e => e.type === 'session.input_audio.append').length, 1);
+  audio.input('//8='); // ready but still ringing: also forwarded
+  assert.equal(socket().events.filter(e => e.type === 'session.input_audio.append').length, 2);
   await wait(() => audio.stats.ringStop);
   assert.equal(audio.stats.ringStop, 'timeout'); assert(quiet.sent.some(m => m.event === 'clear'));
   audio.input('//8='); // answered now: the caller is heard

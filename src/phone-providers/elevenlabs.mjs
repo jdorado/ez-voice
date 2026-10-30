@@ -41,8 +41,12 @@ export class ElevenLabsAdapter {
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
       audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
-  // The model speaks first: a response with no caller turn yet is the greeting.
-  greet() { return [{type: 'response.create'}]; }
+  // An empty response request can produce no turn. Supply the actual transport event,
+  // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
+  greet() { return [
+    {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
+    {type: 'response.create'},
+  ]; }
   audioIn(audio) { return [{type: 'input_audio_buffer.append', audio}]; }
   parse(event) {
     switch (event.type) {

@@ -336,3 +336,7 @@ cancellation counts, not retrieved private bodies.
 Prepared context remains immediate and is labelled as historical evidence before a new greeting.
 The bound plugin is trusted operator configuration; its domain read-only enforcement is required
 for speech sessions that must not write. No native-agent delegation is granted to phone callers.
+
+Caller audio is queued until provider readiness and forwarded even while local ringback plays.
+ElevenLabs receives a call-connected event before its initial response request; an empty
+response request alone is not reliable proof of an audible greeting.

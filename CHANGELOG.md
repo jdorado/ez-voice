@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.16
+
+- Preserve caller audio during phone ringback, including speech before provider readiness.
+- Trigger ElevenLabs inbound greetings with an explicit call-connected event.
+
 ## 0.1.0-beta.11.rc.15
 
 - Bind GPT-Live reads and cancellation to provider delegation IDs; transcript fragments and cancellation from an older response do not cancel the current lookup. Superseded reads resolve as cancelled so the backend cannot wait forever.
