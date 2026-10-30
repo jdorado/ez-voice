@@ -340,3 +340,31 @@ for speech sessions that must not write. No native-agent delegation is granted t
 Caller audio is queued until provider readiness and forwarded even while local ringback plays.
 ElevenLabs receives a call-connected event before its initial response request; an empty
 response request alone is not reliable proof of an audible greeting.
+
+# Optional advice during a call
+
+An operator can enable `advice: true` on an ElevenLabs line and bind a separate installed
+capability with `adviceBinding: {alias, invoke, deadlineMs}` in the shared private profile.
+For example, `{ "alias": "quarre-advice", "invoke": ["evaluate", "-"], "deadlineMs": 1000 }`.
+This is off by default. Other providers refuse activation; tools, read/write authority and
+the configured persona are unchanged. Voice contains no classifier, sales rules or Jev key.
+
+The fixed command receives `{call, turn, revision, text, history, deadline_at}` on stdin and
+must return `{call_id, turn, revision, status, advice?}`. Status is `available`, `no_match`
+or `unavailable`; advice is `{id, text, source, source_revision, confidence}`, bounded to
+3,000 characters. Identity comes from the authenticated call ticket, not model arguments.
+Its installed-plugin permission must explicitly permit any classifier's external transmission.
+
+For enabled lines only, provider VAD detects speech but automatic response creation is disabled.
+At speech stop a 100–1500 ms deadline begins. A final transcript triggers one advisory request;
+corrected final text invalidates its earlier revision. A provider-acknowledged temporary context
+item precedes the explicit response request. On timeout, no match or failure, speech resumes
+without advice. Interruption, supersession and closure abort work and reject late results.
+Advice is removed after its corresponding response, never after an unrelated older response.
+No partial-transcript classification or zero-latency claim is made by this adapter.
+
+Call receipts keep advice IDs, source revisions, status and elapsed time, not extra raw guidance.
+`accepted_before_response` means context acceptance before the response request; it does not
+prove semantic use. This path needs real-provider acceptance before a live line is enabled.
+The protocol is based on ElevenLabs' documented [Realtime compatibility](https://elevenlabs.io/docs/eleven-agents/guides/openai-realtime-compatibility)
+and its SDK's `OpenAiTurnDetection.create_response` contract.

@@ -7,6 +7,7 @@ const parseArgs = value => { try { const args = typeof value === 'string' ? JSON
 import {createAdapter} from './phone-providers/index.mjs';
 import {Transcript} from './phone-providers/transcript.mjs';
 import {RING_CYCLE, audible} from './phone-providers/ringback.mjs';
+import {PhoneAdvice} from './phone-advice.mjs';
 
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
 const RING_AFTER_READY_MS = 5000;
@@ -23,6 +24,11 @@ export class PhoneAudio {
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
     this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
+    if (config.advice && config.advisor) {
+      this.stats.advice = [];
+      this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs,
+        adapter: this.adapter, send: message => this.send(message), history: () => this.transcript.receipt().transcript ?? [], receipts: this.stats.advice});
+    }
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
     // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
     this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
@@ -163,12 +169,19 @@ export class PhoneAudio {
         if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
+          if (this.advice && (item.start || item.stop) && (typeof item.itemId !== 'string' || !item.itemId || item.itemId.length > 200)) return this.close('advice_turn_unavailable');
+          if (item.start) this.advice?.begin(item.itemId);
+          if (item.stop) this.advice?.stop(item.itemId);
           if (item.start) { this.cancelTools(true); this.turn++; }
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else this.callerSpeaking = false;
         this.activeAt = Date.now();
         this.transcript.add(item.who, item);
+        if (item.who === 'caller' && item.final) this.advice?.final(item.itemId, item.text);
         break;
+      case 'advice_ack': this.advice?.acknowledged(item.id); break;
+      case 'response_started': this.advice?.responseStarted(item.id); break;
+      case 'response_done': this.advice?.responseDone(item.id); break;
       case 'turn':
         if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
         break;
@@ -176,6 +189,7 @@ export class PhoneAudio {
         if (item.request) this.cancelTools(false, item.request);
         break;
       case 'interrupted':
+        if (!this.callerSpeaking) this.advice?.cancel('interrupted');
         this.cancelTools(true); this.turn++;
         // The caller talked over the model: what Twilio has queued would play after they stopped.
         this.speakingUntil = 0;
@@ -274,6 +288,7 @@ export class PhoneAudio {
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.stopRing('close');
+    this.advice?.cancel();
     this.cancelTools();
     this.closing = true; this.stats.reason = reason;
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);
@@ -289,6 +304,7 @@ export class PhoneAudio {
   }
   complete() {
     if (this.completed) return this.done;
+    this.advice?.cancel();
     this.cancelTools();
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);

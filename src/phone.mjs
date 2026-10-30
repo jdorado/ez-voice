@@ -5,7 +5,7 @@ import {dirname, join} from 'node:path';
 import {WebSocketServer} from 'ws';
 import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
-import {phonePluginTools, validateBinding} from './phone-plugin-tools.mjs';
+import {phonePlugins, validateBinding, validateAdviceBinding} from './phone-plugin-tools.mjs';
 import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/index.mjs';
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
@@ -37,8 +37,8 @@ async function save(path, value) {
 }
 // A line is one Twilio number with its own speech provider, voice, key and instructions. One install serves
 // several lines (`lines`); the old single-line form (the line's fields at the top level) is one line.
-const LINE_KEYS = ['provider','model','voice','language','thinking','apiKey','number','instructions','tools','toolModel','toolEffort','answerTone'];
-const SHARED_KEYS = ['accountSid','authToken','origin','maxCallSeconds','idleSeconds','pathPrefix','maxCalls','lines','toolBinding'];
+const LINE_KEYS = ['provider','model','voice','language','thinking','apiKey','number','instructions','tools','toolModel','toolEffort','answerTone','advice'];
+const SHARED_KEYS = ['accountSid','authToken','origin','maxCallSeconds','idleSeconds','pathPrefix','maxCalls','lines','toolBinding','adviceBinding'];
 function validateLine(line) {
   if (!line || typeof line !== 'object' || Array.isArray(line) || Object.keys(line).some(k => !LINE_KEYS.includes(k))) throw Error('Invalid phone line fields');
   if (line.provider !== undefined && !Object.hasOwn(PROVIDERS, line.provider)) throw Error(`provider must be one of ${Object.keys(PROVIDERS).join(', ')}`);
@@ -54,6 +54,8 @@ function validateLine(line) {
   if (typeof instructions !== 'string' || !instructions.trim() || instructions.length > MAX_CALL_INSTRUCTIONS) throw Error(`Phone instructions must contain 1..${MAX_CALL_INSTRUCTIONS} characters`);
   if (line.tools !== undefined && typeof line.tools !== 'boolean') throw Error('tools must be true or false');
   if (line.answerTone !== undefined && !['ringback','none'].includes(line.answerTone)) throw Error('answerTone must be ringback or none');
+  if (line.advice !== undefined && typeof line.advice !== 'boolean') throw Error('advice must be true or false');
+  if (line.advice && Adapter.id !== 'elevenlabs') throw Error('Live advice currently requires the ElevenLabs provider');
   if (line.toolModel !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(line.toolModel)) throw Error('toolModel must be a model name');
   if (line.toolEffort !== undefined && !['none','minimal','low','medium','high','xhigh','max'].includes(line.toolEffort)) throw Error('toolEffort must be a reasoning effort');
   return {...line, provider: Adapter.id, model, voice, instructions};
@@ -65,9 +67,11 @@ export function validatePhoneConfig(config) {
       Object.keys(config).some(k => !SHARED_KEYS.includes(k) && !LINE_KEYS.includes(k)) ||
       (Array.isArray(config.lines) && config.lines.length > 0 && Object.keys(config).some(k => LINE_KEYS.includes(k) && config[k] !== config.lines[0][k]))) throw Error('Invalid phone configuration fields');
   if (config.toolBinding !== undefined) validateBinding(config.toolBinding);
+  if (config.adviceBinding !== undefined) validateAdviceBinding(config.adviceBinding);
   const given = config.lines ?? [Object.fromEntries(LINE_KEYS.filter(k => config[k] !== undefined).map(k => [k, config[k]]))];
   if (!Array.isArray(given) || !given.length || given.length > 8) throw Error('lines must list 1..8 phone lines');
   const lines = given.map(validateLine);
+  if (lines.some(line => line.advice) && !config.adviceBinding) throw Error('Advice-enabled lines need an installed adviceBinding');
   if (new Set(lines.map(line => line.number)).size !== lines.length) throw Error('Each line needs its own number');
   if (!sid(config.accountSid, 'AC') || !/^[a-fA-F0-9]{32}$/.test(config.authToken || '')) throw Error('Supply the Twilio account SID and account auth token privately');
   const origin = new URL(config.origin);
@@ -79,6 +83,7 @@ export function validatePhoneConfig(config) {
   if (!Number.isInteger(maxCalls) || maxCalls < 1 || maxCalls > 8) throw Error('maxCalls must be a whole number from 1 to 8');
   const shared = {accountSid: config.accountSid, authToken: config.authToken, origin: origin.origin, maxCallSeconds, idleSeconds, maxCalls,
     ...(config.toolBinding && {toolBinding: config.toolBinding}),
+    ...(config.adviceBinding && {adviceBinding: config.adviceBinding}),
     ...(config.pathPrefix !== undefined && {pathPrefix: config.pathPrefix})};
   return {...shared, ...lines[0], lines};
 }
@@ -207,7 +212,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           // Caller contexts apply once a set was prepared (an empty or never-replaced store changes nothing).
           const prepared = !ticket.outbound && contexts !== undefined && contexts.status().count > 0;
           bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(line.instructions, ticket.instructions) : withCaller(line.instructions, ticket.context), streamSid: start.streamSid,
-            greet: !ticket.outbound, call: ticket.call, information: config.information, ...(prepared && {lookup: query => contexts.search(query)})}, async stats => {
+            greet: !ticket.outbound, call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined, ...(prepared && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); }
@@ -261,7 +266,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
     'phone route', 'phone status', 'phone restore', 'phone receipt [--call-sid CA...]', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'phone context replace < contexts.json', 'phone context status', 'tools serve 8793:8080 voice phone serve'],
-    configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
+    configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)', 'advice (line boolean, default false; ElevenLabs only); shared adviceBinding {alias, invoke, deadlineMs:100..1500} invokes an installed advisory capability on final caller transcripts',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
       ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent delegation or Retell/Vapi; tools are end_call, cache-only find_case on inbound calls, and an operator-bound installed information plugin when configured (with openai they run on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio (each receipt keeps the transcript of its call); an inbound call rings on until the first words of the model (answerTone); the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     contexts: 'phone context replace reads on stdin a JSON array of at most 500 caller contexts {number (E.164), text (1..6000 characters), claim (1..600), find (the property address, searchable), at?} and replaces the whole prepared set atomically; an inbound call from a number in it is answered with its text added to the line\'s instructions (before the greeting, no network call), and a caller from another number can name a property to the find_case tool (at most 3 tries a call), which answers with the claims whose address matches. phone context status reads the count and latest time.',
@@ -298,7 +303,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (command === 'serve') {
     const provider=new PhoneNumber(config),calls=new PhoneCalls(directory,config,provider),contexts=new PhoneContexts(directory);let web,control;
     try {
-      config.information = await phonePluginTools(config.toolBinding);
+      Object.assign(config, await phonePlugins(config.toolBinding, config.adviceBinding));
       await calls.recover();
       const admission=await read(join(directory,'admission.json')).catch(error=>{if(error.code==='ENOENT')return {draining:false};throw error;});
       if (typeof admission.draining!=='boolean') throw Error('Invalid saved phone admission state');

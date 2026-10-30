@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.27 (review candidate)
+
+- Add opt-in installed-plugin advice on ElevenLabs phone lines, with an explicit deadline, per-utterance binding, provider acknowledgement and private receipts. Advice is off by default and requires provider acceptance before a live rollout.
+
 ## 0.1.0-beta.11.rc.23
 
 - Preserve the explicit GPT-Live hang-up delegation policy when information tools are installed; read-only business access does not remove call control.
