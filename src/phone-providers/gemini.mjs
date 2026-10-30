@@ -1,4 +1,5 @@
 import {toolDefinitions} from '../phone-tools.mjs';
+import {words} from './transcript.mjs';
 import {ulawToPcm, pcmToUlaw, pcmBytes, pcmFromBytes, Upsampler, Downsampler, Framer} from './g711.mjs';
 
 // Gemini Live (BidiGenerateContent). It takes 16-bit PCM at 16 kHz and answers with 16-bit PCM (24 kHz), never G.711, so the
@@ -65,8 +66,8 @@ export class GeminiAdapter {
     const content = message.serverContent;
     if (content) {
       if (content.interrupted) { this.interrupt(); items.push({type: 'interrupted'}); }
-      if (content.inputTranscription) items.push({type: 'speech', who: 'caller'});
-      if (content.outputTranscription) items.push({type: 'speech', who: 'model'});
+      if (content.inputTranscription) items.push({type: 'speech', who: 'caller', delta: words(content.inputTranscription.text)});
+      if (content.outputTranscription) items.push({type: 'speech', who: 'model', delta: words(content.outputTranscription.text)});
       for (const part of content.modelTurn?.parts ?? []) {
         if (typeof part.inlineData?.data !== 'string' || !String(part.inlineData.mimeType).startsWith('audio/pcm')) continue;
         if (part.inlineData.data.length > 1000000) { items.push({type: 'fatal', reason: 'invalid_provider_audio'}); continue; }

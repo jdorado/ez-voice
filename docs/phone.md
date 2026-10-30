@@ -105,7 +105,10 @@ up to 7200 s; Gemini audio sessions end after about 15 minutes).
 
 A provider with no close handshake cannot confirm finalization: the receipt shows `finalized: false`, and `phone probe` proves
 only that the session started. The receipt names the `provider` and `model`, and records `readyMs` and `firstAudioMs`
-(milliseconds from the start of the bridge). A provider that reports when the caller starts talking over the model
+(milliseconds from the start of the bridge). It also keeps what each side said, as the provider transcribed it while the
+call ran (`transcript`: turns of `caller` and `model`, each with its `text` and `atMs`; the caller's words are the
+provider's speech-to-text, the model's are its own), at most 100,000 characters a call (`transcriptTruncated` past that):
+whoever reads the receipt (`phone receipt --call-sid CA...`) has the call's words without a second transcription. A provider that reports when the caller starts talking over the model
 (ElevenLabs voice activity, Gemini `interrupted`) makes Voice send Twilio a `clear` so audio queued at Twilio stops.
 
 ## Call length and idle hang-up
@@ -265,8 +268,9 @@ no native-agent delegation, owner history, workspace access or external-action
 tools. Its one tool is `end_call` (see Tools); a legacy client delegation
 (`tools: false`) receives a fixed capability-unavailable result. There
 is no conversation store, and this plugin stores no audio; Twilio holds the call
-recording. The latest private receipt holds call and provider IDs, input/output
-byte counts, provider error code, final usage and the recording outcome.
+recording. The private receipt of each call holds call and provider IDs, input/output
+byte counts, provider error code, final usage, the recording outcome and the
+call's transcript (above).
 These counts prove transport activity, not audible quality or semantic accuracy.
 No automatic dialing, redial, replacement provider or model fallback exists.
 

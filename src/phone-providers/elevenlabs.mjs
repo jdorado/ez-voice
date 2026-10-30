@@ -1,4 +1,5 @@
 import {toolDefinitions} from '../phone-tools.mjs';
+import {words} from './transcript.mjs';
 
 // ElevenLabs Realtime: the OpenAI Realtime protocol over WebSocket, behind a cascaded speech stack (ElevenLabs documents it as
 // separate speech-to-text, language and text-to-speech models). It takes G.711 mu-law directly and calls tools natively.
@@ -53,9 +54,10 @@ export class ElevenLabsAdapter {
         return [{type: 'audio', audio: event.delta}];
       // Server-side voice activity says at once when the caller starts talking (a barge-in also stops what is queued at Twilio).
       case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller'}, {type: 'interrupted'}];
-      case 'input_audio_buffer.speech_stopped':
-      case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller'}];
-      case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model'}];
+      case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller'}];
+      // The caller's words arrive whole per utterance, the model's as it speaks.
+      case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
+      case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'response.output_item.done':
         return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
       case 'error': return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];

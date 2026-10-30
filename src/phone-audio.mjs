@@ -5,6 +5,7 @@ import {MAX_LOOKUPS} from './phone-contexts.mjs';
 // A tool call's arguments arrive as a JSON string (ElevenLabs, GPT-Live) or an object (Gemini).
 const parseArgs = value => { try { const args = typeof value === 'string' ? JSON.parse(value) : value; return args && typeof args === 'object' && !Array.isArray(args) ? args : {}; } catch { return {}; } };
 import {createAdapter} from './phone-providers/index.mjs';
+import {Transcript} from './phone-providers/transcript.mjs';
 
 // Twilio carries raw mono G.711 mu-law at 8 kHz. This is the bridge between that stream and one speech provider: the
 // timers, the tool registry, the receipt and the hang-up rules are here, and each provider's wire protocol lives in an
@@ -13,7 +14,7 @@ export class PhoneAudio {
   constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}, adapter, fetch: fetchImpl} = {}) {
     this.twilio = twilio; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
     this.adapter = adapter ?? createAdapter(config, fetchImpl && {fetch: fetchImpl});
-    this.startedAt = Date.now();
+    this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
     // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
@@ -110,6 +111,7 @@ export class PhoneAudio {
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') this.stats.inputTranscriptEvents++;
         this.activeAt = Date.now();
+        this.transcript.add(item.who, item);
         break;
       case 'interrupted':
         // The caller talked over the model: what Twilio has queued would play after they stopped.
@@ -169,6 +171,7 @@ export class PhoneAudio {
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
+    Object.assign(this.stats, this.transcript.receipt()); // what was said, kept with the receipt
     Promise.resolve().then(() => this.finish(this.stats)).catch(() => {
       this.stats.receiptError = true;
       console.error('Phone call receipt could not be persisted');

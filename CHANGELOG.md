@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.8
+
+- A call's receipt keeps what each side said, as the provider transcribed it while the call ran (`transcript`: turns of
+  `caller` and `model` with `text` and `atMs`, at most 100,000 characters, `transcriptTruncated` past that), for OpenAI,
+  ElevenLabs and Gemini alike. The plugin used these transcripts only to tell who was speaking and dropped the words, so
+  a call's words needed a second transcription of the recording. Still no audio is kept. QA candidate only; not tagged or
+  published.
+
 ## 0.1.0-beta.11.rc.7
 
 - An inbound call is answered: once the provider session is ready the model is asked to speak first, so the caller hears

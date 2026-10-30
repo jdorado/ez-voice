@@ -1,4 +1,5 @@
 import {toolDefinitions, backendInstructions, DEFAULT_TOOL_MODEL, DEFAULT_TOOL_EFFORT} from '../phone-tools.mjs';
+import {words} from './transcript.mjs';
 
 // Live must be told when to delegate; registering tools on its Responses backend
 // alone does not expose them to the voice model. This is provider capability wiring.
@@ -50,8 +51,8 @@ export class OpenAIAdapter {
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         return [{type: 'audio', audio: event.delta}];
       // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
-      case 'session.input_transcript.delta': return [{type: 'speech', who: 'caller'}];
-      case 'session.output_transcript.delta': return [{type: 'speech', who: 'model'}];
+      case 'session.input_transcript.delta': return [{type: 'speech', who: 'caller', delta: words(event.delta)}];
+      case 'session.output_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'response.event': {
         const item = event.event?.type === 'response.output_item.done' ? event.event.item : null;
         return item?.type === 'function_call' ? [{type: 'tool', id: item.call_id, name: item.name, args: item.arguments}] : [];

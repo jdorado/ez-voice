@@ -387,3 +387,40 @@ test('an answered call is greeted: once the session is ready each provider asks 
     }
   }
 });
+
+test('the receipt keeps what each side said, as each provider transcribed it, in turns', async () => {
+  const said = {
+    openai: [{type: 'session.started', session: {id: 's1'}}, {type: 'session.output_transcript.delta', delta: 'Hi, this is '},
+      {type: 'session.output_transcript.delta', delta: 'Sharon.'}, {type: 'session.input_transcript.delta', delta: 'Hello, '},
+      {type: 'session.input_transcript.delta', delta: 'who is this?'}, {type: 'session.output_transcript.delta', delta: 'Sharon with Quarre.'}],
+    elevenlabs: [{type: 'session.created'}, {type: 'session.updated'}, {type: 'response.output_audio_transcript.delta', delta: 'Hi, this is '},
+      {type: 'response.output_audio_transcript.delta', delta: 'Sharon.'}, {type: 'conversation.item.input_audio_transcription.completed', transcript: 'Hello,'},
+      {type: 'conversation.item.input_audio_transcription.completed', transcript: 'who is this?'}, {type: 'response.output_audio_transcript.delta', delta: 'Sharon with Quarre.'}],
+    gemini: [{setupComplete: {}}, {serverContent: {outputTranscription: {text: 'Hi, this is '}}}, {serverContent: {outputTranscription: {text: 'Sharon.'}}},
+      {serverContent: {inputTranscription: {text: 'Hello, '}}}, {serverContent: {inputTranscription: {text: 'who is this?'}}},
+      {serverContent: {outputTranscription: {text: 'Sharon with Quarre.'}}}],
+  };
+  for (const [provider, events] of Object.entries(said)) {
+    const {audio, socket} = await call(provider, {idleSeconds: 0}, {fetch: mintOk().fetch});
+    await wait(() => socket());
+    for (const event of events) socket().receive(event);
+    audio.close('test'); socket().close();
+    const stats = await audio.done;
+    assert.deepEqual(stats.transcript.map(({who, text}) => [who, text]),
+      [['model', 'Hi, this is Sharon.'], ['caller', 'Hello, who is this?'], ['model', 'Sharon with Quarre.']], provider);
+    assert(stats.transcript.every(t => Number.isInteger(t.atMs)), provider);
+    assert.equal(stats.transcriptTruncated, undefined, provider);
+  }
+});
+
+test('a call nobody spoke on keeps no transcript, and a long one stops at the limit and says so', async () => {
+  const {Transcript, MAX_TRANSCRIPT} = await import('../src/phone-providers/transcript.mjs');
+  assert.deepEqual(new Transcript(Date.now()).receipt(), {});
+  const long = new Transcript(Date.now());
+  for (let i = 0; i < 30; i++) long.add(i % 2 ? 'caller' : 'model', {text: 'x'.repeat(5000)});
+  const kept = long.receipt();
+  assert.equal(kept.transcriptTruncated, true);
+  assert(kept.transcript.reduce((n, t) => n + t.text.length, 0) <= MAX_TRANSCRIPT);
+  long.add('narrator', {text: 'not a side of the call'}); // only the caller and the model are sides
+  assert(!long.turns.some(t => t.who === 'narrator'));
+});
