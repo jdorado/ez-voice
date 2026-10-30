@@ -97,7 +97,11 @@ export class PhoneAudio {
         this.forward(payload);
       }
       if (this.queued.length) this.inputFlush = setTimeout(pump, 5);
-      else this.flushingInput = false;
+      else {
+        this.flushingInput = false;
+        // Earlier caller frames must reach the provider before this transport turn.
+        if (this.config.greet) for (const message of this.adapter.greet()) this.send(message);
+      }
     };
     pump();
   }
@@ -115,8 +119,6 @@ export class PhoneAudio {
         clearTimeout(this.startTimer); this.ready = true; this.stats.providerSessionId = item.id;
         this.stats.ready = true; this.stats.readyMs = Date.now() - this.startedAt;
         this.flushInput();
-        // An answered call is greeted: the caller rang and waits for the line to speak. An outbound call waits for the callee.
-        if (this.config.greet) for (const message of this.adapter.greet()) this.send(message);
         if (this.ringing) this.ringCap = setTimeout(() => this.stopRing('timeout'), this.ringAfterReadyMs);
         this.onReady();
         break;

@@ -640,5 +640,8 @@ test('delayed Gemini startup drains preserved audio without overflowing its expa
   assert.equal(s.events.filter(e => e.realtimeInput?.audio).length, 601);
   assert(peak < 256000, `peak buffer ${peak}`);
   assert.equal(audio.queuedBytes, 0);
+  const greeting = s.events.findIndex(e => e.clientContent);
+  assert(greeting > 0);
+  assert.equal(s.events.slice(0, greeting).filter(e => e.realtimeInput?.audio).length, 601, 'greeting cannot overtake buffered or newly arrived caller frames');
   audio.close('test'); s.close(); await audio.done;
 });
