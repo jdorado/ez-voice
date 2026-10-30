@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.27
+
+- Bound the early-audio acknowledgment window to 250 ms; continuing line noise no longer extends the inbound greeting wait by seconds. Early caller audio is still preserved and provider-confirmed speech suppresses a duplicate greeting.
+- Use `gpt-6-luna` with reasoning effort `none` by default for the narrow GPT-Live phone tool backend. Explicit per-line model and effort settings still apply.
+- Keep separate receipt timings for the greeting request, first output audio and first audible speech, and count backend delegations even when they do not invoke a tool.
+
 ## 0.1.0-beta.11.rc.23
 
 - Preserve the explicit GPT-Live hang-up delegation policy when information tools are installed; read-only business access does not remove call control.

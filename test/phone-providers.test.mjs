@@ -666,7 +666,7 @@ test('a conversation that starts during startup drain does not get a second forc
 });
 
 
-test('audible startup waits for delayed provider speech detection, but noise cannot suppress the greeting forever', async () => {
+test('audible startup briefly waits for provider speech detection without adding a long greeting delay', async () => {
   for (const detected of [true, false]) {
     const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
     await wait(() => socket());
@@ -676,38 +676,40 @@ test('audible startup waits for delayed provider speech detection, but noise can
     assert.equal(s.events.filter(e => e.clientContent).length, 0, 'sending the queue is not speech acknowledgement');
     await new Promise(r => setTimeout(r, 50));
     if (detected) audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Hello'});
-    await new Promise(r => setTimeout(r, 1250));
+    await new Promise(r => setTimeout(r, 300));
     assert.equal(s.events.filter(e => e.clientContent).length, detected ? 0 : 1);
     audio.close('test'); s.close(); await audio.done;
   }
 });
 
 
-test('startup VAD noise still gets a greeting, and ongoing local speech defers it until quiet', async () => {
+test('unrecognized startup sound cannot extend the greeting wait while caller audio keeps flowing', async () => {
   const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
   await wait(() => socket());
   const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
   audio.input(frame); s.receive({setupComplete: {}});
   audio.handle({type: 'speech', who: 'caller', start: true}); // VAD alone, no recognized words
   const input = setInterval(() => audio.input(frame), 20);
-  await new Promise(r => setTimeout(r, 1400));
-  assert.equal(s.events.filter(e => e.clientContent).length, 0, 'do not greet over active input');
-  clearInterval(input);
-  await new Promise(r => setTimeout(r, 800));
-  assert.equal(s.events.filter(e => e.clientContent).length, 1, 'unconfirmed VAD must not suppress the greeting after quiet');
-  audio.close('test'); s.close(); await audio.done;
+  try {
+    await wait(() => s.events.some(e => e.clientContent));
+    assert.equal(s.events.filter(e => e.clientContent).length, 1);
+    assert(s.events.filter(e => e.realtimeInput?.audio).length > 1, 'ongoing caller audio is still forwarded');
+    assert(audio.stats.greetingMs < 1000, 'line noise must not add seconds before the greeting request');
+  } finally { clearInterval(input); audio.close('test'); s.close(); await audio.done; }
 });
 
 
-test('continuous unrecognized startup noise cannot leave an answered call silent indefinitely', async () => {
-  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+test('the receipt distinguishes silent output from first speech and counts backend delegations without tool calls', async () => {
+  const {audio, socket} = await call('openai', {idleSeconds: 0});
   await wait(() => socket());
-  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
-  audio.input(frame); s.receive({setupComplete: {}});
-  audio.handle({type: 'speech', who: 'caller', start: true});
-  const input = setInterval(() => audio.input(frame), 20);
-  try {
-    await new Promise(r => setTimeout(r, 5400));
-    assert.equal(s.events.filter(e => e.clientContent).length, 1);
-  } finally { clearInterval(input); audio.close('test'); s.close(); await audio.done; }
+  const s = socket(); s.receive({type: 'session.started', session: {id: 's1'}});
+  s.receive({type: 'session.output_audio.delta', delta: Buffer.alloc(160, 0xff).toString('base64')});
+  assert.equal(typeof audio.stats.firstAudioMs, 'number');
+  assert.equal(audio.stats.firstSpeechMs, undefined);
+  s.receive({type: 'session.output_audio.delta', delta: pcmToUlaw(tone(500, 8000, 20)).toString('base64')});
+  assert.equal(typeof audio.stats.firstSpeechMs, 'number');
+  for (const id of ['one', 'one', 'two']) s.receive({type: 'session.delegation.created', delegation: {id, target: 'responses'}});
+  assert.equal(audio.stats.delegations, 2);
+  assert.equal(audio.stats.tools, undefined);
+  audio.close('test'); s.receive({type: 'session.closed'}); await audio.done;
 });
