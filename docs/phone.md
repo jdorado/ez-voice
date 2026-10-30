@@ -41,7 +41,11 @@ One install can serve several numbers: give `lines` (1..8 entries, each with its
 account, auth token, origin and limits are shared. An inbound call takes the line of the number called; an outbound
 call takes `--from LINE` (default: the first line). An inbound call is answered: once the provider session is ready the
 model is asked to speak first (`response.create` at OpenAI and ElevenLabs, a turn saying the call connected at Gemini),
-as a person picking up the phone does; an outbound call waits for the callee to speak. `maxCalls` (1..8, default 1) is how many calls run at once across
+as a person picking up the phone does; an outbound call waits for the callee to speak. While that session starts (a
+provider may take a few seconds) an inbound call keeps ringing: the North American ringback (440 and 480 Hz, two seconds
+on, four off) plays until the model's first audible audio, which first clears the queued ring at Twilio, so the start
+sounds like the phone still ringing instead of a silent pickup the caller talks into. A line's `answerTone` is
+`ringback` (default) or `none`; the receipt records `ringMs`. `maxCalls` (1..8, default 1) is how many calls run at once across
 all lines, inbound and outbound together: an outbound call holds its place from creation to its end. The single-line
 form keeps working unchanged.
 

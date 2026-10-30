@@ -444,3 +444,31 @@ test('a caller whose words arrive after the model began to answer is placed wher
   assert.deepEqual(transcript.map(({who, text}) => [who, text]), [
     ['model', 'Hi, this is Sharon. How can I help?'], ['caller', 'Do you remember me?'], ['model', 'Yes. We texted on the 28th.']]);
 });
+
+test('an answered call rings on while the session starts, through streamed silence, and stops at the first words', async () => {
+  const {RING_CYCLE, audible} = await import('../src/phone-providers/ringback.mjs');
+  const words = RING_CYCLE[0]; // a frame of tone: audible, as speech is
+  assert.equal(audible(words), true); assert.equal(audible(RING_CYCLE.at(-1)), false); assert.equal(audible('//8='), false);
+  const {audio, twilio, socket} = await call('openai', {greet: true, idleSeconds: 0});
+  await wait(() => twilio.sent.length >= 5); // the ring, before the provider is even ready
+  assert(twilio.sent.every(m => m.event === 'media' && RING_CYCLE.includes(m.media.payload)));
+  socket().receive({type: 'session.started', session: {id: 's1'}});
+  socket().receive({type: 'session.output_audio.delta', delta: '//8='}); // GPT-Live streams silence: it rings on
+  assert(!twilio.sent.some(m => m.event === 'clear' || m.media?.payload === '//8='));
+  const rang = twilio.sent.length;
+  socket().receive({type: 'session.output_audio.delta', delta: words});
+  const after = twilio.sent.slice(rang);
+  assert.deepEqual(after.slice(0, 2).map(m => m.event), ['clear', 'media']); // the queued ring is dropped first
+  assert.equal(after[1].media.payload, words);
+  await new Promise(r => setTimeout(r, 250));
+  assert.equal(twilio.sent.length, rang + 2, 'no ring after the first words');
+  audio.close('test'); socket().close();
+  const stats = await audio.done;
+  assert.equal(typeof stats.ringMs, 'number');
+  for (const settings of [{greet: false}, {greet: true, answerTone: 'none'}]) { // a placed call, or a line that opts out
+    const quiet = await call('openai', {...settings, idleSeconds: 0});
+    await new Promise(r => setTimeout(r, 250));
+    assert.deepEqual(quiet.twilio.sent, [], JSON.stringify(settings));
+    quiet.audio.close('test'); quiet.socket()?.close(); await quiet.audio.done;
+  }
+});

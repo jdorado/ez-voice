@@ -67,7 +67,8 @@ test('inbound listener admits calls after thirty minutes and more than five comp
 });
 test('signed inbound HTTP + real media socket relays mu-law both ways and finalizes without native tools', async () => {
   let provider, receipt;
-  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:twilio().provider, socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
+  // the relay exactly as sent: no ringback while the session starts (its own test is with the providers)
+  const server = await servePhone({...config, answerTone: 'none'}, {port:0, host:'127.0.0.1', provider:twilio().provider, socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
   const base = `http://127.0.0.1:${server.port}`; let ws;
   try {
     const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:callSid});

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.10
+
+- An inbound call keeps ringing while the speech session starts: the North American ringback plays from the moment the
+  media stream connects until the model's first audible audio (silence some providers stream does not stop it), and the
+  queued ring is cleared at Twilio first. The seconds a provider needs to start (ElevenLabs about 3) sound like one more
+  ring instead of a silent pickup the caller talks into. A line's `answerTone` (`ringback`, default, or `none`); the
+  receipt's `ringMs`. QA candidate only; not tagged or published.
+
 ## 0.1.0-beta.11.rc.9
 
 - GPT-Live no longer tells its voice that no private records are connected: the delegation policy came after an inbound

@@ -6,6 +6,7 @@ import {MAX_LOOKUPS} from './phone-contexts.mjs';
 const parseArgs = value => { try { const args = typeof value === 'string' ? JSON.parse(value) : value; return args && typeof args === 'object' && !Array.isArray(args) ? args : {}; } catch { return {}; } };
 import {createAdapter} from './phone-providers/index.mjs';
 import {Transcript} from './phone-providers/transcript.mjs';
+import {RING_CYCLE, audible} from './phone-providers/ringback.mjs';
 
 // Twilio carries raw mono G.711 mu-law at 8 kHz. This is the bridge between that stream and one speech provider: the
 // timers, the tool registry, the receipt and the hang-up rules are here, and each provider's wire protocol lives in an
@@ -20,6 +21,8 @@ export class PhoneAudio {
     // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
     this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
     this.done = new Promise(resolve => { this.resolveDone = resolve; });
+    // An answered call rings on until the model's first words (`answerTone`, default ringback; `none` is a silent start).
+    if (config.greet && (config.answerTone ?? 'ringback') === 'ringback') this.ring();
     this.queued = []; this.queuedBytes = 0;
     this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000);
     this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000);
@@ -98,6 +101,10 @@ export class PhoneAudio {
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
         const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
         this.stats.firstAudioMs ??= Date.now() - this.startedAt;
+        if (this.ringing) {
+          if (!audible(item.audio)) break; // the silence some providers stream while the line still rings
+          this.stopRing();
+        }
         // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence).
         // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so a provider that sends speech faster than
         // that has the model speaking until the queue is empty: the idle hang-up must not fire while it is still being played.
@@ -152,10 +159,26 @@ export class PhoneAudio {
     else this.close('end_call');
   }
   mark(name) { if (name === 'end_call' && this.drainingAt) this.close('end_call'); }
+  // Five frames (100 ms) a tick, paced to real time: Twilio plays what it is sent in order, and a clear drops what is queued.
+  ring() {
+    let frame = 0;
+    this.ringing = setInterval(() => {
+      if (this.twilio.readyState !== WebSocket.OPEN || this.twilio.bufferedAmount > 64000) return;
+      for (let i = 0; i < 5; i++, frame++) {
+        this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: RING_CYCLE[frame % RING_CYCLE.length]}}));
+      }
+    }, 100);
+  }
+  stopRing() {
+    if (!this.ringing) return;
+    clearInterval(this.ringing); this.ringing = undefined;
+    this.stats.ringMs = Date.now() - this.startedAt;
+    if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
+  }
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.closing = true; this.stats.reason = reason;
-    clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle);
+    clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     if (this.provider?.readyState === WebSocket.OPEN) {
       const messages = this.adapter.closeMessages();
@@ -167,7 +190,7 @@ export class PhoneAudio {
   }
   complete() {
     if (this.completed) return this.done;
-    this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer);
+    this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
