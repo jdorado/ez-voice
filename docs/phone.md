@@ -345,7 +345,7 @@ response request alone is not reliable proof of an audible greeting.
 
 An operator can enable `advice: true` on an ElevenLabs line and bind a separate installed
 capability with `adviceBinding: {alias, invoke, deadlineMs}` in the shared private profile.
-For example, `{ "alias": "quarre-advice", "invoke": ["evaluate", "-"], "deadlineMs": 1000 }`.
+For example, `{ "alias": "advice", "invoke": ["evaluate", "-"], "deadlineMs": 1000 }`.
 This is off by default. Other providers refuse activation; tools, read/write authority and
 the configured persona are unchanged. Voice contains no classifier, sales rules or Jev key.
 

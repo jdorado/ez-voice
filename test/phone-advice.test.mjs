@@ -81,7 +81,7 @@ test('closure and an early provider response prevent a second generation', async
 test('installed advice binds call, turn and transcript revision and accepts no arbitrary actions', async () => {
   const request = {call: {id: 'origin'}, turn: 2, revision: 3}; let params;
   const core = {request: async (_, p) => {params = p; return {code: 0, stdout: JSON.stringify({call_id: 'origin', turn: 2, revision: 3, status: 'available', advice, tools: ['send_sms']})};}};
-  const binding = {alias: 'quarre-advice', invoke: ['evaluate','-'], deadlineMs: 500};
+  const binding = {alias: 'advice', invoke: ['evaluate','-'], deadlineMs: 500};
   const out = await installedAdvice(binding, core).run(request);
   assert.deepEqual(params.args, binding.invoke); assert.equal(JSON.parse(params.stdin).revision, 3); assert.equal(out.tools, undefined);
   await assert.rejects(installedAdvice(binding, core).run({...request, revision: 4}), /binding mismatch/);
@@ -91,7 +91,7 @@ test('advice is explicit per line and unsupported speech providers refuse activa
   const config = {accountSid: 'AC'+'a'.repeat(32), authToken: 'a'.repeat(32), origin: 'https://example.com',
     number: '+15551230002', apiKey: 'sk_'+'a'.repeat(32), provider: 'elevenlabs', advice: true};
   assert.throws(() => validatePhoneConfig(config), /adviceBinding/);
-  config.adviceBinding = {alias: 'quarre-advice', invoke: ['evaluate','-'], deadlineMs: 500};
+  config.adviceBinding = {alias: 'advice', invoke: ['evaluate','-'], deadlineMs: 500};
   assert.equal(validatePhoneConfig(config).advice, true);
   assert.equal(new ElevenLabsAdapter(config).configure().session.audio.input.turn_detection.create_response, false);
   assert.throws(() => validatePhoneConfig({...config, provider: 'openai', apiKey: 'sk-'+'a'.repeat(32)}), /ElevenLabs/);
