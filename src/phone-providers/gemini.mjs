@@ -1,4 +1,5 @@
 import {toolDefinitions} from '../phone-tools.mjs';
+import {words} from './transcript.mjs';
 import {ulawToPcm, pcmToUlaw, pcmBytes, pcmFromBytes, Upsampler, Downsampler, Framer} from './g711.mjs';
 
 // Gemini Live (BidiGenerateContent). It takes 16-bit PCM at 16 kHz and answers with 16-bit PCM (24 kHz), never G.711, so the
@@ -39,10 +40,12 @@ export class GeminiAdapter {
         // The thinking variant refuses a session without a level (close 1007); the plain model refuses one with it.
         ...(c.model.endsWith('-extended-thinking') ? {thinkingConfig: {thinkingLevel: c.thinking ?? 'low'}} : {})},
       systemInstruction: {parts: [{text: c.instructions}]},
-      ...(c.tools === false ? {} : {tools: [{functionDeclarations: toolDefinitions().map(tool => declaration(tool, c.model))}]}),
+      ...(c.tools === false ? {} : {tools: [{functionDeclarations: toolDefinitions(c).map(tool => declaration(tool, c.model))}]}),
       // Transcripts of both sides are what the idle hang-up and the receipt use to tell who is speaking.
       inputAudioTranscription: {}, outputAudioTranscription: {}}}];
   }
+  // Gemini answers turns only: the greeting is a turn that says the call connected, so the model speaks first.
+  greet() { return [{clientContent: {turns: [{role: 'user', parts: [{text: '(The call has connected: answer it.)'}]}], turnComplete: true}}]; }
   audioIn(payload) {
     const samples = this.upsampler.push(ulawToPcm(Buffer.from(payload, 'base64')));
     return [{realtimeInput: {audio: {data: pcmBytes(samples).toString('base64'), mimeType: 'audio/pcm;rate=16000'}}}];
@@ -63,8 +66,8 @@ export class GeminiAdapter {
     const content = message.serverContent;
     if (content) {
       if (content.interrupted) { this.interrupt(); items.push({type: 'interrupted'}); }
-      if (content.inputTranscription) items.push({type: 'speech', who: 'caller'});
-      if (content.outputTranscription) items.push({type: 'speech', who: 'model'});
+      if (content.inputTranscription) items.push({type: 'speech', who: 'caller', delta: words(content.inputTranscription.text)});
+      if (content.outputTranscription) items.push({type: 'speech', who: 'model', delta: words(content.outputTranscription.text)});
       for (const part of content.modelTurn?.parts ?? []) {
         if (typeof part.inlineData?.data !== 'string' || !String(part.inlineData.mimeType).startsWith('audio/pcm')) continue;
         if (part.inlineData.data.length > 1000000) { items.push({type: 'fatal', reason: 'invalid_provider_audio'}); continue; }
@@ -74,7 +77,7 @@ export class GeminiAdapter {
       }
       if (content.turnComplete) { for (const down of this.downsamplers.values()) down.reset(); const tail = this.framer.flush(); if (tail.length) items.push({type: 'audio', audio: tail.toString('base64')}); }
     }
-    for (const call of message.toolCall?.functionCalls ?? []) items.push({type: 'tool', id: call.id, name: call.name});
+    for (const call of message.toolCall?.functionCalls ?? []) items.push({type: 'tool', id: call.id, name: call.name, args: call.args});
     if (message.goAway) items.push({type: 'fatal', reason: 'provider_go_away'});
     return items;
   }

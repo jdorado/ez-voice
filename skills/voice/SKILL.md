@@ -43,21 +43,26 @@ core application administration; installation alone grants no task access.
 One browser call can be active per Voice runtime. End it before another begins.
 
 `ez voice phone --help` describes the separate inbound/outbound Twilio audio channel. It
-connects directly to a speech provider (GPT-Live by default; ElevenLabs Realtime or Gemini Live by `provider` in its private configuration) and has no native-agent delegation (its one tool is `end_call`), owner history,
-workspace access or action tools. Its private configuration needs the OpenAI
-key, Twilio Account SID and account Auth Token, voice-capable number and HTTPS
-origin. Number routing requires deployment-owner authority. Preview/readback and
-restore affect voice routing only. The phone listener stays available until stopped, with one call at a time and a
-per-call limit (three minutes unless `maxCallSeconds` is set), and a call ends after `idleSeconds` with nobody speaking. Keep the installed `tools serve` command under the
+connects directly to a speech provider (GPT-Live by default; ElevenLabs Realtime or Gemini Live by `provider` in its private configuration) and has no native-agent delegation, owner history,
+workspace access or action tools: its tools are `end_call` and, on an inbound call when caller contexts are prepared,
+`find_case`. Its private configuration needs the provider key, Twilio Account SID and account Auth Token, voice-capable
+number(s) and HTTPS origin; `lines` serves several numbers from one install, `maxCalls` calls at once. Number routing
+requires deployment-owner authority. Preview/readback and restore affect voice routing only (the first line's number).
+The phone listener stays available until stopped, with a per-call limit (three minutes unless `maxCallSeconds` is set),
+and a call ends after `idleSeconds` with nobody speaking. An inbound call rings on until the model's first words
+(`answerTone`: `ringback` or `none`), then the model greets. Keep the installed `tools serve` command under the
 deployment supervisor. Restore the previous route before decommissioning its endpoint.
 Every phone call is recorded at Twilio (dual-channel, retrievable by Call SID through the
-account); the plugin stores no audio. The private call receipt, also shown by `call-status`
-for its Call SID, reports `recording` as `started` with the Recording SID or `failed` with a
-code. The operator is responsible for any recording notice to callers.
+account); the plugin stores no audio. The private call receipt (`phone receipt --call-sid CA...`, also shown by
+`call-status` for its Call SID) reports `recording` as `started` with the Recording SID or `failed` with a code, and
+keeps the call's transcript as the provider heard it. The operator is responsible for any recording notice to callers.
+`phone context replace < contexts.json` (at most 500 `{number, text, claim, find, at?}`) replaces the prepared caller
+contexts; `phone context status` reads their count. A context is chosen by the caller ID, which can be spoofed.
 
 
-For an explicitly authorized recipient, `ez voice phone call --to E.164 --request-id ID`
-places one call from the configured number through the running phone service.
+For an explicitly authorized recipient, `ez voice phone call --to E.164 --request-id ID [--from LINE]
+[--instructions - < brief.txt]` places one call from that line (the first by default), with an optional brief for that
+call only, through the running phone service.
 `call-status --request-id ID` reads its provider state; `hangup --request-id ID`
 cancels ringing or ends an answered call. Reuse the original request ID to inspect
 an attempt without redialing. An uncertain creation is not permission for a new

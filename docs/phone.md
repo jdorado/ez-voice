@@ -1,8 +1,9 @@
 # Direct phone audio
 
 Experimental audio-only phone channel for direct two-way conversations without
-Retell or Vapi. The listener remains available until stopped; it admits one call
-at a time and caps each call at three minutes by default (`maxCallSeconds`), in either direction. It has no native-agent integration.
+Retell or Vapi. The listener remains available until stopped; it admits `maxCalls` calls at once across its lines (one by
+default) and caps each call at three minutes by default (`maxCallSeconds`), in either direction. It has no native-agent
+integration.
 Audible quality, interruption handling and latency require separate acceptance.
 
 ```text
@@ -36,6 +37,19 @@ test registry for development. Keep credentials and runtime state outside the ag
 }
 ```
 
+One install can serve several numbers: give `lines` (1..8 entries, each with its own `number`, `apiKey`, and optional
+`provider`, `model`, `voice`, `language`, `instructions`, `tools`...) instead of those fields at the top level; the
+account, auth token, origin and limits are shared. An inbound call takes the line of the number called; an outbound
+call takes `--from LINE` (default: the first line). An inbound call is answered: once the provider session is ready the
+model is asked to speak first (`response.create` at OpenAI and ElevenLabs, a turn saying the call connected at Gemini),
+as a person picking up the phone does; an outbound call waits for the callee to speak. While that session starts (a
+provider may take a few seconds) an inbound call keeps ringing: the North American ringback (440 and 480 Hz, two seconds
+on, four off) plays until the model's first audible audio, which first clears the queued ring at Twilio, so the start
+sounds like the phone still ringing instead of a silent pickup the caller talks into. A line's `answerTone` is
+`ringback` (default) or `none`; the receipt records `ringMs`. `maxCalls` (1..8, default 1) is how many calls run at once across
+all lines, inbound and outbound together: an outbound call holds its place from creation to its end. The single-line
+form keeps working unchanged.
+
 `provider` is optional (default `openai`); `model`, `voice` and `language` are optional too (see Providers). The number must belong to that account and support voice. An account auth token
 is needed to validate Twilio signatures; a Twilio API key cannot validate them.
 The origin must terminate HTTPS and forward HTTP/WebSocket upgrades to the
@@ -57,7 +71,8 @@ ez voice phone restore
 ez voice phone status
 ```
 
-`preview` and `status` read the actual number. `route` saves the previous voice
+`preview` and `status` read the actual number (with several lines, the first line's: route each other number at
+Twilio itself, to the same `/incoming`). `route` saves the previous voice
 routing before its single provider update and verifies canonical readback.
 It changes only voice fields; SMS configuration is not submitted. A receipt left
 uncertain after a failure is inspected rather than automatically retried. If
@@ -65,8 +80,8 @@ readback shows the original route is intact, `restore` reconciles the receipt
 without another provider update.
 `restore` refuses to overwrite a voice route changed outside Voice. Restore
 the previous route before decommissioning the public endpoint. The listener does
-not expire after thirty minutes or stop after five completed calls. Simultaneous
-callers receive busy; each admitted call remains limited to `maxCallSeconds`.
+not expire after thirty minutes or stop after five completed calls. Callers past `maxCalls` receive busy; each admitted
+call remains limited to `maxCallSeconds`.
 `/health` reports local readiness and returns 503 after a receipt-storage failure.
 A health response does not prove provider connectivity; `phone probe` does.
 
@@ -96,7 +111,10 @@ up to 7200 s; Gemini audio sessions end after about 15 minutes).
 
 A provider with no close handshake cannot confirm finalization: the receipt shows `finalized: false`, and `phone probe` proves
 only that the session started. The receipt names the `provider` and `model`, and records `readyMs` and `firstAudioMs`
-(milliseconds from the start of the bridge). A provider that reports when the caller starts talking over the model
+(milliseconds from the start of the bridge). It also keeps what each side said, as the provider transcribed it while the
+call ran (`transcript`: turns of `caller` and `model`, each with its `text` and `atMs`; the caller's words are the
+provider's speech-to-text, the model's are its own), at most 100,000 characters a call (`transcriptTruncated` past that):
+whoever reads the receipt (`phone receipt --call-sid CA...`) has the call's words without a second transcription. A provider that reports when the caller starts talking over the model
 (ElevenLabs voice activity, Gemini `interrupted`) makes Voice send Twilio a `clear` so audio queued at Twilio stops.
 
 ## Call length and idle hang-up
@@ -144,15 +162,46 @@ Use the installed CLI from the same agent environment while the phone service is
 
 ```sh
 ez voice phone call --to +15551230002 --request-id owner-call-001
+ez voice phone call --to +15551230002 --request-id owner-call-002 --instructions - < brief.txt
+ez voice phone call --to +15551230002 --request-id owner-call-003 --from +15551230009
 ez voice phone call-status --request-id owner-call-001
 ez voice phone hangup --request-id owner-call-001
 ez voice phone receipt
 ```
 
+## Prepared caller contexts
+
+An operator can prepare, for the numbers that may call back, what the line should know before it answers (the call
+centre's "screen pop"). The set is replaced whole, atomically, on stdin:
+
+```sh
+ez voice phone context replace < contexts.json   # [{"number":"+15551230002","text":"...","claim":"...","find":"1450 East 102nd Street","at":"2026-10-29T12:00:00Z"}]
+ez voice phone context status                    # {"count":1,"latest":"..."}
+```
+
+At most 500 entries; `text` 1..6000 characters, `claim` 1..600, `find` a property address (searchable). An inbound call
+from a number in the set is answered with its `text` added to the line's instructions, as background that is never read out (an inbound call on a line with contexts is
+also told it is incoming, with no brief, and whether its number matched); the lookup is local (no network call) and the receipt records `callerContext`. A call
+from any other number gets the line's instructions alone, plus the `find_case` tool (inbound calls only): the model passes
+the property address the caller names, and the tool answers with the `claim` of each context whose address matches (the
+house number said first must be the address's own, a hyphenated one such as 88-10 included, and every word of the
+address's street name must have been said, a numbered street's number included; a direction, the street type, a unit, a
+city or a ZIP never decide it; several properties of a caller are separated by ';' in `find`), at most three tries a call.
+The set is the install's, for every line. `at` is an ISO time with its offset (kept in UTC). A claim is
+the little a stranger who names the property may be told; what `text` and `claim` hold is the operator's policy. A set that
+is never replaced, or is empty, leaves the behavior unchanged (no incoming note, no `find_case`), and the plugin decides
+nothing about what may be said. An incoming call's instructions with its context are cut to 15,000 characters, the
+context's end first; an outbound brief that would take the call past that is refused before dialing.
+
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
-instructions. No new application, agent context, provider or inbound number route
-is created. The existing HTTPS `/incoming` endpoint also receives the signed
+instructions. `--instructions -` reads a per-call brief (1..12000 characters) on
+stdin; it is saved with the request before dialing and added after the configured
+instructions for that call only, under a heading that says the brief wins where
+the two differ (the configuration stays the line's identity and conduct; inbound
+calls and other requests get the configuration alone). A repeated request ID keeps its original brief. The brief is the
+caller's: Voice adds no context, tools or history of its own. No new application,
+provider or inbound number route is created. The existing HTTPS `/incoming` endpoint also receives the signed
 outbound answer and terminal-status callbacks. Ringing is limited to forty-five
 seconds (long enough for a carrier voicemail to pick up) and the call to `maxCallSeconds`. Outbound calls are recorded at Twilio like
 inbound calls (see Recording).
@@ -168,8 +217,9 @@ voicemail may answer too. The private audio receipt must match the Call SID.
 
 The CLI talks to the running phone process through a mode-0600 Unix socket in
 the existing private volume. Ringing, answered and inbound calls share the same
-single-call capacity. Stop the phone supervisor before replacing the plugin;
-shutdown attempts to finalize audio and terminate its outstanding outbound call.
+`maxCalls` capacity. Stop the phone supervisor before replacing the plugin;
+shutdown attempts to finalize audio and terminate every outstanding outbound call (each is tried, and the ones that could
+not be settled are reported together).
 No service restart or transport loss automatically redials an uncertain attempt.
 
 ## Updating a live listener
@@ -227,17 +277,20 @@ that apply to recording; the phone `instructions` can state the notice.
 
 Phone callers are external callers, not authenticated Ez owners. This channel has
 no native-agent delegation, owner history, workspace access or external-action
-tools. Its one tool is `end_call` (see Tools); a legacy client delegation
-(`tools: false`) receives a fixed capability-unavailable result. There
-is no conversation store, and this plugin stores no audio; Twilio holds the call
-recording. The latest private receipt holds call and provider IDs, input/output
-byte counts, provider error code, final usage and the recording outcome.
+tools. Its tools are `end_call` and, on an inbound call with prepared caller contexts, `find_case` (see Tools); a legacy
+client delegation (`tools: false`) receives a fixed capability-unavailable result. This plugin stores no audio; Twilio
+holds the call recording. What it keeps, all in its private volume (mode 0600, readable by the operator only): each call's
+receipt (call and provider IDs, input/output byte counts, provider error code, final usage, the recording outcome, the
+ring and the call's transcript, up to 100,000 characters), kept until the operator removes it; outbound requests with
+their briefs (`calls.sqlite`); and the prepared caller contexts (`contexts.sqlite`), replaced as a whole by the operator.
+A caller context is chosen by the caller ID Twilio reports, which a caller can spoof: anyone presenting a known number is
+answered with that number's context, so prepare only what the line may hear from that number.
 These counts prove transport activity, not audible quality or semantic accuracy.
 No automatic dialing, redial, replacement provider or model fallback exists.
 
 The signed HTTP webhook creates a short-lived single-use ticket bound to the
 Twilio Call SID. The signed media upgrade must present it in its start event,
-with the configured account and the expected audio format. One call runs at a
+with the configured account and the expected audio format. Up to `maxCalls` calls run at a
 time. The provider must report readiness (GPT-Live `session.started`, ElevenLabs
 `session.updated`, Gemini `setupComplete`) before input is forwarded; startup buffering is bounded. With GPT-Live, caller
 hangup sends `session.close` and waits for `session.closed` to confirm final usage. Service shutdown also waits for this

@@ -367,3 +367,151 @@ test('the idle hang-up waits for queued speech to finish playing, and a barge-in
   assert.equal(barge.audio.stats.reason, 'idle_timeout'); assert(Date.now() - started < 3000, 'the 30 s that were queued were cleared, not waited for');
   await barge.audio.done;
 });
+
+test('an answered call is greeted: once the session is ready each provider asks its model to speak first, and a placed call waits', async () => {
+  const readyEvents = {openai: [{type: 'session.started', session: {id: 's1'}}], gemini: [{setupComplete: {}}],
+    elevenlabs: [{type: 'session.created', session: {}}, {type: 'session.updated', session: {}}]};
+  const greeting = {openai: [{type: 'response.create'}], elevenlabs: [{type: 'response.create'}],
+    gemini: [{clientContent: {turns: [{role: 'user', parts: [{text: '(The call has connected: answer it.)'}]}], turnComplete: true}}]};
+  for (const provider of ['openai', 'elevenlabs', 'gemini']) {
+    for (const greet of [true, false]) {
+      const {audio, socket, ready} = await call(provider, {greet, idleSeconds: 0}, {fetch: mintOk().fetch});
+      await wait(() => socket());
+      await wait(() => provider === 'elevenlabs' || socket().events.length);
+      const before = socket().events.length;
+      for (const event of readyEvents[provider]) socket().receive(event);
+      await wait(() => ready() === 1);
+      const sent = socket().events.slice(before).filter(e => e.type !== 'session.update');
+      assert.deepEqual(sent, greet ? greeting[provider] : [], `${provider} greet=${greet}`);
+      audio.close('test'); socket().close(); await audio.done;
+    }
+  }
+});
+
+test('the receipt keeps what each side said, as each provider transcribed it, in turns', async () => {
+  const said = {
+    openai: [{type: 'session.started', session: {id: 's1'}}, {type: 'session.output_transcript.delta', delta: 'Hi, this is '},
+      {type: 'session.output_transcript.delta', delta: 'Sharon.'}, {type: 'session.input_transcript.delta', delta: 'Hello, '},
+      {type: 'session.input_transcript.delta', delta: 'who is this?'}, {type: 'session.output_transcript.delta', delta: 'Sharon with Quarre.'}],
+    elevenlabs: [{type: 'session.created'}, {type: 'session.updated'}, {type: 'response.output_audio_transcript.delta', delta: 'Hi, this is '},
+      {type: 'response.output_audio_transcript.delta', delta: 'Sharon.'}, {type: 'conversation.item.input_audio_transcription.completed', transcript: 'Hello,'},
+      {type: 'conversation.item.input_audio_transcription.completed', transcript: 'who is this?'}, {type: 'response.output_audio_transcript.delta', delta: 'Sharon with Quarre.'}],
+    gemini: [{setupComplete: {}}, {serverContent: {outputTranscription: {text: 'Hi, this is '}}}, {serverContent: {outputTranscription: {text: 'Sharon.'}}},
+      {serverContent: {inputTranscription: {text: 'Hello, '}}}, {serverContent: {inputTranscription: {text: 'who is this?'}}},
+      {serverContent: {outputTranscription: {text: 'Sharon with Quarre.'}}}],
+  };
+  for (const [provider, events] of Object.entries(said)) {
+    const {audio, socket} = await call(provider, {idleSeconds: 0}, {fetch: mintOk().fetch});
+    await wait(() => socket());
+    for (const event of events) socket().receive(event);
+    audio.close('test'); socket().close();
+    const stats = await audio.done;
+    assert.deepEqual(stats.transcript.map(({who, text}) => [who, text]),
+      [['model', 'Hi, this is Sharon.'], ['caller', 'Hello, who is this?'], ['model', 'Sharon with Quarre.']], provider);
+    assert(stats.transcript.every(t => Number.isInteger(t.atMs)), provider);
+    assert.equal(stats.transcriptTruncated, undefined, provider);
+  }
+});
+
+test('a call nobody spoke on keeps no transcript, and a long one stops at the limit and says so', async () => {
+  const {Transcript, MAX_TRANSCRIPT} = await import('../src/phone-providers/transcript.mjs');
+  assert.deepEqual(new Transcript(Date.now()).receipt(), {});
+  const long = new Transcript(Date.now());
+  for (let i = 0; i < 30; i++) long.add(i % 2 ? 'caller' : 'model', {text: 'x'.repeat(5000)});
+  const kept = long.receipt();
+  assert.equal(kept.transcriptTruncated, true);
+  assert(kept.transcript.reduce((n, t) => n + t.text.length, 0) <= MAX_TRANSCRIPT);
+  long.add('narrator', {text: 'not a side of the call'}); // only the caller and the model are sides
+  assert(!long.turns.some(t => t.who === 'narrator'));
+});
+
+test('a caller whose words arrive after the model began to answer is placed where they began to speak, and sentences keep a space', async () => {
+  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
+  await wait(() => socket());
+  const later = ms => new Promise(r => setTimeout(r, ms));
+  for (const event of [{type: 'session.created'}, {type: 'session.updated'}]) socket().receive(event);
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'Hi, this is Sharon.'});
+  await later(15);
+  socket().receive({type: 'input_audio_buffer.speech_started', audio_start_ms: 1});
+  await later(15);
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'How can I help?'}); // the model talks on
+  await later(15);
+  socket().receive({type: 'conversation.item.input_audio_transcription.completed', transcript: 'Do you remember me?'});
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'Yes.'});
+  socket().receive({type: 'response.output_audio_transcript.delta', delta: 'We texted on the 28th.'});
+  audio.close('test'); socket().close();
+  const {transcript} = await audio.done;
+  assert.deepEqual(transcript.map(({who, text}) => [who, text]), [
+    ['model', 'Hi, this is Sharon.'], ['caller', 'Do you remember me?'], ['model', 'How can I help? Yes. We texted on the 28th.']]);
+});
+
+test('an answered call rings on while the session starts, through streamed silence, and stops at the first words', async () => {
+  const {RING_CYCLE, audible} = await import('../src/phone-providers/ringback.mjs');
+  const words = RING_CYCLE[0]; // a frame of tone: audible, as speech is
+  assert.equal(audible(words), true); assert.equal(audible(RING_CYCLE.at(-1)), false); assert.equal(audible('//8='), false);
+  const {audio, twilio, socket} = await call('openai', {greet: true, idleSeconds: 0});
+  await wait(() => twilio.sent.length >= 5); // the ring, before the provider is even ready
+  assert(twilio.sent.every(m => m.event === 'media' && RING_CYCLE.includes(m.media.payload)));
+  socket().receive({type: 'session.started', session: {id: 's1'}});
+  socket().receive({type: 'session.output_audio.delta', delta: '//8='}); // GPT-Live streams silence: it rings on
+  assert(!twilio.sent.some(m => m.event === 'clear' || m.media?.payload === '//8='));
+  const rang = twilio.sent.length;
+  socket().receive({type: 'session.output_audio.delta', delta: words});
+  const after = twilio.sent.slice(rang);
+  assert.deepEqual(after.slice(0, 2).map(m => m.event), ['clear', 'media']); // the queued ring is dropped first
+  assert.equal(after[1].media.payload, words);
+  await new Promise(r => setTimeout(r, 250));
+  assert.equal(twilio.sent.length, rang + 2, 'no ring after the first words');
+  audio.close('test'); socket().close();
+  const stats = await audio.done;
+  assert.equal(typeof stats.ringMs, 'number');
+  for (const settings of [{greet: false}, {greet: true, answerTone: 'none'}]) { // a placed call, or a line that opts out
+    const quiet = await call('openai', {...settings, idleSeconds: 0});
+    await new Promise(r => setTimeout(r, 250));
+    assert.deepEqual(quiet.twilio.sent, [], JSON.stringify(settings));
+    quiet.audio.close('test'); quiet.socket()?.close(); await quiet.audio.done;
+  }
+});
+
+test('the ring is bounded: caller audio waits it out, it stops when nothing sounds after ready, on close, and records why', async () => {
+  const twilio = () => Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], send(raw) {this.sent.push(JSON.parse(raw));}, close() {this.readyState = WebSocket.CLOSED;}});
+  const bridge = (line, settings = {}) => {
+    const sockets = [];
+    const audio = new PhoneAudio(line, {...base, apiKey: keys.openai, provider: 'openai', streamSid, greet: true, idleSeconds: 0, ...settings}, async () => {},
+      {socketFactory: (url, options) => {const s = new FakeSocket(url, options); sockets.push(s); return s;}, ringAfterReadyMs: 60});
+    return {audio, socket: () => sockets[0]};
+  };
+  const quiet = twilio(), {audio, socket} = bridge(quiet);
+  await wait(() => socket());
+  audio.input('//8='); // the caller's line while it rings: not a turn for the model
+  socket().receive({type: 'session.started', session: {id: 's1'}});
+  await new Promise(r => setTimeout(r, 30));
+  assert(!socket().events.some(e => e.type === 'session.input_audio.append'), 'nothing the line carried while ringing reached the model');
+  await wait(() => audio.stats.ringStop);
+  assert.equal(audio.stats.ringStop, 'timeout'); assert(quiet.sent.some(m => m.event === 'clear'));
+  audio.input('//8='); // answered now: the caller is heard
+  await wait(() => socket().events.some(e => e.type === 'session.input_audio.append'));
+  audio.close('test'); socket().close(); await audio.done;
+  const closing = twilio(), early = bridge(closing);
+  await wait(() => early.socket());
+  early.audio.close('caller_hangup'); early.socket().close();
+  const stats = await early.audio.done;
+  assert.equal(stats.ringStop, 'close'); assert.equal(typeof stats.ringMs, 'number');
+});
+
+test('GPT-Live without Responses delegation asks for no greeting (not verified there); with it, one', () => {
+  const make = tools => createAdapter({...base, apiKey: keys.openai, provider: 'openai', tools});
+  assert.deepEqual(make(false).greet(), []);
+  assert.deepEqual(make(true).greet(), [{type: 'response.create'}]);
+  assert.match(make(false).parse({type: 'session.delegation.created', delegation: {id: 'd1', target: 'client'}})[0].message.content, /answer from your instructions/);
+});
+
+test('once the transcript is full, nothing later is kept, not even a short turn', async () => {
+  const {Transcript, MAX_TRANSCRIPT} = await import('../src/phone-providers/transcript.mjs');
+  const t = new Transcript(Date.now());
+  t.add('model', {delta: 'x'.repeat(MAX_TRANSCRIPT - 5)});
+  t.add('caller', {text: 'y'.repeat(20)}); // over the budget: refused, and the transcript is full
+  t.add('model', {delta: 'later'}); t.add('caller', {text: 'later'});
+  const kept = t.receipt();
+  assert.equal(kept.transcriptTruncated, true); assert.equal(kept.transcript.length, 1);
+});

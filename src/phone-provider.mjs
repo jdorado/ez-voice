@@ -22,9 +22,9 @@ export class PhoneNumber {
     if (!row || !sid(row.sid, 'PN') || row.capabilities?.voice !== true) throw Error('Configured number is not voice-capable in this Twilio account');
     return {numberSid: row.sid, number: row.phone_number, route: routeFields(row)};
   }
-  async createCall(to, requestId) {
+  async createCall(to, requestId, from = this.config.number) {
     const url = this.config.origin + (this.config.pathPrefix || '') + '/incoming?' + new URLSearchParams({outbound: requestId});
-    return this.request('/Calls.json', {To: to, From: this.config.number, Url: url, Method: 'POST',
+    return this.request('/Calls.json', {To: to, From: from, Url: url, Method: 'POST',
       StatusCallback: url + '&status=1', StatusCallbackMethod: 'POST', Timeout: '45', TimeLimit: String((this.config.maxCallSeconds ?? 180) + 15), Record: 'false'});
   }
   async getCall(callSid) {

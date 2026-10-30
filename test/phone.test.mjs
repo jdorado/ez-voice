@@ -62,12 +62,13 @@ test('inbound listener admits calls after thirty minutes and more than five comp
     }
     const health=await fetch(`http://127.0.0.1:${server.port}/health`);
     assert.equal(health.status,200);
-    assert.deepEqual(await health.json(),{ready:true,active:false,admitted:7,provider:'openai',model:'gpt-live-1'});
+    assert.deepEqual(await health.json(),{ready:true,active:false,calls:0,admitted:7,provider:'openai',model:'gpt-live-1',lines:[config.number]});
   } finally {await server.close();}
 });
 test('signed inbound HTTP + real media socket relays mu-law both ways and finalizes without native tools', async () => {
   let provider, receipt;
-  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:twilio().provider, socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
+  // the relay exactly as sent: no ringback while the session starts (its own test is with the providers)
+  const server = await servePhone({...config, answerTone: 'none'}, {port:0, host:'127.0.0.1', provider:twilio().provider, socketFactory:()=>provider=new ProviderSocket(), record:async r=>{receipt=r;}});
   const base = `http://127.0.0.1:${server.port}`; let ws;
   try {
     const params = new URLSearchParams({AccountSid:config.accountSid, To:config.number, CallSid:callSid});
@@ -245,7 +246,7 @@ test('an admitted inbound call starts exactly one dual-channel Twilio recording 
   let provider, receipt, release;
   const gate = new Promise(resolve => {release = resolve;});
   const {requests, provider: recorder} = twilio(async () => {await gate; return new Response(JSON.stringify({sid: recordingSid}), {status: 201});});
-  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipt=value;}});
+  const server = await servePhone({...config, answerTone: 'none'}, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipt=value;}}); // the relay as sent: no ringback
   let ws, replay;
   try {
     await assert.rejects(()=>recorder.startRecording('CA/../x'), /Invalid Call SID/); assert.equal(requests.length,0);
@@ -279,7 +280,7 @@ test('an admitted inbound call starts exactly one dual-channel Twilio recording 
 test('a rejected, failed or malformed Twilio recording start never degrades the call and is receipted by code only', async () => {
   let provider, respond; const receipts = [];
   const {requests, provider: recorder} = twilio(()=>respond());
-  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipts.push(value);}});
+  const server = await servePhone({...config, answerTone: 'none'}, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipts.push(value);}}); // the relay as sent: no ringback
   const cases = [
     [async()=>new Response('secret-twilio-body',{status:403}), {state:'failed',code:'HTTP_403'}],
     [async()=>new Response('secret-twilio-body',{status:500}), {state:'failed',code:'HTTP_500'}],
@@ -429,4 +430,33 @@ test('through the phone service, end_call waits for Twilio to echo its mark befo
     await wait(() => receipts.length === 1);
     assert.equal(receipts[0].reason, 'end_call');
   } finally {ws?.close(); await server.close();}
+});
+
+test('caller audio that arrives before the provider is ready is held for as long as the start timeout allows, not closed after six seconds', async () => {
+  class SilentProvider extends ProviderSocket {send(raw) {this.events.push(JSON.parse(raw));}} // opens, never says it is ready
+  const {PhoneAudio} = await import('../src/phone-audio.mjs');
+  const twilioSocket = Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}});
+  let provider; const audio = new PhoneAudio(twilioSocket, {...config, streamSid}, async () => {}, {socketFactory: () => provider = new SilentProvider()});
+  const second = Buffer.alloc(8000, 0xff).toString('base64'); // one second of the caller's line
+  try {
+    await wait(() => provider);
+    for (let i = 0; i < 12; i++) audio.input(second); // twelve seconds of it
+    assert.equal(audio.closing, undefined);
+    for (let i = 0; i < 12; i++) audio.input(second); // far past any start timeout
+    assert.equal(audio.stats.reason, 'startup_audio_limit');
+  } finally {provider.close(); await audio.close('test_done');}
+});
+
+test('phone receipt --call-sid reads the receipt of that call, not whichever call ended last', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'voice-receipts-')); t.after(() => rm(state, {recursive: true, force: true}));
+  const {mkdir} = await import('node:fs/promises'); await mkdir(join(state, 'phone', 'receipts'), {recursive: true});
+  const first = 'CA' + 'a'.repeat(32), second = 'CA' + 'b'.repeat(32);
+  await writeFile(join(state, 'phone', 'receipts', first + '.json'), JSON.stringify({callSid: first, reason: 'end_call'}));
+  await writeFile(join(state, 'phone', 'receipts', second + '.json'), JSON.stringify({callSid: second, reason: 'duration_limit'}));
+  await writeFile(join(state, 'phone', 'last-call.json'), JSON.stringify({callSid: second, reason: 'duration_limit'}));
+  assert.equal((await phoneCommand(state, ['receipt', '--call-sid', first])).reason, 'end_call');
+  await phoneCommand(state, ['configure'], {stdin: Readable.from([JSON.stringify(config)])});
+  assert.equal((await phoneCommand(state, ['receipt'])).callSid, second);
+  await assert.rejects(() => phoneCommand(state, ['receipt', '--call-sid', 'nope']), /Use phone receipt --call-sid/);
+  await assert.rejects(() => phoneCommand(state, ['receipt', '--call-sid', 'CA' + 'c'.repeat(32)]), /ENOENT/);
 });

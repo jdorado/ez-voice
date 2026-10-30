@@ -1,4 +1,5 @@
 import {toolDefinitions} from '../phone-tools.mjs';
+import {words} from './transcript.mjs';
 
 // ElevenLabs Realtime: the OpenAI Realtime protocol over WebSocket, behind a cascaded speech stack (ElevenLabs documents it as
 // separate speech-to-text, language and text-to-speech models). It takes G.711 mu-law directly and calls tools natively.
@@ -37,9 +38,11 @@ export class ElevenLabsAdapter {
     // ElevenLabs closes a session after max_duration_seconds (default 600, range 60..7200): follow the call length.
     return {type: 'session.update', session: {type: 'realtime', model: c.model, instructions: c.instructions, output_modalities: ['audio'],
       max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15)),
-      ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(), tool_choice: 'auto'}),
+      ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
       audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
+  // The model speaks first: a response with no caller turn yet is the greeting.
+  greet() { return [{type: 'response.create'}]; }
   audioIn(audio) { return [{type: 'input_audio_buffer.append', audio}]; }
   parse(event) {
     switch (event.type) {
@@ -50,12 +53,13 @@ export class ElevenLabsAdapter {
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         return [{type: 'audio', audio: event.delta}];
       // Server-side voice activity says at once when the caller starts talking (a barge-in also stops what is queued at Twilio).
-      case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller'}, {type: 'interrupted'}];
-      case 'input_audio_buffer.speech_stopped':
-      case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller'}];
-      case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model'}];
+      case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
+      case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller'}];
+      // The caller's words arrive whole per utterance, the model's as it speaks.
+      case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
+      case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'response.output_item.done':
-        return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name}] : [];
+        return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
       case 'error': return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];
       default: return [];
     }

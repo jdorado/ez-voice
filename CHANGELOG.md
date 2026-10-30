@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.11
+
+Fixes from the final-diff review of the per-call brief and multi-line work (rc.3 to rc.10):
+
+- A line runs with the shared fields and its own fields only: the first line's optional fields (tools, language,
+  answerTone, thinking, toolModel, toolEffort) no longer leak into the other lines.
+- Caller contexts and `find_case` apply only once a set was prepared: an empty or never-replaced store leaves inbound
+  calls as they were. The set is the install's, for every line; `at` must be an ISO time with its offset and is kept in UTC.
+- The ringback is bounded: it stops on the model's first audible words, 5 seconds after the session is ready, or on close,
+  and the receipt says why (`ringStop`). Caller audio is not passed to the model while it rings (a ring echoed back was
+  answered as words), and the ring is paced by elapsed time a little ahead of Twilio.
+- GPT-Live without Responses delegation (`tools: false`) is not asked for a greeting (not verified there), and its client
+  commentary no longer says no private information is connected.
+- `find_case` keeps a hyphenated house number whole (88-10) and requires every word of the address's street name, so
+  another street at the same house number never matches and Queens Boulevard, Court Street or New York Avenue do; a
+  unit, a city or a ZIP in what the caller said only adds words.
+- A session never starts with more than 15,000 characters of line instructions plus a brief or caller context: an
+  outbound brief that would exceed it is refused before dialing, an inbound context is cut.
+- Shutdown and restart try every pending call and report the failures together. Caller contexts on stdin are bounded in
+  bytes like the control channel, and a malformed file is refused without echoing its text. The receipt's transcript
+  keeps nothing once it is full, and a caller starting to speak ends the model's turn in it.
+- Docs, skill and help: several lines, both tools, the ringback, what the volume keeps (transcripts, briefs, contexts) and
+  that a caller context is selected by a spoofable caller ID. QA candidate only; not tagged or published.
+
+## 0.1.0-beta.11.rc.10
+
+- An inbound call keeps ringing while the speech session starts: the North American ringback plays from the moment the
+  media stream connects until the model's first audible audio (silence some providers stream does not stop it), and the
+  queued ring is cleared at Twilio first. The seconds a provider needs to start (ElevenLabs about 3) sound like one more
+  ring instead of a silent pickup the caller talks into. A line's `answerTone` (`ringback`, default, or `none`); the
+  receipt's `ringMs`. QA candidate only; not tagged or published.
+
+## 0.1.0-beta.11.rc.9
+
+- GPT-Live no longer tells its voice that no private records are connected: the delegation policy came after an inbound
+  call's caller context and said so, and the backend answered "no private information" to a lookup, so the line said it
+  had nothing on a caller whose context it held. Questions about the caller, their number or an earlier conversation are
+  answered from the instructions; the backend says only that no tool does that.
+- The receipt's transcript places a caller's words where they began to speak (ElevenLabs sends an utterance once it is
+  finished, after the model may have begun to answer), and keeps a space between sentences streamed back to back.
+  QA candidate only; not tagged or published.
+
+## 0.1.0-beta.11.rc.8
+
+- A call's receipt keeps what each side said, as the provider transcribed it while the call ran (`transcript`: turns of
+  `caller` and `model` with `text` and `atMs`, at most 100,000 characters, `transcriptTruncated` past that), for OpenAI,
+  ElevenLabs and Gemini alike. The plugin used these transcripts only to tell who was speaking and dropped the words, so
+  a call's words needed a second transcription of the recording. Still no audio is kept. QA candidate only; not tagged or
+  published.
+
+## 0.1.0-beta.11.rc.7
+
+- An inbound call is answered: once the provider session is ready the model is asked to speak first, so the caller hears
+  the line's greeting instead of silence (ElevenLabs Realtime waited for the caller; an inbound caller then heard a reply
+  to their own "hello?" as if the line had placed the call). Outbound calls still wait for the callee. QA candidate only;
+  not tagged or published.
+
+## 0.1.0-beta.11.rc.6
+
+- Prepared caller contexts (the call centre's "screen pop"). `phone context replace < contexts.json` replaces, atomically,
+  the set of up to 500 `{number, text, claim, find, at?}` the operator prepared; `phone context status` reads its count.
+  An inbound call from a number in the set is answered with its `text` added to the line's instructions before the
+  greeting (local read, no network call, no model); the receipt records `callerContext`; on a line with contexts every inbound call is told it is incoming with no brief, and whether its number matched. A call from another number can name
+  a property to the `find_case` tool (declared on inbound calls only, at most 3 tries a call), which answers with the
+  `claim` of each context whose address matches (the house number said first, and the street name or the street's own number). Tool calls now hand their arguments to the
+  bridge on every provider. Caller audio that arrives before the provider is ready is held for up to 200,000 characters (about 18 s of the line, past the 15 s start timeout) instead of 64,000 (about 6 s), after which a slow provider start closed the call as `startup_audio_limit`; GPT-Live is told to run `end_call` right after its goodbye. `phone receipt --call-sid CA...` reads the receipt of one call (the plain `phone receipt` is the last call to end, which with several calls at once is any of them). QA candidate only; not tagged or published.
+
+## 0.1.0-beta.11.rc.5
+
+- A line's configured `instructions` take up to 12000 characters (was 4000), the same as a per-call brief, so a line
+  can carry a full persona and call conduct for the calls it answers and places. QA candidate only; not tagged or
+  published.
+
+## 0.1.0-beta.11.rc.4
+
+- One install serves several numbers (`lines`), each with its own provider, voice, key and instructions; an inbound
+  call takes the called number's line, an outbound call `phone call --from LINE`. `maxCalls` (default 1, unchanged
+  behavior) lets inbound and outbound calls run at once. The request journal records each call's line; a request ID
+  reused with another line is refused. `probe` checks every line. QA candidate only; not tagged or published.
+
+## 0.1.0-beta.11.rc.3
+
+- `phone call --instructions -` takes a per-call brief (1..12000 characters) on stdin. It is saved with the request
+  before dialing and added after the configured instructions for that outbound call only (the brief wins where they
+  differ); inbound calls keep the configuration alone. ElevenLabs Realtime Max accepted 16000 characters of
+  instructions in a live probe. QA candidate only; not tagged or published.
+
 ## 0.1.0-beta.11.rc.2
 
 - Declare the backend `end_call` capability and GPT-Live's delegation trigger to the live model, as well as registering
