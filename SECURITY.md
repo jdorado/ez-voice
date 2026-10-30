@@ -34,9 +34,12 @@ listener and Voice service must share a deployment-owned private Docker network;
 do not expose that listener publicly. Host-owned network bindings must be pinned
 to the reviewed Voice revision.
 
-On the phone channel the configured speech provider (GPT-Live, ElevenLabs Realtime or Gemini Live) receives the call audio and
+On the phone channel the configured speech provider (GPT-Live, ElevenLabs Realtime, Gemini Live or Deepgram Voice Agent) receives the call audio and
 the phone instructions, and its credential stays in the private phone configuration. The deployment's host-owned network binding
-must allow that provider's hosts (api.openai.com, api.elevenlabs.io, generativelanguage.googleapis.com).
+must allow that provider's hosts (api.openai.com, api.elevenlabs.io, generativelanguage.googleapis.com, agent.deepgram.com).
+For the Deepgram cascaded stack, its managed session receives audio, instructions, tool results and the
+private Google/ElevenLabs BYO keys to call those providers. Keys are transport configuration only;
+they never enter the model prompt, transcripts, doctor output or receipts. Provider endpoints are fixed.
 
 GPT-Live receives audio, compact bound identity, retained voice text and concise
 native-agent results. It cannot invoke installed plugins directly. Delegated

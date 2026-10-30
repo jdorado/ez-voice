@@ -8,7 +8,7 @@ Audible quality, interruption handling and latency require separate acceptance.
 
 ```text
 telephone ↔ Twilio number ↔ Twilio Media Streams ↔ Ez Voice ↔ speech provider
-                                                       (gpt-live-1 | ElevenLabs Realtime | Gemini Live)
+                                                       (GPT-Live | ElevenLabs Realtime | Gemini Live | Deepgram Voice Agent)
 ```
 
 Twilio, GPT-Live and ElevenLabs Realtime use raw G.711 mu-law, mono, 8 kHz. Voice forwards the
@@ -89,7 +89,7 @@ A health response does not prove provider connectivity; `phone probe` does.
 
 One provider serves a call, chosen by `provider` in the private configuration. `PhoneAudio` owns the Twilio bridge, timers,
 tool registry and receipt; each provider's wire protocol is an adapter in `src/phone-providers/` (its contract is documented
-in `index.mjs`). A new speech-to-speech service is one more adapter file and a registry line. `apiKey` is that provider's key,
+in `index.mjs`). A new managed speech service is one more adapter file and a registry line. `apiKey` is that provider's key,
 checked against its key shape. `model` must be one the adapter lists; the default is the first column below.
 
 | `provider` | Default and allowed `model` | Default `voice` | Audio | Tools | Close |
@@ -97,6 +97,7 @@ checked against its key shape. `model` must be one the adapter lists; the defaul
 | `openai` | `gpt-live-1` | `marin` | mu-law 8 kHz both ways | Responses backend (`toolModel`, `toolEffort`), see Tools | `session.close` / `session.closed`, with final usage |
 | `elevenlabs` | `eleven_realtime_v1_mini` or `eleven_realtime_v1_max` | `brian`, or an ElevenLabs voice id | mu-law 8 kHz both ways | native function calls on `eleven_realtime_v1_max` only | socket close; no usage |
 | `gemini` | `gemini-3.8-live` or `gemini-3.8-live-extended-thinking` (`thinking` low, medium or high, default low) | `Kore` | PCM 16 kHz in, PCM out (24 kHz), converted | native, `BLOCKING` (not on the thinking variant) | socket close; the last reported usage |
+| `deepgram` | `gemini-3.8-flash` | ElevenLabs Brian voice id | mu-law 8 kHz both ways | native functions, deferred until end of turn | socket close; no usage |
 
 ElevenLabs Realtime is the OpenAI Realtime protocol over WebSocket. Its socket refuses the account key, so each call first mints
 a short-lived client secret (`POST /v1/convai/realtime/client_secrets`, needing an ElevenLabs key with ElevenAgents write
@@ -340,3 +341,27 @@ for speech sessions that must not write. No native-agent delegation is granted t
 Caller audio is queued until provider readiness and forwarded even while local ringback plays.
 ElevenLabs receives a call-connected event before its initial response request; an empty
 response request alone is not reliable proof of an audible greeting.
+
+### Deepgram cascaded speech
+
+`provider: "deepgram"` uses the managed Voice Agent session with Flux (`flux-general-en`, v2)
+turn detection, Google `gemini-3.8-flash` and ElevenLabs `eleven_v4_turbo`. It is English-only
+for now. `apiKey` is the Deepgram key; `llmApiKey` is the Google AI Studio key and `ttsApiKey`
+is the ElevenLabs key. `voice` is an ElevenLabs voice ID. Supply all three through private
+configuration stdin. Deepgram receives the two BYO keys to connect to those providers.
+Arbitrary endpoints and alternative stack models are not accepted. The bridge does not
+run its own STT/LLM/TTS loop or choose a fallback model.
+
+The adapter waits for Welcome, submits Settings, and waits for SettingsApplied before audio.
+The generic call-connected turn requests an inbound greeting; persona wording remains in
+the operator's instructions. Native functions use the existing tool registry, with
+`defer_until_eot` so speculative turn detection cannot end the call. Gemini thought signatures
+return only with their originating function response. Cancelled functions receive no response,
+and late results cannot cross calls or turns. A readiness probe alone does not establish
+LLM/TTS compatibility, audible output, tool use or conversation quality: exercise a real
+provider call through the installed plugin before selecting this stack for live callers.
+
+Provider contracts: [message flow](https://developers.deepgram.com/docs/voice-agent-message-flow),
+[BYO LLM](https://developers.deepgram.com/docs/voice-agent-llm-models),
+[BYO TTS](https://developers.deepgram.com/docs/voice-agent-tts-models),
+[functions](https://developers.deepgram.com/docs/voice-agent-function-call-request).

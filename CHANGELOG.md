@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.24
+
+- Add a Deepgram Voice Agent adapter for Flux, Gemini 3.8 Flash and ElevenLabs v4 Turbo, with private BYO credentials, binary mu-law audio and the existing installed information tools.
+- Bind function cancellation and Gemini thought signatures to each call; discard interrupted or stale reads.
+
 ## 0.1.0-beta.11.rc.23
 
 - Preserve the explicit GPT-Live hang-up delegation policy when information tools are installed; read-only business access does not remove call control.

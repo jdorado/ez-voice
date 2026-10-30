@@ -11,14 +11,14 @@ import {PROVIDERS, createAdapter} from '../src/phone-providers/index.mjs';
 import {ulawToPcm, pcmToUlaw, pcmFromBytes, pcmBytes, Upsampler, Downsampler, Framer, FRAME} from '../src/phone-providers/g711.mjs';
 
 const base = {accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com', instructions: 'Synthetic audio test'};
-const keys = {openai: 'sk-synthetic123456789', elevenlabs: 'sk_' + 'a'.repeat(24), gemini: 'AIza' + 'b'.repeat(35)};
+const keys = {openai: 'sk-synthetic123456789', elevenlabs: 'sk_' + 'a'.repeat(24), gemini: 'AIza' + 'b'.repeat(35), deepgram: 'c'.repeat(40)};
 const streamSid = 'MZ' + '4'.repeat(32);
 const wait = async fn => {for (let i = 0; i < 100; i++) {if (fn()) return; await new Promise(r => setTimeout(r, 10));} throw Error('Timed out');};
 
 class FakeSocket extends EventEmitter {
   readyState = WebSocket.OPEN; bufferedAmount = 0; events = [];
   constructor(url, options) {super(); this.url = url; this.options = options; setImmediate(() => this.emit('open'));}
-  send(raw) {this.events.push(JSON.parse(raw));}
+  send(raw) {this.events.push(Buffer.isBuffer(raw) ? raw : JSON.parse(raw));}
   receive(event) {this.emit('message', Buffer.from(JSON.stringify(event)));}
   close() {this.readyState = WebSocket.CLOSED; this.emit('close', 1000);}
   terminate() {this.close();}
@@ -73,7 +73,7 @@ test('the framer emits whole 20 ms frames and pads the last one with silence', (
 
 test('provider, model, voice and key shape are validated per provider', () => {
   const ok = provider => validatePhoneConfig({...base, apiKey: keys[provider], provider});
-  assert.deepEqual(Object.keys(PROVIDERS), ['openai', 'elevenlabs', 'gemini']);
+  assert.deepEqual(Object.keys(PROVIDERS), ['openai', 'elevenlabs', 'gemini', 'deepgram']);
   assert.equal(validatePhoneConfig({...base, apiKey: keys.openai}).provider, 'openai');
   assert.equal(ok('openai').model, 'gpt-live-1'); assert.equal(ok('openai').voice, 'marin');
   assert.equal(ok('elevenlabs').model, 'eleven_realtime_v1_mini'); assert.equal(ok('elevenlabs').voice, 'brian');
@@ -97,7 +97,7 @@ test('doctor reports the configured provider and model', async () => {
     await writeFile(join(state, 'phone', 'config.json'), JSON.stringify({...base, apiKey: keys.gemini, provider: 'gemini'}));
     const doctor = await phoneCommand(state, ['doctor']);
     assert.equal(doctor.provider, 'gemini'); assert.equal(doctor.model, 'gemini-3.8-live'); assert(!JSON.stringify(doctor).includes(keys.gemini));
-    assert.deepEqual((await phoneCommand(await mkdtemp(join(tmpdir(), 'ez-voice-empty-')), ['doctor'])).providers, ['openai', 'elevenlabs', 'gemini']);
+    assert.deepEqual((await phoneCommand(await mkdtemp(join(tmpdir(), 'ez-voice-empty-')), ['doctor'])).providers, ['openai', 'elevenlabs', 'gemini', 'deepgram']);
   } finally {await rm(state, {recursive: true, force: true});}
 });
 
@@ -710,4 +710,112 @@ test('continuous unrecognized startup noise cannot leave an answered call silent
     await new Promise(r => setTimeout(r, 5400));
     assert.equal(s.events.filter(e => e.clientContent).length, 1);
   } finally { clearInterval(input); audio.close('test'); s.close(); await audio.done; }
+});
+
+const deepgramKeys = {llmApiKey: keys.gemini, ttsApiKey: keys.elevenlabs};
+const dgCall = (id, signature = 'synthetic-signature') => ({type: 'FunctionCallRequest', functions: [
+  {id, name: 'read_record', arguments: '{"ref":"current"}', client_side: true, thought_signature: signature},
+]});
+
+test('Deepgram requires separate private credentials and admits only the supported stack', async () => {
+  const config = {...base, provider: 'deepgram', apiKey: keys.deepgram, ...deepgramKeys};
+  const valid = validatePhoneConfig(config);
+  assert.equal(valid.model, 'gemini-3.8-flash');
+  for (const bad of [{llmApiKey: undefined}, {ttsApiKey: 'bad'}, {language: 'es'}, {model: 'gemini-3.8-live'},
+    {thinking: 'minimal'}, {endpoint: 'https://example.com'}]) assert.throws(() => validatePhoneConfig({...config, ...bad}));
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.openai, ...deepgramKeys}), /deepgram only/);
+  const directory = await mkdtemp(join(tmpdir(), 'ez-deepgram-config-'));
+  try {
+    await mkdir(join(directory, 'phone'));
+    await writeFile(join(directory, 'phone/config.json'), JSON.stringify(config));
+    const output = JSON.stringify(await phoneCommand(directory, ['doctor']));
+    for (const secret of [keys.deepgram, ...Object.values(deepgramKeys)]) assert(!output.includes(secret));
+    assert(output.includes('gemini-3.8-flash'));
+  } finally {await rm(directory, {recursive: true, force: true});}
+});
+
+test('Deepgram waits for Welcome and SettingsApplied, sends binary audio and retains native transcripts', async () => {
+  const c = await call('deepgram', {...deepgramKeys, greet: true, answerTone: 'none'});
+  try {
+    c.audio.input('//8=');
+    await wait(() => c.socket());
+    await new Promise(r => setImmediate(r));
+    assert.equal(c.socket().events.length, 0);
+    c.socket().receive({type: 'Welcome', request_id: 'dg-session'});
+    c.socket().receive({type: 'Welcome'});
+    const settings = c.socket().events[0];
+    assert.equal(c.socket().events.length, 1);
+    assert.equal(settings.agent.listen.provider.model, 'flux-general-en');
+    assert.match(settings.agent.think.endpoint.url, /gemini-3\.8-flash:streamGenerateContent/);
+    assert.equal(settings.agent.think.endpoint.headers['x-goog-api-key'], keys.gemini);
+    assert.equal(settings.agent.speak.provider.model_id, 'eleven_v4_turbo');
+    assert(settings.agent.think.functions.every(f => f.defer_until_eot));
+    assert.equal(c.ready(), 0);
+    c.socket().receive({type: 'SettingsApplied'});
+    c.socket().receive({type: 'SettingsApplied'});
+    await wait(() => c.socket().events.some(e => e.type === 'InjectUserMessage'));
+    assert.equal(c.ready(), 1);
+    assert(c.socket().events.some(e => Buffer.isBuffer(e) && e.toString('base64') === '//8='));
+    c.socket().emit('message', Buffer.from([10, 20, 30]), true);
+    assert.equal(c.twilio.sent.at(-1).media.payload, 'ChQe');
+    c.socket().receive({type: 'UserStartedSpeaking'});
+    assert.equal(c.twilio.sent.at(-1).event, 'clear');
+    c.socket().receive({type: 'ConversationText', role: 'user', content: 'Can you look it up?'});
+    c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'I can check the record.'});
+    await c.audio.close();
+    assert.equal(c.finished[0].providerSessionId, 'dg-session');
+    assert.deepEqual(c.finished[0].transcript.map(t => t.text), ['Can you look it up?', 'I can check the record.']);
+    for (const secret of [keys.deepgram, ...Object.values(deepgramKeys)]) assert(!JSON.stringify(c.finished).includes(secret));
+  } finally {await c.audio.close();}
+});
+
+test('Deepgram overlapping calls isolate Gemini signatures and discard cancelled or late turns', async () => {
+  const pending = [];
+  const information = {tools: [{name: 'read_record'}], run: (call, turn, name, args, signal) => new Promise(resolve => pending.push({call, signal, resolve}))};
+  const a = await call('deepgram', {...deepgramKeys, information, call: {id: 'a'}});
+  const b = await call('deepgram', {...deepgramKeys, information, call: {id: 'b'}});
+  const outputs = c => c.socket().events.filter(e => e.type === 'FunctionCallResponse');
+  try {
+    a.socket().receive(dgCall('same', 'signature-a')); b.socket().receive(dgCall('same', 'signature-b'));
+    await wait(() => pending.length === 2);
+    a.socket().receive({type: 'FunctionCallCancelled', functions: [{id: 'same'}]});
+    a.socket().receive(dgCall('new', 'signature-new'));
+    await wait(() => pending.length === 3);
+    a.socket().receive({type: 'FunctionCallCancelled', functions: [{id: 'same'}]});
+    assert(pending[0].signal.aborted); assert(!pending[1].signal.aborted); assert(!pending[2].signal.aborted);
+    pending[0].resolve({value: 'STALE'}); pending[1].resolve({value: 'b'}); pending[2].resolve({value: 'new-a'});
+    await wait(() => outputs(a).length === 1 && outputs(b).length === 1);
+    assert.deepEqual(outputs(a).map(e => [e.id, e.thought_signature, JSON.parse(e.content)]), [['new', 'signature-new', {value: 'new-a'}]]);
+    assert.deepEqual(outputs(b).map(e => [e.id, e.thought_signature]), [['same', 'signature-b']]);
+    a.socket().receive(dgCall('interrupted'));
+    await wait(() => pending.length === 4);
+    a.socket().receive({type: 'UserStartedSpeaking'});
+    pending[3].resolve({value: 'AFTER INTERRUPTION'});
+    a.socket().receive(dgCall('closed'));
+    await wait(() => pending.length === 5);
+    await a.audio.close(); pending[4].resolve({value: 'AFTER CLOSE'});
+    await new Promise(r => setImmediate(r));
+    assert.equal(outputs(a).length, 1);
+  } finally {await Promise.all([a.audio.close(), b.audio.close()]);}
+});
+
+test('Deepgram failure stays explicit, unknown tools cannot run, and provider details are not logged', async () => {
+  let ran = 0;
+  const information = {tools: [{name: 'read_record'}], run: async () => {ran++; throw Error('private backend details');}};
+  const c = await call('deepgram', {...deepgramKeys, information});
+  try {
+    c.socket().receive(dgCall('read'));
+    c.socket().receive({type: 'FunctionCallRequest', functions: [{id: 'write', name: 'send_sms', arguments: '{}', client_side: true}]});
+    await wait(() => c.socket().events.filter(e => e.type === 'FunctionCallResponse').length === 2);
+    const output = c.socket().events.filter(e => e.type === 'FunctionCallResponse').map(e => JSON.parse(e.content));
+    assert(output.some(o => o.error === 'unknown_tool')); assert(output.some(o => o.status === 'unavailable')); assert.equal(ran, 1);
+    c.socket().receive({type: 'Error', code: 'INVALID_SETTINGS', description: keys.gemini});
+    await c.audio.done;
+    assert.equal(c.finished[0].providerError, 'INVALID_SETTINGS');
+    assert(!JSON.stringify(c.finished).includes(keys.gemini));
+    const adapter = createAdapter({...base, provider: 'deepgram', ...deepgramKeys});
+    assert.equal(adapter.parse(dgCall('bad', 'x'.repeat(65537)))[0].reason, 'invalid_provider_event');
+    assert.deepEqual(adapter.toolResult('end', 'end_call', {status: 'ending'}, {final: true}), []);
+    assert(!createAdapter({...base, provider: 'deepgram', ...deepgramKeys, tools: false}).settings().agent.think.functions);
+  } finally {await c.audio.close();}
 });

@@ -52,8 +52,11 @@ export class PhoneAudio {
     if (this.closing || this.completed) return;
     this.provider = this.socketFactory(url, {headers, maxPayload: 1024 * 1024});
     this.provider.on('open', () => { for (const message of this.adapter.start()) this.send(message); });
-    this.provider.on('message', raw => {
-      try { this.event(JSON.parse(raw.toString())); } catch { this.close('invalid_provider_event'); }
+    this.provider.on('message', (raw, binary) => {
+      try {
+        if (binary && !this.adapter.constructor.binaryAudio) throw Error('Unexpected binary event');
+        this.event(binary ? Buffer.from(raw) : JSON.parse(raw.toString()));
+      } catch { this.close('invalid_provider_event'); }
     });
     this.provider.on('error', () => this.close('provider_connection_failed'));
     this.provider.on('close', code => {
@@ -68,7 +71,7 @@ export class PhoneAudio {
   send(message) {
     if (this.provider?.readyState !== WebSocket.OPEN) return false;
     if (this.provider.bufferedAmount > 256000) { this.close('provider_backpressure'); return false; }
-    this.provider.send(JSON.stringify(message)); return true;
+    this.provider.send(Buffer.isBuffer(message) ? message : JSON.stringify(message)); return true;
   }
   input(payload) {
     if (this.closing) return;
@@ -173,7 +176,7 @@ export class PhoneAudio {
         if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
         break;
       case 'cancelled':
-        if (item.request) this.cancelTools(false, item.request);
+        if (item.id || item.request) this.cancelTools(false, item.request, item.id);
         break;
       case 'interrupted':
         this.cancelTools(true); this.turn++;
@@ -222,8 +225,9 @@ export class PhoneAudio {
         for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
       }).finally(() => { clearTimeout(timer); this.pendingTools.delete(item.id); });
   }
-  cancelTools(notify = false, request) {
+  cancelTools(notify = false, request, callId) {
     for (const [id, abort] of this.pendingTools) {
+      if (callId && id !== callId) continue;
       if (request && abort.tool.request !== request) continue;
       abort.abort();
       this.pendingTools.delete(id);
