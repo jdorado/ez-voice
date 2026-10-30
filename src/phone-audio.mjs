@@ -89,6 +89,8 @@ export class PhoneAudio {
         this.stats.ready = true; this.stats.readyMs = Date.now() - this.startedAt;
         for (const payload of this.queued) this.forward(payload);
         this.queued = []; this.queuedBytes = 0;
+        // An answered call is greeted: the caller rang and waits for the line to speak. An outbound call waits for the callee.
+        if (this.config.greet) for (const message of this.adapter.greet()) this.send(message);
         this.onReady();
         break;
       case 'audio':

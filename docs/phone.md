@@ -39,7 +39,9 @@ test registry for development. Keep credentials and runtime state outside the ag
 One install can serve several numbers: give `lines` (1..8 entries, each with its own `number`, `apiKey`, and optional
 `provider`, `model`, `voice`, `language`, `instructions`, `tools`...) instead of those fields at the top level; the
 account, auth token, origin and limits are shared. An inbound call takes the line of the number called; an outbound
-call takes `--from LINE` (default: the first line). `maxCalls` (1..8, default 1) is how many calls run at once across
+call takes `--from LINE` (default: the first line). An inbound call is answered: once the provider session is ready the
+model is asked to speak first (`response.create` at OpenAI and ElevenLabs, a turn saying the call connected at Gemini),
+as a person picking up the phone does; an outbound call waits for the callee to speak. `maxCalls` (1..8, default 1) is how many calls run at once across
 all lines, inbound and outbound together: an outbound call holds its place from creation to its end. The single-line
 form keeps working unchanged.
 

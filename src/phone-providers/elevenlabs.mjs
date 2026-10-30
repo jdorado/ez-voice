@@ -40,6 +40,8 @@ export class ElevenLabsAdapter {
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
       audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
+  // The model speaks first: a response with no caller turn yet is the greeting.
+  greet() { return [{type: 'response.create'}]; }
   audioIn(audio) { return [{type: 'input_audio_buffer.append', audio}]; }
   parse(event) {
     switch (event.type) {

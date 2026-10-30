@@ -367,3 +367,23 @@ test('the idle hang-up waits for queued speech to finish playing, and a barge-in
   assert.equal(barge.audio.stats.reason, 'idle_timeout'); assert(Date.now() - started < 3000, 'the 30 s that were queued were cleared, not waited for');
   await barge.audio.done;
 });
+
+test('an answered call is greeted: once the session is ready each provider asks its model to speak first, and a placed call waits', async () => {
+  const readyEvents = {openai: [{type: 'session.started', session: {id: 's1'}}], gemini: [{setupComplete: {}}],
+    elevenlabs: [{type: 'session.created', session: {}}, {type: 'session.updated', session: {}}]};
+  const greeting = {openai: [{type: 'response.create'}], elevenlabs: [{type: 'response.create'}],
+    gemini: [{clientContent: {turns: [{role: 'user', parts: [{text: '(The call has connected: answer it.)'}]}], turnComplete: true}}]};
+  for (const provider of ['openai', 'elevenlabs', 'gemini']) {
+    for (const greet of [true, false]) {
+      const {audio, socket, ready} = await call(provider, {greet, idleSeconds: 0}, {fetch: mintOk().fetch});
+      await wait(() => socket());
+      await wait(() => provider === 'elevenlabs' || socket().events.length);
+      const before = socket().events.length;
+      for (const event of readyEvents[provider]) socket().receive(event);
+      await wait(() => ready() === 1);
+      const sent = socket().events.slice(before).filter(e => e.type !== 'session.update');
+      assert.deepEqual(sent, greet ? greeting[provider] : [], `${provider} greet=${greet}`);
+      audio.close('test'); socket().close(); await audio.done;
+    }
+  }
+});

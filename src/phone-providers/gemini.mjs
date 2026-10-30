@@ -43,6 +43,8 @@ export class GeminiAdapter {
       // Transcripts of both sides are what the idle hang-up and the receipt use to tell who is speaking.
       inputAudioTranscription: {}, outputAudioTranscription: {}}}];
   }
+  // Gemini answers turns only: the greeting is a turn that says the call connected, so the model speaks first.
+  greet() { return [{clientContent: {turns: [{role: 'user', parts: [{text: '(The call has connected: answer it.)'}]}], turnComplete: true}}]; }
   audioIn(payload) {
     const samples = this.upsampler.push(ulawToPcm(Buffer.from(payload, 'base64')));
     return [{realtimeInput: {audio: {data: pcmBytes(samples).toString('base64'), mimeType: 'audio/pcm;rate=16000'}}}];

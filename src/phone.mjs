@@ -193,7 +193,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
               actives.has(start.callSid) || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
           tickets.delete(start.customParameters.ticket); admitted++;
           bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(line.instructions, ticket.instructions) : contexts ? withCaller(line.instructions, ticket.context) : line.instructions, streamSid: start.streamSid,
-            ...(!ticket.outbound && contexts && {lookup: query => contexts.search(query)})}, async stats => {
+            greet: !ticket.outbound, ...(!ticket.outbound && contexts && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); }

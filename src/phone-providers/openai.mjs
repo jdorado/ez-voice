@@ -39,6 +39,8 @@ export class OpenAIAdapter {
         instructions: backendInstructions(c), tools: toolDefinitions(c), tool_choice: 'auto', reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
     }}];
   }
+  // The model speaks first: a response with no caller turn yet is the greeting.
+  greet() { return [{type: 'response.create'}]; }
   audioIn(audio) { return [{type: 'session.input_audio.append', audio}]; }
   parse(event) {
     switch (event.type) {

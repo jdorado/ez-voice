@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.7
+
+- An inbound call is answered: once the provider session is ready the model is asked to speak first, so the caller hears
+  the line's greeting instead of silence (ElevenLabs Realtime waited for the caller; an inbound caller then heard a reply
+  to their own "hello?" as if the line had placed the call). Outbound calls still wait for the callee. QA candidate only;
+  not tagged or published.
+
 ## 0.1.0-beta.11.rc.6
 
 - Prepared caller contexts (the call centre's "screen pop"). `phone context replace < contexts.json` replaces, atomically,
