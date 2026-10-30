@@ -662,3 +662,20 @@ test('a conversation that starts during startup drain does not get a second forc
     audio.close('test'); s.close(); await audio.done;
   }
 });
+
+
+test('audible startup waits for delayed provider speech detection, but noise cannot suppress the greeting forever', async () => {
+  for (const detected of [true, false]) {
+    const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+    await wait(() => socket());
+    audio.input(pcmToUlaw(tone(500, 8000, 20)).toString('base64'));
+    const s = socket(); s.receive({setupComplete: {}});
+    assert.equal(audio.flushingInput, false);
+    assert.equal(s.events.filter(e => e.clientContent).length, 0, 'sending the queue is not speech acknowledgement');
+    await new Promise(r => setTimeout(r, 50));
+    if (detected) audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Hello'});
+    await new Promise(r => setTimeout(r, 1250));
+    assert.equal(s.events.filter(e => e.clientContent).length, detected ? 0 : 1);
+    audio.close('test'); s.close(); await audio.done;
+  }
+});

@@ -78,6 +78,7 @@ export class PhoneAudio {
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready && !this.flushingInput) this.forward(payload);
     else {
+      if (audible(payload)) this.startupSound = true;
       this.queuedBytes += payload.length;
       // Twilio streams the caller's line nonstop (about 10,700 base64 characters a second): hold what arrives until the provider is
       // ready, as long as the start timeout (15 s) allows; that timeout, not this, ends a call whose provider never comes up.
@@ -100,7 +101,15 @@ export class PhoneAudio {
       else {
         this.flushingInput = false;
         // Earlier caller frames must reach the provider before this transport turn.
-        if (this.config.greet && !this.conversationStarted) for (const message of this.adapter.greet()) this.send(message);
+        const greet = () => {
+          if (!this.closing && !this.completed && this.config.greet && !this.conversationStarted)
+            for (const message of this.adapter.greet()) this.send(message);
+        };
+        // Sending audio is not an acknowledgement that server VAD processed it. Give
+        // audible startup input a bounded detection window; background noise must not
+        // leave an answered call silent forever. Quiet starts need no extra delay.
+        if (this.startupSound) this.greetingTimer = setTimeout(greet, 1200);
+        else greet();
       }
     };
     pump();
@@ -257,7 +266,7 @@ export class PhoneAudio {
     this.stopRing('close');
     this.cancelTools();
     this.closing = true; this.stats.reason = reason;
-    clearTimeout(this.inputFlush);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     if (this.provider?.readyState === WebSocket.OPEN) {
@@ -272,7 +281,7 @@ export class PhoneAudio {
     if (this.completed) return this.done;
     this.cancelTools();
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
-    clearTimeout(this.inputFlush);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
