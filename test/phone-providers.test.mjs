@@ -591,3 +591,21 @@ test('GPT-Live transcript fragments do not become new turns when model speech in
   assert.equal(fragment(1400, 1600).start, false);
   assert.equal(fragment(5000, 5200).start, true);
 });
+
+
+test('a bounded pending read is active work, then the ordinary idle timer resumes', async () => {
+  let resolve;
+  const information = {tools: [{name: 'read_record'}], run: () => new Promise(r => {resolve = r;})};
+  const c = await call('openai', {idleSeconds: 0.08, information});
+  await wait(() => c.socket());
+  c.audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Read'});
+  c.audio.tool({id: 'pending-idle', name: 'read_record', args: {}});
+  await wait(() => resolve);
+  await new Promise(r => setTimeout(r, 140));
+  assert.equal(c.audio.closing, undefined);
+  resolve({status: 'available'});
+  await wait(() => c.audio.pendingTools.size === 0);
+  assert.equal(c.audio.stats.informationReads[0].status, 'available');
+  await wait(() => c.audio.closing);
+  c.socket().receive({type: 'session.closed'}); await c.audio.done;
+});

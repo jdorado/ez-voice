@@ -37,7 +37,7 @@ export class PhoneAudio {
       if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up once Twilio has played it
         if (this.drainingAt) { if (now - this.drainingAt > (config.endCallDrainMs ?? 15000)) this.close('end_call'); }
         else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
-      } else if (this.idleMs > 0 && this.stats.inputTranscriptEvents && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
+      } else if (!this.pendingTools.size && this.idleMs > 0 && this.stats.inputTranscriptEvents && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
     // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
     try {
@@ -164,7 +164,7 @@ export class PhoneAudio {
       return;
     }
     // Each asynchronous request belongs to this bridge and this caller turn, never a shared result slot.
-    const turn = this.turn, abort = new AbortController();
+    const turn = this.turn, began = Date.now(), abort = new AbortController();
     this.callerSpeaking = false;
     abort.tool = item;
     this.pendingTools.set(item.id, abort);
@@ -174,6 +174,9 @@ export class PhoneAudio {
       .then(output => {
         if (this.closing || this.completed || turn !== this.turn || !this.pendingTools.has(item.id)) return;
         if (abort.signal.aborted) output = {status: 'unavailable', error: 'information_timeout'};
+        this.activeAt = Date.now();
+        (this.stats.informationReads ??= []).push({name: item.name, turn, milliseconds: Date.now() - began,
+          status: typeof output?.status === 'string' ? output.status.slice(0, 40) : 'returned'});
         for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
       }).finally(() => { clearTimeout(timer); this.pendingTools.delete(item.id); });
   }

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.11.rc.13
+## 0.1.0-beta.11.rc.14
 
 - Group GPT-Live caller fragments by audio timestamps; interleaved speech does not cancel the same lookup. Superseded reads resolve as cancelled so the backend cannot wait forever.
 
