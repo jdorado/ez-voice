@@ -645,3 +645,20 @@ test('delayed Gemini startup drains preserved audio without overflowing its expa
   assert.equal(s.events.slice(0, greeting).filter(e => e.realtimeInput?.audio).length, 601, 'greeting cannot overtake buffered or newly arrived caller frames');
   audio.close('test'); s.close(); await audio.done;
 });
+
+
+test('a conversation that starts during startup drain does not get a second forced greeting', async () => {
+  for (const who of ['caller', 'model']) {
+    const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+    await wait(() => socket());
+    const s = socket(), frame = Buffer.alloc(160, 0xff).toString('base64');
+    for (let i = 0; i < 80; i++) audio.input(frame);
+    s.receive({setupComplete: {}});
+    assert(audio.flushingInput);
+    audio.handle({type: 'speech', who, start: who === 'caller', delta: 'Hello'});
+    await wait(() => !audio.flushingInput);
+    assert.equal(s.events.filter(e => e.realtimeInput?.audio).length, 80);
+    assert.equal(s.events.filter(e => e.clientContent).length, 0);
+    audio.close('test'); s.close(); await audio.done;
+  }
+});

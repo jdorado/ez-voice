@@ -100,7 +100,7 @@ export class PhoneAudio {
       else {
         this.flushingInput = false;
         // Earlier caller frames must reach the provider before this transport turn.
-        if (this.config.greet) for (const message of this.adapter.greet()) this.send(message);
+        if (this.config.greet && !this.conversationStarted) for (const message of this.adapter.greet()) this.send(message);
       }
     };
     pump();
@@ -124,6 +124,7 @@ export class PhoneAudio {
         break;
       case 'audio':
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
+        if (audible(item.audio)) this.conversationStarted = true;
         const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
         this.stats.firstAudioMs ??= Date.now() - this.startedAt;
         if (this.ringing) {
@@ -140,6 +141,7 @@ export class PhoneAudio {
         }
         break;
       case 'speech':
+        this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
           if (item.start) { this.cancelTools(true); this.turn++; }
