@@ -113,5 +113,5 @@ test('caller contexts refuse what they cannot keep, and a malformed file never e
 test('an inbound context is cut to what a session takes rather than failing the answered call', () => {
   const text = withCaller('x'.repeat(12000), 'y'.repeat(6000));
   assert(text.length <= MAX_SESSION_INSTRUCTIONS, text.length);
-  assert(text.endsWith(' …')); assert.match(withCaller('line', 'short case'), /short case$/);
+  assert(text.includes(' …')); assert(text.endsWith('do not continue an earlier answer.')); assert.match(withCaller('line', 'short case'), /short case\nEND OF HISTORICAL RECORDS/);
 });

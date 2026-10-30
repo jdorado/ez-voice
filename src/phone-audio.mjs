@@ -20,6 +20,7 @@ export class PhoneAudio {
     this.twilio = twilio; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
     this.ringAfterReadyMs = ringAfterReadyMs;
     this.adapter = adapter ?? createAdapter(config, fetchImpl && {fetch: fetchImpl});
+    this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
     this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
@@ -125,11 +126,16 @@ export class PhoneAudio {
         break;
       case 'speech':
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
-        if (item.who === 'caller') { this.stats.inputTranscriptEvents++; this.stopRing('caller'); }
+        if (item.who === 'caller') {
+          if (!this.callerSpeaking) { this.cancelTools(); this.turn++; }
+          this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
+        } else this.callerSpeaking = false;
         this.activeAt = Date.now();
         this.transcript.add(item.who, item);
         break;
+      case 'cancelled': this.cancelTools(); break;
       case 'interrupted':
+        this.cancelTools(); this.turn++;
         // The caller talked over the model: what Twilio has queued would play after they stopped.
         this.speakingUntil = 0;
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
@@ -144,12 +150,36 @@ export class PhoneAudio {
   }
   // A finished tool call from the model: run it here and hand its output back so the model can resume.
   tool(item) {
-    if (typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(item.id) || typeof item.name !== 'string') return;
+    if (this.config.tools === false || this.closing || this.completed || typeof item.id !== 'string'
+        || !/^[A-Za-z0-9_-]{1,200}$/.test(item.id) || typeof item.name !== 'string'
+        || this.seenTools.has(item.id) || this.seenTools.size >= 64) return;
+    this.seenTools.add(item.id);
     const tool = Object.hasOwn(PHONE_TOOLS, item.name) && (!PHONE_TOOLS[item.name].lookup || this.config.lookup) ? PHONE_TOOLS[item.name] : null;
-    let output;
-    try { output = tool ? tool.run(this, parseArgs(item.args)) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
-    (this.stats.tools ??= []).length < 20 && this.stats.tools.push(tool ? item.name : 'unknown');
-    for (const message of this.adapter.toolResult(item.id, item.name, output, {final: Boolean(tool?.final)})) this.send(message);
+    const external = !tool && this.config.information?.tools.some(t => t.name === item.name);
+    (this.stats.tools ??= []).length < 64 && this.stats.tools.push(tool || external ? item.name : 'unknown');
+    if (!external) {
+      let output;
+      try { output = tool ? tool.run(this, parseArgs(item.args)) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
+      for (const message of this.adapter.toolResult(item.id, item.name, output, {final: Boolean(tool?.final)})) this.send(message);
+      return;
+    }
+    // Each asynchronous request belongs to this bridge and this caller turn, never a shared result slot.
+    const turn = this.turn, abort = new AbortController();
+    this.callerSpeaking = false;
+    this.pendingTools.set(item.id, abort);
+    const timer = setTimeout(() => abort.abort(), 15000);
+    Promise.resolve().then(() => this.config.information.run(this.config.call, turn, item.name, parseArgs(item.args), abort.signal))
+      .catch(() => ({status: 'unavailable', error: 'information_unavailable'}))
+      .then(output => {
+        if (this.closing || this.completed || turn !== this.turn || !this.pendingTools.has(item.id)) return;
+        if (abort.signal.aborted) output = {status: 'unavailable', error: 'information_timeout'};
+        for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
+      }).finally(() => { clearTimeout(timer); this.pendingTools.delete(item.id); });
+  }
+  cancelTools() {
+    for (const abort of this.pendingTools.values()) abort.abort();
+    this.stats.cancelledTools = (this.stats.cancelledTools ?? 0) + this.pendingTools.size;
+    this.pendingTools.clear();
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
   // find_case: what the prepared contexts say to a stranger who names a property, a few tries a call (an address cannot be
@@ -190,6 +220,7 @@ export class PhoneAudio {
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.stopRing('close');
+    this.cancelTools();
     this.closing = true; this.stats.reason = reason;
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
@@ -203,6 +234,7 @@ export class PhoneAudio {
   }
   complete() {
     if (this.completed) return this.done;
+    this.cancelTools();
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;

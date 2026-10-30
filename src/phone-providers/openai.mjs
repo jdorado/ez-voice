@@ -3,7 +3,7 @@ import {words} from './transcript.mjs';
 
 // Live must be told when to delegate; registering tools on its Responses backend
 // alone does not expose them to the voice model. This is provider capability wiring.
-const delegationPolicy = lookup => `Delegation policy:
+const delegationPolicy = (lookup, information) => information ? `Delegation policy:\nBackend tools: ${information.tools.map(t => t.name + ": " + t.description).join("\n")}\nend_call: hang up after goodbye. Generate <|SpawnThinking|> for facts missing from the screen pop, current property details, prior exchanges, relationships or company guidance. Ask the backend to use the named read tools; use read_record with ref current for the current lead. Generate <|SpawnThinking|> to end_call when the conversation ends. Answer ordinary conversation and facts already supplied directly. Never substitute a guess for a read, and say plainly when a read is unavailable.` : `Delegation policy:
 Backend tools:
 - end_call: hang up this phone call after your goodbye.${lookup ? `
 - find_case: look up whether we have a conversation on record about a property address the caller named.` : ''}
@@ -36,7 +36,7 @@ export class OpenAIAdapter {
   start() {
     const c = this.config;
     return [{type: 'session.start', session: {
-      model: c.model, instructions: c.tools === false ? c.instructions : `${c.instructions}\n\n${delegationPolicy(c.lookup)}`,
+      model: c.model, instructions: c.tools === false ? c.instructions : `${c.instructions}\n\n${delegationPolicy(c.lookup, c.information)}`,
       audio: {format: {type: 'audio/pcmu', rate: 8000}, output: {voice: c.voice}},
       delegation: c.tools === false ? {type: 'client'} : {type: 'responses', responses: {model: c.toolModel ?? DEFAULT_TOOL_MODEL,
         instructions: backendInstructions(c), tools: toolDefinitions(c), tool_choice: 'auto', reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
@@ -57,7 +57,9 @@ export class OpenAIAdapter {
       // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
       case 'session.input_transcript.delta': return [{type: 'speech', who: 'caller', delta: words(event.delta)}];
       case 'session.output_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
+      case 'session.delegation.cancelled': return [{type: 'cancelled'}];
       case 'response.event': {
+        if (event.event?.type === 'response.done' && ['cancelled','failed'].includes(event.event.response?.status)) return [{type: 'cancelled'}];
         const item = event.event?.type === 'response.output_item.done' ? event.event.item : null;
         return item?.type === 'function_call' ? [{type: 'tool', id: item.call_id, name: item.name, args: item.arguments}] : [];
       }
