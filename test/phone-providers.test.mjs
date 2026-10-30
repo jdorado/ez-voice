@@ -442,7 +442,7 @@ test('a caller whose words arrive after the model began to answer is placed wher
   audio.close('test'); socket().close();
   const {transcript} = await audio.done;
   assert.deepEqual(transcript.map(({who, text}) => [who, text]), [
-    ['model', 'Hi, this is Sharon. How can I help?'], ['caller', 'Do you remember me?'], ['model', 'Yes. We texted on the 28th.']]);
+    ['model', 'Hi, this is Sharon.'], ['caller', 'Do you remember me?'], ['model', 'How can I help? Yes. We texted on the 28th.']]);
 });
 
 test('an answered call rings on while the session starts, through streamed silence, and stops at the first words', async () => {
@@ -471,4 +471,47 @@ test('an answered call rings on while the session starts, through streamed silen
     assert.deepEqual(quiet.twilio.sent, [], JSON.stringify(settings));
     quiet.audio.close('test'); quiet.socket()?.close(); await quiet.audio.done;
   }
+});
+
+test('the ring is bounded: caller audio waits it out, it stops when nothing sounds after ready, on close, and records why', async () => {
+  const twilio = () => Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], send(raw) {this.sent.push(JSON.parse(raw));}, close() {this.readyState = WebSocket.CLOSED;}});
+  const bridge = (line, settings = {}) => {
+    const sockets = [];
+    const audio = new PhoneAudio(line, {...base, apiKey: keys.openai, provider: 'openai', streamSid, greet: true, idleSeconds: 0, ...settings}, async () => {},
+      {socketFactory: (url, options) => {const s = new FakeSocket(url, options); sockets.push(s); return s;}, ringAfterReadyMs: 60});
+    return {audio, socket: () => sockets[0]};
+  };
+  const quiet = twilio(), {audio, socket} = bridge(quiet);
+  await wait(() => socket());
+  audio.input('//8='); // the caller's line while it rings: not a turn for the model
+  socket().receive({type: 'session.started', session: {id: 's1'}});
+  await new Promise(r => setTimeout(r, 30));
+  assert(!socket().events.some(e => e.type === 'session.input_audio.append'), 'nothing the line carried while ringing reached the model');
+  await wait(() => audio.stats.ringStop);
+  assert.equal(audio.stats.ringStop, 'timeout'); assert(quiet.sent.some(m => m.event === 'clear'));
+  audio.input('//8='); // answered now: the caller is heard
+  await wait(() => socket().events.some(e => e.type === 'session.input_audio.append'));
+  audio.close('test'); socket().close(); await audio.done;
+  const closing = twilio(), early = bridge(closing);
+  await wait(() => early.socket());
+  early.audio.close('caller_hangup'); early.socket().close();
+  const stats = await early.audio.done;
+  assert.equal(stats.ringStop, 'close'); assert.equal(typeof stats.ringMs, 'number');
+});
+
+test('GPT-Live without Responses delegation asks for no greeting (not verified there); with it, one', () => {
+  const make = tools => createAdapter({...base, apiKey: keys.openai, provider: 'openai', tools});
+  assert.deepEqual(make(false).greet(), []);
+  assert.deepEqual(make(true).greet(), [{type: 'response.create'}]);
+  assert.match(make(false).parse({type: 'session.delegation.created', delegation: {id: 'd1', target: 'client'}})[0].message.content, /answer from your instructions/);
+});
+
+test('once the transcript is full, nothing later is kept, not even a short turn', async () => {
+  const {Transcript, MAX_TRANSCRIPT} = await import('../src/phone-providers/transcript.mjs');
+  const t = new Transcript(Date.now());
+  t.add('model', {delta: 'x'.repeat(MAX_TRANSCRIPT - 5)});
+  t.add('caller', {text: 'y'.repeat(20)}); // over the budget: refused, and the transcript is full
+  t.add('model', {delta: 'later'}); t.add('caller', {text: 'later'});
+  const kept = t.receipt();
+  assert.equal(kept.transcriptTruncated, true); assert.equal(kept.transcript.length, 1);
 });

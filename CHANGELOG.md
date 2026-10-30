@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.11
+
+Fixes from the final-diff review of the per-call brief and multi-line work (rc.3 to rc.10):
+
+- A line runs with the shared fields and its own fields only: the first line's optional fields (tools, language,
+  answerTone, thinking, toolModel, toolEffort) no longer leak into the other lines.
+- Caller contexts and `find_case` apply only once a set was prepared: an empty or never-replaced store leaves inbound
+  calls as they were. The set is the install's, for every line; `at` must be an ISO time with its offset and is kept in UTC.
+- The ringback is bounded: it stops on the model's first audible words, 5 seconds after the session is ready, or on close,
+  and the receipt says why (`ringStop`). Caller audio is not passed to the model while it rings (a ring echoed back was
+  answered as words), and the ring is paced by elapsed time a little ahead of Twilio.
+- GPT-Live without Responses delegation (`tools: false`) is not asked for a greeting (not verified there), and its client
+  commentary no longer says no private information is connected.
+- `find_case` keeps a hyphenated house number whole (88-10) and requires every word of the address's street name, so
+  another street at the same house number never matches and Queens Boulevard, Court Street or New York Avenue do; a
+  unit, a city or a ZIP in what the caller said only adds words.
+- A session never starts with more than 15,000 characters of line instructions plus a brief or caller context: an
+  outbound brief that would exceed it is refused before dialing, an inbound context is cut.
+- Shutdown and restart try every pending call and report the failures together. Caller contexts on stdin are bounded in
+  bytes like the control channel, and a malformed file is refused without echoing its text. The receipt's transcript
+  keeps nothing once it is full, and a caller starting to speak ends the model's turn in it.
+- Docs, skill and help: several lines, both tools, the ringback, what the volume keeps (transcripts, briefs, contexts) and
+  that a caller context is selected by a spoofable caller ID. QA candidate only; not tagged or published.
+
 ## 0.1.0-beta.11.rc.10
 
 - An inbound call keeps ringing while the speech session starts: the North American ringback plays from the moment the

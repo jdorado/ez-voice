@@ -10,13 +10,16 @@ import {GeminiAdapter} from './gemini.mjs';
 // its constructor keeps the validated `config` (model and voice resolved) as `this.config`; and:
 //   connection()                 -> {url, headers}, or a promise of it (ElevenLabs mints a client secret first)
 //   start()                      -> messages sent as soon as the socket opens
+//   greet()                      -> messages that ask the model to speak first on an answered call ([] when unsupported)
 //   audioIn(base64 mu-law 8 kHz) -> messages carrying one chunk of the caller's audio
 //   parse(providerEvent)         -> normalized items:
 //     {type: 'ready', id}        the session accepts audio
 //     {type: 'audio', audio}     base64 mu-law 8 kHz for the caller (whole 20 ms frames are best)
-//     {type: 'speech', who}      'caller' or 'model' is speaking (idle hang-up and the receipt use it)
+//     {type: 'speech', who, delta?, text?, start?}   'caller' or 'model' is speaking (idle hang-up uses it); `delta`
+//                                continues the speaker's words, `text` is a whole utterance, `start` marks the caller
+//                                beginning to speak (the receipt's transcript)
 //     {type: 'interrupted'}      the caller barged in: drop audio queued at Twilio
-//     {type: 'tool', id, name}   the model called a registered tool
+//     {type: 'tool', id, name, args}   the model called a registered tool
 //     {type: 'send', message}    a message to send back now
 //     {type: 'closed', usage}    the provider confirmed the end of the session
 //     {type: 'error', code} / {type: 'fatal', reason}   a provider error / end the call

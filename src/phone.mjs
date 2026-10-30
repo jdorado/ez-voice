@@ -8,14 +8,21 @@ import {PhoneAudio} from './phone-audio.mjs';
 import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/index.mjs';
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
-import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL, MAX_CALL_INSTRUCTIONS, withBrief} from './phone-calls.mjs';
+import {MAX_FRAME} from './protocol.mjs';
+import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL, MAX_CALL_INSTRUCTIONS, MAX_SESSION_INSTRUCTIONS, withBrief} from './phone-calls.mjs';
+const MAX_CONTEXTS_BYTES = MAX_FRAME - 4096; // the control channel's frame, less its envelope
 import {PhoneContexts} from './phone-contexts.mjs';
 // Which way a call goes, for the model: the line's instructions are the same for both. On a line with prepared caller contexts, an
 // inbound call says it is incoming, and whether the number matched what the operator prepared for it (that text is background
 // for the model, never read out; where it differs from the instructions above, it wins).
-export const withCaller = (instructions, context) => `${instructions}\n\nThis is an incoming call: someone rang this number, and there is no brief for it.` + (context
-  ? ` The caller's number matches a conversation we had; our records, below, are background for you, never to be read out:\n${context}`
-  : ' The caller\'s number matches nothing we have prepared: you know nothing about the caller beyond what they say.');
+// The prepared text is cut to the session budget (MAX_SESSION_INSTRUCTIONS) rather than failing the answered call.
+export const withCaller = (instructions, context) => {
+  const head = `${instructions}\n\nThis is an incoming call: someone rang this number, and there is no brief for it.`;
+  if (!context) return head + ' The caller\'s number matches nothing we have prepared: you know nothing about the caller beyond what they say.';
+  const intro = ` The caller's number matches a conversation we had; our records, below, are background for you, never to be read out:\n`;
+  const room = Math.max(0, MAX_SESSION_INSTRUCTIONS - head.length - intro.length);
+  return head + intro + (context.length > room ? `${context.slice(0, Math.max(0, room - 2))} …` : context);
+};
 const DEFAULT_INSTRUCTIONS = 'You are a friendly AI assistant on a phone call. Say hello, identify yourself as an AI, and have a short conversation. You have no private context, tools or ability to take actions.';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 async function save(path, value) {
@@ -76,7 +83,7 @@ export function validatePhoneConfig(config) {
 const storedConfig = config => Object.fromEntries(Object.entries(config).filter(([k]) => SHARED_KEYS.includes(k)));
 // The configuration a call on this line runs with, or undefined for a number the install does not serve.
 const linesOf = config => config.lines ?? [config];
-export const lineConfig = (config, number) => { const line = linesOf(config).find(l => l.number === number); return line && {...config, ...line}; };
+export const lineConfig = (config, number) => { const line = linesOf(config).find(l => l.number === number); return line && {...storedConfig(config), ...line}; };
 export function twilioSignature(token, url, params = new URLSearchParams()) {
   let data = url;
   for (const key of [...new Set(params.keys())].sort()) for (const value of [...new Set(params.getAll(key))].sort()) data += key + value;
@@ -193,13 +200,15 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           if (!ticket || !line || ticket.expires < Date.now() || ticket.callSid !== start.callSid || start.accountSid !== config.accountSid ||
               actives.has(start.callSid) || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
           tickets.delete(start.customParameters.ticket); admitted++;
-          bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(line.instructions, ticket.instructions) : contexts ? withCaller(line.instructions, ticket.context) : line.instructions, streamSid: start.streamSid,
-            greet: !ticket.outbound, ...(!ticket.outbound && contexts && {lookup: query => contexts.search(query)})}, async stats => {
+          // Caller contexts apply once a set was prepared (an empty or never-replaced store changes nothing).
+          const prepared = !ticket.outbound && contexts !== undefined && contexts.status().count > 0;
+          bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(line.instructions, ticket.instructions) : prepared ? withCaller(line.instructions, ticket.context) : line.instructions, streamSid: start.streamSid,
+            greet: !ticket.outbound, ...(prepared && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); }
           }, {socketFactory}); actives.set(start.callSid, {bridge, outbound: ticket.outbound});
-          if (!ticket.outbound) bridge.stats.callerContext = Boolean(ticket.context);
+          if (prepared) bridge.stats.callerContext = Boolean(ticket.context);
           recording = startRecording(provider, start.callSid);
         } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
         else if (message.event === 'mark') bridge?.mark(message.mark?.name);
@@ -234,8 +243,9 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (command === 'context') {
     if (rest.join(' ') === 'status') return phoneControl(directory,'contexts-status',{});
     if (rest.join(' ') !== 'replace') throw Error('Use phone context replace < contexts.json, or phone context status');
-    let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > 900000) throw Error('Caller contexts too large'); }
-    return phoneControl(directory,'contexts-replace',{entries: JSON.parse(raw)});
+    let raw = ''; for await (const chunk of stdin) { raw += chunk; if (Buffer.byteLength(raw) > MAX_CONTEXTS_BYTES) throw Error('Caller contexts too large'); }
+    let entries; try { entries = JSON.parse(raw); } catch { throw Error('Caller contexts are not valid JSON'); } // never echo private text
+    return phoneControl(directory,'contexts-replace',{entries});
   }
   // The receipt of one call, by its Call SID: with several calls at once the last-call receipt is whichever ended last.
   if (command === 'receipt' && rest[0] === '--call-sid') {
@@ -249,7 +259,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'phone context replace < contexts.json', 'phone context status', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
       ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)']},
-    limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent tools, history or Retell/Vapi (its one tool is end_call; with openai it runs on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio; the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
+    limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime or gemini Live); no native-agent tools, history or Retell/Vapi (its tools are end_call and, with prepared caller contexts, find_case on inbound calls; with openai they run on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio (each receipt keeps the transcript of its call); an inbound call rings on until the first words of the model (answerTone); the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     contexts: 'phone context replace reads on stdin a JSON array of at most 500 caller contexts {number (E.164), text (1..6000 characters), claim (1..600), find (the property address, searchable), at?} and replaces the whole prepared set atomically; an inbound call from a number in it is answered with its text added to the line\'s instructions (before the greeting, no network call), and a caller from another number can name a property to the find_case tool (at most 3 tries a call), which answers with the claims whose address matches. phone context status reads the count and latest time.',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin, added to the configured instructions for that call only (the brief wins where they differ). Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};

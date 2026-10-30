@@ -36,7 +36,7 @@ async function fixture(t) {
 }
 
 test('an address is compared by its words: abbreviations, ordinals and filler do not matter', () => {
-  assert.deepEqual(tokens('the house at 1450 E. 102nd St, Brooklyn'), ['1450', 'east', '102', 'street']);
+  assert.deepEqual(tokens('the house at 1450 E. 102nd St, Brooklyn'), ['1450', 'east', '102', 'street', 'brooklyn']); // a place is not filler
   assert.deepEqual(tokens('1450 East 102nd Street'), ['1450', 'east', '102', 'street']);
 });
 

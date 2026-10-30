@@ -246,7 +246,7 @@ test('an admitted inbound call starts exactly one dual-channel Twilio recording 
   let provider, receipt, release;
   const gate = new Promise(resolve => {release = resolve;});
   const {requests, provider: recorder} = twilio(async () => {await gate; return new Response(JSON.stringify({sid: recordingSid}), {status: 201});});
-  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipt=value;}});
+  const server = await servePhone({...config, answerTone: 'none'}, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipt=value;}}); // the relay as sent: no ringback
   let ws, replay;
   try {
     await assert.rejects(()=>recorder.startRecording('CA/../x'), /Invalid Call SID/); assert.equal(requests.length,0);
@@ -280,7 +280,7 @@ test('an admitted inbound call starts exactly one dual-channel Twilio recording 
 test('a rejected, failed or malformed Twilio recording start never degrades the call and is receipted by code only', async () => {
   let provider, respond; const receipts = [];
   const {requests, provider: recorder} = twilio(()=>respond());
-  const server = await servePhone(config, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipts.push(value);}});
+  const server = await servePhone({...config, answerTone: 'none'}, {port:0, host:'127.0.0.1', provider:recorder, socketFactory:()=>provider=new ProviderSocket(), record:async value=>{receipts.push(value);}}); // the relay as sent: no ringback
   const cases = [
     [async()=>new Response('secret-twilio-body',{status:403}), {state:'failed',code:'HTTP_403'}],
     [async()=>new Response('secret-twilio-body',{status:500}), {state:'failed',code:'HTTP_500'}],

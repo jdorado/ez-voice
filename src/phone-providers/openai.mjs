@@ -42,8 +42,10 @@ export class OpenAIAdapter {
         instructions: backendInstructions(c), tools: toolDefinitions(c), tool_choice: 'auto', reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
     }}];
   }
-  // The model speaks first: a response with no caller turn yet is the greeting.
-  greet() { return [{type: 'response.create'}]; }
+  // The model speaks first: a response with no caller turn yet is the greeting (verified live with Responses delegation).
+  // A client-delegation session (tools false) is not verified to accept it: it gets no greeting request, and the ring
+  // stops RING_AFTER_READY_MS after the session is ready.
+  greet() { return this.config.tools === false ? [] : [{type: 'response.create'}]; }
   audioIn(audio) { return [{type: 'session.input_audio.append', audio}]; }
   parse(event) {
     switch (event.type) {
@@ -63,7 +65,7 @@ export class OpenAIAdapter {
         // Public phone callers have no owner identity, workspace or tool grants.
         const id = event.delegation?.id;
         return event.delegation?.target !== 'responses' && typeof id === 'string' ? [{type: 'send', message: {type: 'session.commentary.append', delegation_id: id,
-          content: 'This is an audio-only phone call. No backend, tools, private information or actions are connected.'}}] : [];
+          content: 'This is an audio-only phone call. No backend tool or action is connected; answer from your instructions.'}}] : [];
       }
       case 'error': return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];
       default: return [];

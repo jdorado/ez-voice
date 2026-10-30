@@ -13,6 +13,9 @@ const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_
 // A per-call brief is added to the configured instructions (the line's identity and conduct) for that
 // outbound call only; where the two differ, the brief wins.
 export const MAX_CALL_INSTRUCTIONS = 12000;
+// What a session starts with: a line's instructions with a brief or a caller context. Providers were verified to accept
+// 16000 characters at session start (GPT-Live adds its delegation policy on top), so a call never starts with more.
+export const MAX_SESSION_INSTRUCTIONS = 15000;
 export const withBrief = (instructions, brief) => brief ? `${instructions}\n\nBrief for this call (where it differs from the instructions above, it wins):\n${brief}` : instructions;
 const brief = value => value === undefined || (typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_CALL_INSTRUCTIONS);
 const rank = value => terminal.has(value) ? 4 : value === 'in-progress' ? 3 : value === 'ringing' ? 2 : value === 'queued' || value === 'initiated' ? 1 : 0;
@@ -74,12 +77,21 @@ export class PhoneCalls {
     const row=this.row(id);this.receipt(row);
     return this.recorded(row.call_sid ? this.observe(row,await this.provider.getCall(row.call_sid)) : this.receipt(row));
   }
-  async recover() { for (const row of this.pendingAll()) if (row.call_sid) await this.status(row.id); }
+  // Every pending call is tried, and the failures are reported together: one unreadable call never blocks the others.
+  async each(rows, act) {
+    const failed = [];
+    for (const row of rows) { try { await act(row); } catch (error) { failed.push(`${row.id}: ${error.message}`); } }
+    if (failed.length) throw Error(`Phone calls could not be settled (${failed.length}): ${failed.join('; ')}`);
+  }
+  async recover() { await this.each(this.pendingAll().filter(row => row.call_sid), row => this.status(row.id)); }
   async call(options, isBusy) {
     const from = options?.from ?? this.config.number;
     if (!options || Object.keys(options).some(key=>!['to','from','requestId','instructions'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || this.numbers().includes(options.to)) throw Error('Supply a destination other than the configured numbers and a stable request ID');
     if (!this.numbers().includes(from)) throw Error('--from must be one of the configured lines');
     if (!brief(options.instructions)) throw Error(`Call instructions must contain 1..${MAX_CALL_INSTRUCTIONS} characters`);
+    const line = (this.config.lines ?? [this.config]).find(l => l.number === from);
+    if (withBrief(line?.instructions ?? '', options.instructions).length > MAX_SESSION_INSTRUCTIONS)
+      throw Error(`The line's instructions and this brief together exceed ${MAX_SESSION_INSTRUCTIONS} characters; shorten the brief`);
     this.db.exec('BEGIN IMMEDIATE');
     let existing;
     try {
@@ -115,9 +127,7 @@ export class PhoneCalls {
     if (!current.callSid) throw Error('Call creation is uncertain; inspect Twilio before another mutation');
     return this.observe(this.row(id),await this.provider.endCall(current.callSid,['queued','initiated','ringing'].includes(current.status)?'canceled':'completed'));
   }
-  async stop() {
-    for (const row of this.pendingAll()) await this.hangup(row.id);
-  }
+  async stop() { await this.each(this.pendingAll(), row => this.hangup(row.id)); }
   close() { this.db.close(); }
 }
 
@@ -151,7 +161,7 @@ export async function phoneControl(directory, action, options) {
     const socket=net.connect(join(directory,'phone.sock'));let done=false;
     const fail=()=>{if(!done){done=true;reject(Error('Phone control unavailable or response unconfirmed; inspect the same request ID before retrying'));}socket.destroy();};
     socket.setTimeout(30000,fail);socket.on('error',fail);socket.on('close',()=>{if(!done)fail();});
-    socket.on('connect',()=>send(socket,{action,...options}));
+    socket.on('connect',()=>{try{send(socket,{action,...options});}catch(error){done=true;socket.destroy();reject(error);}});
     frames(socket,frame=>{if(done)return;done=true;socket.end();frame.error?reject(Error(frame.error)):resolve(frame.result);},fail);
   });
 }

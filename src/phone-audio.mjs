@@ -8,12 +8,17 @@ import {createAdapter} from './phone-providers/index.mjs';
 import {Transcript} from './phone-providers/transcript.mjs';
 import {RING_CYCLE, audible} from './phone-providers/ringback.mjs';
 
+// The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
+const RING_AFTER_READY_MS = 5000;
+const RING_LEAD_FRAMES = 15; // 300 ms of ring queued ahead at Twilio, so a late timer never leaves a gap
+
 // Twilio carries raw mono G.711 mu-law at 8 kHz. This is the bridge between that stream and one speech provider: the
 // timers, the tool registry, the receipt and the hang-up rules are here, and each provider's wire protocol lives in an
 // adapter (src/phone-providers). The model owns the spoken conversation.
 export class PhoneAudio {
-  constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}, adapter, fetch: fetchImpl} = {}) {
+  constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}, adapter, fetch: fetchImpl, ringAfterReadyMs = RING_AFTER_READY_MS} = {}) {
     this.twilio = twilio; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
+    this.ringAfterReadyMs = ringAfterReadyMs;
     this.adapter = adapter ?? createAdapter(config, fetchImpl && {fetch: fetchImpl});
     this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
@@ -68,6 +73,9 @@ export class PhoneAudio {
     if (this.closing) return;
     if (typeof payload !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload) || payload.length > 16000) return this.close('invalid_audio');
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
+    // While the line still rings nobody has answered: what the caller's line carries (the ring echoed back, a cough) is not
+    // a turn, and the model must not answer it before its greeting.
+    if (this.ringing) return;
     if (this.ready) this.forward(payload);
     else {
       this.queuedBytes += payload.length;
@@ -95,6 +103,7 @@ export class PhoneAudio {
         this.queued = []; this.queuedBytes = 0;
         // An answered call is greeted: the caller rang and waits for the line to speak. An outbound call waits for the callee.
         if (this.config.greet) for (const message of this.adapter.greet()) this.send(message);
+        if (this.ringing) this.ringCap = setTimeout(() => this.stopRing('timeout'), this.ringAfterReadyMs);
         this.onReady();
         break;
       case 'audio':
@@ -103,7 +112,7 @@ export class PhoneAudio {
         this.stats.firstAudioMs ??= Date.now() - this.startedAt;
         if (this.ringing) {
           if (!audible(item.audio)) break; // the silence some providers stream while the line still rings
-          this.stopRing();
+          this.stopRing('speech');
         }
         // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence).
         // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so a provider that sends speech faster than
@@ -116,7 +125,7 @@ export class PhoneAudio {
         break;
       case 'speech':
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
-        if (item.who === 'caller') this.stats.inputTranscriptEvents++;
+        if (item.who === 'caller') { this.stats.inputTranscriptEvents++; this.stopRing('caller'); }
         this.activeAt = Date.now();
         this.transcript.add(item.who, item);
         break;
@@ -159,24 +168,28 @@ export class PhoneAudio {
     else this.close('end_call');
   }
   mark(name) { if (name === 'end_call' && this.drainingAt) this.close('end_call'); }
-  // Five frames (100 ms) a tick, paced to real time: Twilio plays what it is sent in order, and a clear drops what is queued.
+  // Paced by elapsed time and kept a little ahead: Twilio plays what it is sent in order, and a clear drops what is queued.
   ring() {
-    let frame = 0;
-    this.ringing = setInterval(() => {
+    const began = Date.now(); let sent = 0;
+    const tick = () => {
       if (this.twilio.readyState !== WebSocket.OPEN || this.twilio.bufferedAmount > 64000) return;
-      for (let i = 0; i < 5; i++, frame++) {
-        this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: RING_CYCLE[frame % RING_CYCLE.length]}}));
+      for (const due = Math.floor((Date.now() - began) / 20) + RING_LEAD_FRAMES; sent < due; sent++) {
+        this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: RING_CYCLE[sent % RING_CYCLE.length]}}));
       }
-    }, 100);
+    };
+    this.ringing = setInterval(tick, 100); tick();
   }
-  stopRing() {
+  // Why the ring stopped is kept: `speech` (the model's first audible words), `caller` (they spoke first), `timeout`
+  // (nothing audible within RING_AFTER_READY_MS of the session being ready) or `close`.
+  stopRing(reason) {
     if (!this.ringing) return;
-    clearInterval(this.ringing); this.ringing = undefined;
-    this.stats.ringMs = Date.now() - this.startedAt;
+    clearInterval(this.ringing); clearTimeout(this.ringCap); this.ringing = undefined;
+    this.stats.ringMs = Date.now() - this.startedAt; this.stats.ringStop = reason;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
   }
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
+    this.stopRing('close');
     this.closing = true; this.stats.reason = reason;
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();

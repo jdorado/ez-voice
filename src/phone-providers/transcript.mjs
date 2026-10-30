@@ -16,13 +16,16 @@ export class Transcript {
   // speaker's current turn as it streams; `text` is one whole utterance.
   add(who, {delta, text, start} = {}) {
     const now = Date.now() - this.startedAt;
-    if (who === 'caller' && start) this.callerSince = now;
+    if (who === 'caller' && start) { this.callerSince = now; this.cut = true; } // what the model says next is a new turn
     const part = delta ?? text;
-    if (!part || (who !== 'caller' && who !== 'model')) return;
+    if (!part || this.truncated || (who !== 'caller' && who !== 'model')) return; // once full, nothing later is kept
     if (this.chars + part.length > MAX_TRANSCRIPT) { this.truncated = true; return; }
     this.chars += part.length;
     const last = this.turns.at(-1);
-    if (last?.who === who) { last.text = delta !== undefined || /\s$/.test(last.text) ? join(last.text, part) : `${last.text} ${part}`; return; }
+    if (last?.who === who && !(who === 'model' && this.cut)) {
+      last.text = delta !== undefined || /\s$/.test(last.text) ? join(last.text, part) : `${last.text} ${part}`; return;
+    }
+    if (who === 'model') this.cut = false;
     const atMs = who === 'caller' ? this.callerSince ?? now : now;
     if (who === 'caller') this.callerSince = undefined;
     this.turns.push({who, text: part, atMs});

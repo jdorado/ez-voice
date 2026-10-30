@@ -11,16 +11,36 @@ export const MAX_CONTEXT_TEXT = 6000;
 export const MAX_CLAIM_TEXT = 600;
 const MAX_FIND = 400;
 export const MAX_LOOKUPS = 3;
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/; // an `at` is a time with its offset
 
-const FILLER = new Set(['the', 'a', 'an', 'my', 'our', 'house', 'home', 'property', 'building', 'apartment', 'at', 'on', 'in', 'is', 'it', 'its', 'of', 'and', 'for', 'about', 'to', 'i', 'am', 'calling', 'brooklyn', 'queens', 'bronx', 'manhattan', 'new', 'york', 'nyc', 'ny']);
-// Words that every address has: they alone do not name a street.
-const GENERIC = new Set(['street', 'avenue', 'road', 'boulevard', 'drive', 'lane', 'place', 'court', 'parkway', 'east', 'west', 'north', 'south']);
-const ABBREVIATIONS = {st: 'street', ave: 'avenue', av: 'avenue', rd: 'road', blvd: 'boulevard', dr: 'drive', ln: 'lane', pl: 'place', ct: 'court', pkwy: 'parkway', e: 'east', w: 'west', n: 'north', s: 'south'};
+// Words around an address in speech that are never part of it. Place names are not filler: a street is often named for
+// one (Queens Boulevard, New York Avenue), so they stay, and a caller who adds a city only adds words.
+const FILLER = new Set(['the', 'a', 'an', 'my', 'our', 'house', 'home', 'property', 'building', 'at', 'on', 'in', 'is', 'it', 'its', 'of', 'and', 'for', 'about', 'to', 'i', 'am', 'calling']);
+// A street's type word and a leading direction are not its name; a unit or a ZIP ends the street address.
+const TYPES = new Set(['street', 'avenue', 'road', 'boulevard', 'drive', 'lane', 'place', 'court', 'parkway', 'terrace', 'way']);
+const DIRECTIONS = new Set(['east', 'west', 'north', 'south']);
+const UNIT = new Set(['apt', 'apartment', 'unit', 'suite', 'ste', 'floor', 'fl']);
+const ABBREVIATIONS = {st: 'street', ave: 'avenue', av: 'avenue', rd: 'road', blvd: 'boulevard', dr: 'drive', ln: 'lane', pl: 'place', ct: 'court', pkwy: 'parkway', ter: 'terrace', e: 'east', w: 'west', n: 'north', s: 'south'};
+const HOUSE = /^\d+(-\d+)?$/; // a house number, a hyphenated one included (88-10)
 
-// The words of an address: lower case, abbreviations spelled out, "102nd" as 102, filler dropped.
+// The words of an address: lower case, abbreviations spelled out, "102nd" as 102, a hyphenated house number kept whole,
+// filler dropped.
 export function tokens(value) {
-  return String(value).toLowerCase().replace(/(\d+)(st|nd|rd|th)\b/g, '$1').replace(/[^a-z0-9]+/g, ' ').split(' ')
+  return String(value).toLowerCase().replace(/(\d+)(st|nd|rd|th)\b/g, '$1').replace(/(\d)\s*-\s*(\d)/g, '$1-$2')
+    .replace(/[^a-z0-9-]+/g, ' ').replace(/(^|\s)-+|-+(\s|$)/g, ' ').split(' ')
     .filter(Boolean).map(word => ABBREVIATIONS[word] ?? word).filter(word => !FILLER.has(word));
+}
+
+// An address's house number and street name: the words between the house number and the street type (or the end), without
+// a leading direction; a unit or a ZIP and anything after it is not the street. "1450 East 102 Street" is 1450 and [102].
+export function street(words) {
+  const end = words.findIndex((word, i) => i > 0 && (UNIT.has(word) || /^\d{5}$/.test(word)));
+  const list = end > 0 ? words.slice(0, end) : words;
+  if (!HOUSE.test(list[0] ?? '')) return null;
+  const type = list.findIndex((word, i) => i > 1 && TYPES.has(word));
+  const name = list.slice(1, type > 0 ? type : list.length);
+  while (name.length > 1 && DIRECTIONS.has(name[0])) name.shift();
+  return name.length ? {house: list[0], name} : null;
 }
 
 // Several properties of one caller are separated by ';' in `find`.
@@ -32,9 +52,9 @@ export function validateEntries(entries) {
   return entries.map(entry => {
     if (!entry || typeof entry !== 'object' || Object.keys(entry).some(key => !['number', 'text', 'claim', 'find', 'at'].includes(key))
       || !phone(entry.number) || seen.has(entry.number) || !text(entry.text, MAX_CONTEXT_TEXT) || !text(entry.claim, MAX_CLAIM_TEXT)
-      || !text(entry.find, MAX_FIND) || (entry.at !== undefined && !Number.isFinite(Date.parse(entry.at)))) throw Error('Invalid caller context');
+      || !text(entry.find, MAX_FIND) || (entry.at !== undefined && (typeof entry.at !== 'string' || !ISO.test(entry.at) || !Number.isFinite(Date.parse(entry.at))))) throw Error('Invalid caller context');
     seen.add(entry.number);
-    return {number: entry.number, text: entry.text, claim: entry.claim, find: entry.find.split(';').map(address => tokens(address).join(' ')).filter(Boolean).join(';'), at: entry.at ?? new Date().toISOString()};
+    return {number: entry.number, text: entry.text, claim: entry.claim, find: entry.find.split(';').map(address => tokens(address).join(' ')).filter(Boolean).join(';'), at: new Date(entry.at ?? Date.now()).toISOString()};
   });
 }
 
@@ -62,18 +82,19 @@ export class PhoneContexts {
     return {count: Number(row.count), latest: row.latest ?? null};
   }
   byNumber(number) { return phone(number) ? this.db.prepare('SELECT text FROM contexts WHERE number=?').get(number)?.text : undefined; }
-  // The claims of the contexts whose property the query names: every number in the query must be in the address (the first
-  // is the house number), and a street name (or the street's own number, as in "1450 East 102nd") must match. A claim is the little a stranger who names the property may be told.
+  // The claims of the contexts whose property the query names: the first number said is the address's house number, and
+  // every word of the address's street name (a numbered street's number included, as the 102 of "1450 East 102nd") is in
+  // the query. Other words (a city, a ZIP, an apartment) only add to it. A claim is the little a stranger who names the
+  // property may be told.
   search(query) {
-    const wanted = new Set(tokens(typeof query === 'string' ? query.slice(0, 200) : ''));
-    const digits = [...wanted].filter(word => /^\d+$/.test(word)), words = [...wanted].filter(word => !/^\d+$/.test(word));
-    if (!digits.length || !words.length) return [];
+    const said = tokens(typeof query === 'string' ? query.slice(0, 200) : ''), wanted = new Set(said);
+    const house = said.find(word => HOUSE.test(word));
+    if (!house) return [];
     const found = [];
     for (const row of this.db.prepare('SELECT claim, find FROM contexts').all()) {
-      // the first number said is the house number, which must be the address's own
       const named = row.find.split(';').some(address => {
-        const list = address.split(' '), have = new Set(list);
-        return digits[0] === list[0] && digits.every(word => have.has(word)) && (digits.length > 1 || words.some(word => !GENERIC.has(word) && have.has(word)));
+        const known = street(address.split(' '));
+        return known !== null && known.house === house && known.name.every(word => wanted.has(word));
       });
       if (named) found.push(row.claim);
       if (found.length >= MAX_LOOKUPS) break;

@@ -12,6 +12,10 @@ signed outbound callbacks are bound to the recorded destination, caller ID and
 Call SID. Each admitted call also sends one Twilio recording-start request with
 the private account credentials; audio stays at Twilio and receipts keep only the
 outcome code or Recording SID. Byte counts are not proof of audible delivery.
+Each call's receipt also keeps its transcript (what the provider heard and the model said, up to 100,000 characters),
+outbound briefs and prepared caller contexts persist in the plugin volume, and all of it stays there until the operator
+removes it: treat the volume as holding call content. A caller context is selected by the caller ID Twilio reports,
+which can be spoofed, so a context is effectively disclosed to whoever presents that number.
 
 Paired owner only. Report vulnerabilities privately through GitHub Security.
 Never include credentials or transcripts in reports, logs or source.
