@@ -39,7 +39,7 @@ export class OpenAIAdapter {
       model: c.model, instructions: c.tools === false ? c.instructions : `${c.instructions}\n\n${delegationPolicy(c.lookup, c.information)}`,
       audio: {format: {type: 'audio/pcmu', rate: 8000}, output: {voice: c.voice}},
       delegation: c.tools === false ? {type: 'client'} : {type: 'responses', responses: {model: c.toolModel ?? DEFAULT_TOOL_MODEL,
-        instructions: backendInstructions(c), tools: toolDefinitions(c), tool_choice: 'auto', reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
+        instructions: backendInstructions(c), tools: toolDefinitions(c), tool_choice: 'auto', parallel_tool_calls: false, reasoning: {effort: c.toolEffort ?? DEFAULT_TOOL_EFFORT}}}, store: false,
     }}];
   }
   // The model speaks first: a response with no caller turn yet is the greeting (verified live with Responses delegation).
@@ -55,7 +55,13 @@ export class OpenAIAdapter {
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         return [{type: 'audio', audio: event.delta}];
       // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
-      case 'session.input_transcript.delta': return [{type: 'speech', who: 'caller', delta: words(event.delta)}];
+      case 'session.input_transcript.delta': {
+        // Live has no completed-turn event. Group fragments by their audio timeline, not packet arrival
+        // or an interleaved model acknowledgement. A later utterance invalidates in-flight reads.
+        const start = this.inputEnd === undefined || (Number.isFinite(event.start_ms) && event.start_ms > this.inputEnd + 1200);
+        if (Number.isFinite(event.end_ms)) this.inputEnd = Math.max(this.inputEnd ?? 0, event.end_ms);
+        return [{type: 'speech', who: 'caller', start, delta: words(event.delta)}];
+      }
       case 'session.output_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'session.delegation.cancelled': return [{type: 'cancelled'}];
       case 'response.event': {

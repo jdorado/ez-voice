@@ -535,20 +535,20 @@ test('overlapping calls keep their own result and a late old turn is discarded',
   a.audio.tool({id: 'a1', name: 'read_record', args: {ref: 'current'}});
   b.audio.tool({id: 'b1', name: 'read_record', args: {ref: 'current'}});
   await wait(() => pending.length === 2);
-  a.audio.handle({type: 'speech', who: 'caller', delta: 'Different question now'});
+  a.audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Different question now'});
   a.audio.tool({id: 'a2', name: 'read_record', args: {ref: 'new'}});
   await wait(() => pending.length === 3);
   assert(pending[0].signal.aborted);
   pending[1].resolve({value: 'b'}); pending[2].resolve({value: 'new-a'}); pending[0].resolve({value: 'STALE'});
   await wait(() => a.audio.pendingTools.size === 0 && b.audio.pendingTools.size === 0);
   const outputs = c => c.socket().events.filter(e => e.type === 'response.item.create').map(e => [e.item.call_id, JSON.parse(e.item.output)]);
-  assert.deepEqual(outputs(a), [['a2', {value: 'new-a'}]]);
+  assert.deepEqual(outputs(a), [['a1', {status: 'cancelled', error: 'caller_turn_changed'}], ['a2', {value: 'new-a'}]]);
   assert.deepEqual(outputs(b), [['b1', {value: 'b'}]]);
   a.audio.tool({id: 'a3', name: 'read_record', args: {}});
   await wait(() => pending.length === 4);
   a.audio.close(); pending[3].resolve({value: 'AFTER CLOSE'});
   await new Promise(r => setTimeout(r, 20));
-  assert.equal(outputs(a).length, 1);
+  assert.equal(outputs(a).length, 2);
   b.audio.close(); a.socket().receive({type: 'session.closed'}); b.socket().receive({type: 'session.closed'});
   await Promise.all([a.audio.done, b.audio.done]);
 });
@@ -579,4 +579,15 @@ test('several valid line instructions fit the private configuration input contra
     const result = await phoneCommand(state, ['configure'], {stdin: stdin()});
     assert.equal(result.lines.length, 2);
   } finally { await rm(state, {recursive: true, force: true}); }
+});
+
+
+test('GPT-Live transcript fragments do not become new turns when model speech interleaves', () => {
+  const adapter = createAdapter({...base, provider: 'openai', apiKey: keys.openai});
+  const fragment = (start_ms, end_ms) => adapter.parse({type: 'session.input_transcript.delta', delta: 'words', start_ms, end_ms})[0];
+  assert.equal(fragment(1000, 1200).start, true);
+  adapter.parse({type: 'session.output_transcript.delta', delta: 'Checking'});
+  assert.equal(fragment(1200, 1400).start, false);
+  assert.equal(fragment(1400, 1600).start, false);
+  assert.equal(fragment(5000, 5200).start, true);
 });

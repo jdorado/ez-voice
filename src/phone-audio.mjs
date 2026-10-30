@@ -127,7 +127,7 @@ export class PhoneAudio {
       case 'speech':
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
-          if (!this.callerSpeaking) { this.cancelTools(); this.turn++; }
+          if (item.start) { this.cancelTools(true); this.turn++; }
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else this.callerSpeaking = false;
         this.activeAt = Date.now();
@@ -135,7 +135,7 @@ export class PhoneAudio {
         break;
       case 'cancelled': this.cancelTools(); break;
       case 'interrupted':
-        this.cancelTools(); this.turn++;
+        this.cancelTools(true); this.turn++;
         // The caller talked over the model: what Twilio has queued would play after they stopped.
         this.speakingUntil = 0;
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
@@ -166,6 +166,7 @@ export class PhoneAudio {
     // Each asynchronous request belongs to this bridge and this caller turn, never a shared result slot.
     const turn = this.turn, abort = new AbortController();
     this.callerSpeaking = false;
+    abort.tool = item;
     this.pendingTools.set(item.id, abort);
     const timer = setTimeout(() => abort.abort(), 15000);
     Promise.resolve().then(() => this.config.information.run(this.config.call, turn, item.name, parseArgs(item.args), abort.signal))
@@ -176,8 +177,14 @@ export class PhoneAudio {
         for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
       }).finally(() => { clearTimeout(timer); this.pendingTools.delete(item.id); });
   }
-  cancelTools() {
-    for (const abort of this.pendingTools.values()) abort.abort();
+  cancelTools(notify = false) {
+    for (const abort of this.pendingTools.values()) {
+      abort.abort();
+      // Resolve the backend's pending function with cancellation, never its stale contents.
+      // Otherwise a Responses backend can wait forever for the discarded function output.
+      if (notify && !this.closing && !this.completed) for (const message of this.adapter.toolResult(
+        abort.tool.id, abort.tool.name, {status: 'cancelled', error: 'caller_turn_changed'})) this.send(message);
+    }
     this.stats.cancelledTools = (this.stats.cancelledTools ?? 0) + this.pendingTools.size;
     this.pendingTools.clear();
   }

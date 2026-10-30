@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.1.0-beta.11.rc.12
+## 0.1.0-beta.11.rc.13
+
+- Group GPT-Live caller fragments by audio timestamps; interleaved speech does not cancel the same lookup. Superseded reads resolve as cancelled so the backend cannot wait forever.
 
 - Phone sessions can read through an operator-bound installed plugin on both GPT-Live and ElevenLabs Max, with call/turn binding, cancellation and stale-result rejection. Historical context ends before the new-call greeting.
 
