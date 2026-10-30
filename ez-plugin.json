@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "voice",
-  "version": "0.1.0-beta.11.rc.23",
+  "version": "0.1.0-beta.11.rc.27",
   "description": "GPT-Live browser voice with native-agent delegation and direct Twilio phone calls (GPT-Live, ElevenLabs Realtime or Gemini Live)",
   "example": "voice doctor",
   "commands": {

@@ -1,8 +1,8 @@
 // Tools the live model may use on a phone call. With GPT-Live there is no direct function calling: tools live on its backend
 // (Responses delegation), which calls one and waits for the plugin's output. Each tool runs here and returns a plain
 // object. Add a tool by adding an entry; nothing else in the bridge changes.
-export const DEFAULT_TOOL_MODEL = 'gpt-6.1-sol';
-export const DEFAULT_TOOL_EFFORT = 'low';
+export const DEFAULT_TOOL_MODEL = 'gpt-6-luna';
+export const DEFAULT_TOOL_EFFORT = 'none';
 
 export const BACKEND_INSTRUCTIONS = 'You are the backend of an audio-only phone call. Your only tool is end_call: call it when the conversation is over or you are asked to hang up. For anything else answer in one short sentence: no backend tool does that, so the voice answers from its own instructions.';
 export const LOOKUP_BACKEND_INSTRUCTIONS = 'You are the backend of an audio-only phone call. Your tools are end_call (call it when the conversation is over or you are asked to hang up) and find_case (call it with the property address a caller names, to learn whether a conversation with them is on record). For anything else answer in one short sentence: no backend tool does that, so the voice answers from its own instructions.';

@@ -374,7 +374,7 @@ test('the phone session declares end_call on Responses delegation; tools false k
   try {
     const start = b => b.audio.provider.events.find(e => e.type === 'session.start').session.delegation;
     const d = start(on);
-    assert.equal(d.type, 'responses'); assert.equal(d.responses.model, 'gpt-6.1-sol'); assert.deepEqual(d.responses.reasoning, {effort: 'low'}); assert.equal(d.responses.tool_choice, 'auto');
+    assert.equal(d.type, 'responses'); assert.equal(d.responses.model, 'gpt-6-luna'); assert.deepEqual(d.responses.reasoning, {effort: 'none'}); assert.equal(d.responses.tool_choice, 'auto');
     assert.deepEqual(d.responses.tools.map(t => [t.type, t.name]), [['function', 'end_call']]);
     assert.deepEqual(d.responses.tools[0].parameters, {type: 'object', properties: {}, additionalProperties: false});
     assert.deepEqual(start(off), {type: 'client'}); assert.equal(start(model).responses.model, 'gpt-6-sol'); assert.equal(start(model).responses.reasoning.effort, 'medium');

@@ -134,7 +134,7 @@ GPT-Live has no direct function calling; tools run on its backend (Responses del
 the tools natively: the adapter declares them in the session and answers each call (a `function_call_output` at ElevenLabs, a
 `toolResponse` matched by `id` at Gemini), with no backend model. After `end_call` (a final tool) ElevenLabs is not asked to continue and Gemini gets no tool response (it narrated "the call has
 ended" when it did), so the goodbye spoken before the call is the last thing said. With GPT-Live the phone session starts with
-`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6.1-sol` at reasoning effort `toolEffort`, default `low`), instructions that say the backend
+`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6-luna` at reasoning effort `toolEffort`, default `none`), instructions that say the backend
 can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
 backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a
 `function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`; every provider declares it.
@@ -338,5 +338,10 @@ The bound plugin is trusted operator configuration; its domain read-only enforce
 for speech sessions that must not write. No native-agent delegation is granted to phone callers.
 
 Caller audio is queued until provider readiness and forwarded even while local ringback plays.
+An audible startup gets a single 250 ms acknowledgment window after its queued audio is forwarded;
+continuing line noise cannot extend that wait. Provider-recognized speech suppresses a duplicate greeting.
+The receipt separates the greeting request (`greetingMs`), first output chunk (`firstAudioMs`, which may be silence),
+and first audible chunk (`firstSpeechMs`). `delegations` counts GPT-Live backend requests, including requests that
+do not invoke a function, so a slow spoken reply is not mistaken for a tool-free path.
 ElevenLabs receives a call-connected event before its initial response request; an empty
 response request alone is not reliable proof of an audible greeting.
