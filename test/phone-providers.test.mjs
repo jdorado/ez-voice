@@ -515,3 +515,108 @@ test('once the transcript is full, nothing later is kept, not even a short turn'
   const kept = t.receipt();
   assert.equal(kept.transcriptTruncated, true); assert.equal(kept.transcript.length, 1);
 });
+
+
+test('both speaking providers receive information tools and GPT-Live delegates missing facts', async () => {
+  const information = {tools: [{type: 'function', name: 'read_record', description: 'Read current records', parameters: {type: 'object', properties: {ref: {type: 'string'}}}}]};
+  const openai = createAdapter({...base, provider: 'openai', apiKey: keys.openai, information}).start()[0].session;
+  assert(openai.instructions.includes('read_record')); assert(openai.instructions.includes('facts missing'));
+  assert(openai.delegation.responses.tools.some(t => t.name === 'read_record'));
+  const eleven = createAdapter({...base, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', apiKey: keys.elevenlabs, information}).configure().session;
+  assert(eleven.tools.some(t => t.name === 'read_record'));
+});
+
+test('overlapping calls keep their own result and a late old turn is discarded', async () => {
+  const pending = [];
+  const information = {tools: [{name: 'read_record'}], run: (call, turn, name, args, signal) => new Promise(resolve => pending.push({call, turn, args, signal, resolve}))};
+  const a = await call('openai', {information, call: {id: 'call-a'}});
+  const b = await call('openai', {information, call: {id: 'call-b'}});
+  await wait(() => a.socket() && b.socket());
+  a.audio.tool({id: 'a1', name: 'read_record', args: {ref: 'current'}});
+  b.audio.tool({id: 'b1', name: 'read_record', args: {ref: 'current'}});
+  await wait(() => pending.length === 2);
+  a.audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Different question now'});
+  a.audio.tool({id: 'a2', name: 'read_record', args: {ref: 'new'}});
+  await wait(() => pending.length === 3);
+  assert(pending[0].signal.aborted);
+  pending[1].resolve({value: 'b'}); pending[2].resolve({value: 'new-a'}); pending[0].resolve({value: 'STALE'});
+  await wait(() => a.audio.pendingTools.size === 0 && b.audio.pendingTools.size === 0);
+  const outputs = c => c.socket().events.filter(e => e.type === 'response.item.create').map(e => [e.item.call_id, JSON.parse(e.item.output)]);
+  assert.deepEqual(outputs(a), [['a1', {status: 'cancelled', error: 'caller_turn_changed'}], ['a2', {value: 'new-a'}]]);
+  assert.deepEqual(outputs(b), [['b1', {value: 'b'}]]);
+  a.audio.tool({id: 'a3', name: 'read_record', args: {}});
+  await wait(() => pending.length === 4);
+  a.audio.close(); pending[3].resolve({value: 'AFTER CLOSE'});
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(outputs(a).length, 2);
+  b.audio.close(); a.socket().receive({type: 'session.closed'}); b.socket().receive({type: 'session.closed'});
+  await Promise.all([a.audio.done, b.audio.done]);
+});
+
+test('a failed information read is explicit and cannot invoke another command', async () => {
+  let called = 0;
+  const information = {tools: [{name: 'read_record'}], run: async () => {called++; throw Error('private failure');}};
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', information}, {fetch: mintOk().fetch});
+  await wait(() => c.socket());
+  c.audio.tool({id: 'one', name: 'read_record', args: '{}'});
+  c.audio.tool({id: 'two', name: 'send_sms', args: '{}'});
+  await wait(() => c.audio.pendingTools.size === 0);
+  const outputs = c.socket().events.filter(e => e.type === 'conversation.item.create').map(e => JSON.parse(e.item.output));
+  assert(outputs.some(o => o.status === 'unavailable')); assert(outputs.some(o => o.error === 'unknown_tool'));
+  assert.equal(called, 1); assert(!JSON.stringify(outputs).includes('private failure'));
+  await c.audio.close();
+});
+
+
+test('several valid line instructions fit the private configuration input contract', async () => {
+  const state = await mkdtemp(join(tmpdir(), 'voice-profile-size-'));
+  try {
+    const config = {...base, lines: [
+      {number: '+15551230001', apiKey: keys.openai, instructions: 'a'.repeat(10000)},
+      {number: '+15551230002', apiKey: keys.openai, instructions: 'b'.repeat(10000)}]};
+    delete config.number; delete config.instructions;
+    async function* stdin() { yield JSON.stringify(config); }
+    const result = await phoneCommand(state, ['configure'], {stdin: stdin()});
+    assert.equal(result.lines.length, 2);
+  } finally { await rm(state, {recursive: true, force: true}); }
+});
+
+
+test('GPT-Live uses delegation identity, not fragment timing, to bind cancellation', () => {
+  const adapter = createAdapter({...base, provider: 'openai', apiKey: keys.openai});
+  const fragment = adapter.parse({type: 'session.input_transcript.delta', delta: 'continuation', start_ms: 9000, end_ms: 9300})[0];
+  assert.equal(fragment.start, undefined);
+  assert.deepEqual(adapter.parse({type: 'session.delegation.created', delegation: {id: 'turn-b', target: 'responses'}}), [{type: 'turn', request: 'turn-b'}]);
+  assert.deepEqual(adapter.parse({type: 'response.event', delegation_id: 'turn-a', event: {type: 'response.done', response: {status: 'cancelled'}}}), [{type: 'cancelled', request: 'turn-a'}]);
+});
+
+test('a bounded pending read is active work, then the ordinary idle timer resumes', async () => {
+  let resolve;
+  const information = {tools: [{name: 'read_record'}], run: () => new Promise(r => {resolve = r;})};
+  const c = await call('openai', {idleSeconds: 0.08, information});
+  await wait(() => c.socket());
+  c.audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Read'});
+  c.audio.tool({id: 'pending-idle', name: 'read_record', args: {}});
+  await wait(() => resolve);
+  await new Promise(r => setTimeout(r, 140));
+  assert.equal(c.audio.closing, undefined);
+  resolve({status: 'available'});
+  await wait(() => c.audio.pendingTools.size === 0);
+  assert.equal(c.audio.stats.informationReads[0].status, 'available');
+  await wait(() => c.audio.closing);
+  c.socket().receive({type: 'session.closed'}); await c.audio.done;
+});
+
+
+test('an old GPT-Live delegation cancellation cannot cancel the current read', async () => {
+  let finish;
+  const information = {tools: [{name: 'read_record'}], run: () => new Promise(r => {finish = r;})};
+  const c = await call('openai', {information}); await wait(() => c.socket());
+  c.audio.handle({type: 'turn', request: 'current'});
+  c.audio.tool({id: 'bound', name: 'read_record', args: {}, request: 'current'});
+  await wait(() => finish);
+  c.audio.handle({type: 'cancelled', request: 'old'});
+  assert.equal(c.audio.pendingTools.size, 1);
+  finish({status: 'available'}); await wait(() => c.audio.pendingTools.size === 0);
+  c.audio.close(); c.socket().receive({type: 'session.closed'}); await c.audio.done;
+});

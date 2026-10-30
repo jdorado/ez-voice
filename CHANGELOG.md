@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.15
+
+- Bind GPT-Live reads and cancellation to provider delegation IDs; transcript fragments and cancellation from an older response do not cancel the current lookup. Superseded reads resolve as cancelled so the backend cannot wait forever.
+
+- Phone sessions can read through an operator-bound installed plugin on both GPT-Live and ElevenLabs Max, with call/turn binding, cancellation and stale-result rejection. Historical context ends before the new-call greeting.
+
 ## 0.1.0-beta.11.rc.11
 
 Fixes from the final-diff review of the per-call brief and multi-line work (rc.3 to rc.10):
