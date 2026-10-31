@@ -415,3 +415,5 @@ Provider contracts: [message flow](https://developers.deepgram.com/docs/voice-ag
 [functions](https://developers.deepgram.com/docs/voice-agent-function-call-request).
 
 Deepgram currently accepts `ttsModel: "eleven_flash_v2_5"` (also the default). ElevenLabs v4 Turbo requires its Text-to-Dialogue WebSocket protocol, which this managed provider integration does not speak. It is refused at configuration time rather than producing a silent call. No automatic model substitution occurs.
+
+File-backed instructions require the Linux Docker runtime: containment is verified using the opened descriptor under `/proc/self/fd`, so a parent-directory swap cannot redirect a read outside its root. Native non-Linux file loading is refused. Packed Docker/CI runs the filesystem stories.

@@ -156,7 +156,7 @@ const startRecording = (provider, callSid) => Promise.resolve().then(() => provi
 export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, contexts, provider = new PhoneNumber(config)} = {}) {
   const prefix = config.pathPrefix || '', mediaPath = prefix + '/media';
   const tickets = new Map(), actives = new Map(); let admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
-  const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.expires<Date.now())tickets.delete(token);};
+  const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.loaded && ticket.expires<Date.now())tickets.delete(token);};
   // Calls in progress or reserved, up to maxCalls at once: an outbound request counts from creation to its end
   // (its answer ticket and audio are the same call), an inbound call from its ticket to its end.
   const load=()=>{pruneTickets();return [...tickets.values()].filter(t=>!t.outbound).length+[...actives.values()].filter(a=>!a.outbound).length+(calls?.pendingCount()??0);};
@@ -199,12 +199,12 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           if (outbound && withBrief(ticket.lineText, ticket.instructions).length > MAX_SESSION_INSTRUCTIONS)
             throw new InstructionsError('session', 'session_too_large');
         } catch (error) {
-          tickets.delete(token);
-          if (!(error instanceof InstructionsError)) throw error;
+          if (!(error instanceof InstructionsError)) {tickets.delete(token); throw error;}
           try { await record({callSid: ticket.callSid, line, direction: ticket.call.direction, reason: 'instructions_unavailable', instructionsError: {path: error.path, reason: error.reason}, at: new Date().toISOString()}); }
           catch (failure) { unavailable = true; receiptError = true; throw failure; }
+          finally { tickets.delete(token); }
           return false;
-        } return true; })();
+        } finally {ticket.loaded = true;} return true; })();
       }
       if (!await ticket.loading) {
         if (prefix && !outbound) response.statusCode=503;
@@ -257,6 +257,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
     unavailable = true;
     const stopped = new Promise(resolve => server.close(resolve));
     server.closeAllConnections();
+    await Promise.allSettled([...tickets.values()].map(ticket => ticket.loading));
     await Promise.allSettled([...actives.values()].map(a => a.bridge.close('service_stopped')));
     for (const ws of sockets.clients) ws.terminate(); sockets.close();
     await stopped;

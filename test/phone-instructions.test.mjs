@@ -1,4 +1,4 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import fs from 'node:fs/promises';
@@ -16,6 +16,9 @@ import {InstructionsError, instructionsFromFiles} from '../src/phone-instruction
 import {phoneCommand, servePhone, twilioSignature, validatePhoneConfig} from '../src/phone.mjs';
 
 const base = {apiKey: 'sk-synthetic123456789', accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com', answerTone: 'none'};
+// File identity uses /proc/self/fd in the supported Docker runtime. These stories
+// run in packed Linux Docker/CI; native macOS still runs the other provider tests.
+const test = (name, fn) => nodeTest(name, {skip: process.platform !== 'linux'}, fn);
 const to = '+15551230002', callSid = 'CA' + '3'.repeat(32);
 const sha = text => createHash('sha256').update(text).digest('hex');
 const wait = async fn => {for (let i = 0; i < 100; i++) {if (fn()) return; await new Promise(r => setTimeout(r, 10));} throw Error('Timed out');};
@@ -236,19 +239,24 @@ test('phone doctor tells whether each instruction file is readable without print
 test('an instruction parent replaced during open cannot disclose an outside file', async t => {
   const outside = await folder(t, {'phone.md': 'OUTSIDE PRIVATE CONTENT'});
   const root = await folder(t, {'persona/phone.md': 'Approved persona'});
-  const original = fs.open;
+  const original = fs.open, originalRealpath = fs.realpath;
+  let opened = false;
+  const redirect = async () => {await fs.rename(join(root, 'persona'), join(root, 'original')); await fs.symlink(outside, join(root, 'persona'));};
+  const restore = async () => {await fs.unlink(join(root, 'persona')); await fs.rename(join(root, 'original'), join(root, 'persona'));};
   fs.open = async (path, ...args) => {
-    if (path.endsWith('/persona/phone.md')) {
-      await fs.rename(join(root, 'persona'), join(root, 'original'));
-      await fs.symlink(outside, join(root, 'persona'));
-    }
-    return original(path, ...args);
+    if (!path.endsWith('/persona/phone.md')) return original(path, ...args);
+    await redirect(); const handle = await original(path, ...args); await restore(); opened = true; return handle;
+  };
+  fs.realpath = async (path, ...args) => {
+    const resolved = await originalRealpath(path, ...args);
+    if (opened && path.endsWith('/persona/phone.md')) {opened = false; await redirect();}
+    return resolved;
   };
   syncBuiltinESMExports();
   try {
     await assert.rejects(() => instructionsFromFiles({instructionsRoot: root, instructionsFiles: ['persona/phone.md']}, MAX_CALL_INSTRUCTIONS),
       error => error.reason === 'outside_root' && !error.message.includes('PRIVATE'));
-  } finally {fs.open = original; syncBuiltinESMExports();}
+  } finally {fs.open = original; fs.realpath = originalRealpath; syncBuiltinESMExports();}
 });
 
 test('an existing outbound request stays readable after its persona disappears', async t => {
@@ -285,4 +293,21 @@ test('a webhook retry preserves the issued call snapshot and admits the original
   ws.send(JSON.stringify({event: 'start', start: {accountSid: base.accountSid, callSid: id, streamSid: 'MZ' + '9'.repeat(32), customParameters: {ticket}, mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
   await wait(() => fx.sessions[0]?.events.some(e => e.type === 'session.start'));
   assert(started(fx.sessions[0]).startsWith('Approved persona'));
+});
+
+test('a refused call remains in drain and shutdown waits for its durable receipt', async t => {
+  const root = await folder(t, {}), config = validatePhoneConfig({...base, instructionsRoot: root, instructionsFiles: ['missing.md']});
+  let entered, release, persisted = false, stopped = false;
+  const recording = new Promise(resolve => {entered = resolve;}), gate = new Promise(resolve => {release = resolve;});
+  const web = await servePhone(config, {host: '127.0.0.1', port: 0, record: async () => {entered(); await gate; persisted = true;}});
+  t.after(() => web.close());
+  const params = new URLSearchParams({AccountSid: base.accountSid, CallSid: callSid, To: base.number, From: to});
+  const request = post({server: web}, '/incoming', params).then(r => r.text(), () => 'closed');
+  await recording;
+  assert.equal(web.drain().idle, false);
+  const closing = web.close().then(() => {stopped = true;});
+  await new Promise(r => setImmediate(r));
+  assert.equal(stopped, false); release();
+  await closing; await request;
+  assert(persisted); assert.equal(web.capacity().idle, true);
 });

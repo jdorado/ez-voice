@@ -844,3 +844,20 @@ test('Gemini JSON in binary WebSocket frames remains JSON, not raw audio', async
     assert.equal(c.finished[0].outputBytes, 0);
   } finally {await c.audio.close();}
 });
+
+test('Gemini declarations remove unsupported schema keywords without weakening backend schemas', async () => {
+  const {geminiParameters} = await import('../src/phone-providers/gemini-schema.mjs');
+  const schema = {type: 'object', additionalProperties: false, properties: {
+    additionalProperties: {type: 'string', maxLength: 40},
+    section: {anyOf: [{type: 'object', additionalProperties: false, properties: {ref: {type: 'string'}}}, {type: 'null'}]},
+  }};
+  const translated = geminiParameters(schema);
+  assert(!('additionalProperties' in translated));
+  assert.deepEqual(translated.properties.additionalProperties, {type: 'string', maxLength: 40});
+  assert(!('additionalProperties' in translated.properties.section.anyOf[0]));
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(schema.properties.section.anyOf[0].additionalProperties, false);
+  const information = {tools: [{name: 'read_record', parameters: schema}]};
+  const declarations = createAdapter({...base, provider: 'deepgram', ...deepgramKeys, information}).settings().agent.think.functions;
+  assert.deepEqual(declarations.find(t => t.name === 'read_record').parameters, translated);
+});

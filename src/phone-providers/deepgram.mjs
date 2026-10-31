@@ -1,5 +1,6 @@
 import {toolDefinitions} from '../phone-tools.mjs';
 import {words} from './transcript.mjs';
+import {geminiParameters} from './gemini-schema.mjs';
 
 // Deepgram owns the cascaded speech session and turn detection. This adapter only translates
 // its wire protocol; the existing bridge still owns admission, installed tools and cancellation.
@@ -51,7 +52,7 @@ export class DeepgramAdapter {
           headers: {'x-goog-api-key': c.llmApiKey}},
         prompt: c.instructions,
         ...(c.tools === false ? {} : {functions: toolDefinitions(c).map(({name, description, parameters}) =>
-          ({name, description, parameters, defer_until_eot: true}))}),
+          ({name, description, parameters: geminiParameters(parameters), defer_until_eot: true}))}),
       },
       speak: {provider: {type: 'eleven_labs', model_id: c.ttsModel ?? DeepgramAdapter.defaultTtsModel},
         endpoint: {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`,

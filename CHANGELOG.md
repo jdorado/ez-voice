@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.31
+
+- Translate nested Gemini parameter schemas at the provider boundary while retaining domain validation.
+- Resolve instruction file descriptors inside the Linux container and keep refused-call receipts in drain/shutdown accounting.
+
 ## 0.1.0-beta.11.rc.30
 
 - Retain bounded provider warning codes, upstream HTTP statuses and known failure categories; never retain free-form descriptions or request credentials.
