@@ -15,7 +15,7 @@ Twilio, GPT-Live and ElevenLabs Realtime use raw G.711 mu-law, mono, 8 kHz. Voic
 base64 audio without STT/TTS services, transcoding, a hosted agent definition or
 another voice platform. Gemini Live takes 16-bit PCM at 16 kHz and answers with PCM (24 kHz), never G.711,
 so Voice converts both ways in pure JavaScript (no service, no native dependency). The short instructions live in the
-private Voice phone configuration and go directly to the provider at call startup. Twilio and the provider still
+private Voice phone configuration (or in files read at the start of every call, see Instructions from files) and go directly to the provider at call startup. Twilio and the provider still
 bill their own usage, including call recording and its storage at Twilio.
 Removing Retell/Vapi does not make a call free.
 
@@ -38,7 +38,7 @@ test registry for development. Keep credentials and runtime state outside the ag
 ```
 
 One install can serve several numbers: give `lines` (1..8 entries, each with its own `number`, `apiKey`, and optional
-`provider`, `model`, `voice`, `language`, `instructions`, `tools`...) instead of those fields at the top level; the
+`provider`, `model`, `voice`, `language`, `instructions` or `instructionsFiles`, `tools`...) instead of those fields at the top level; the
 account, auth token, origin and limits are shared. An inbound call takes the line of the number called; an outbound
 call takes `--from LINE` (default: the first line). An inbound call is answered: once the provider session is ready the
 model is asked to speak first (`response.create` at OpenAI and ElevenLabs, a turn saying the call connected at Gemini),
@@ -84,6 +84,54 @@ not expire after thirty minutes or stop after five completed calls. Callers past
 call remains limited to `maxCallSeconds`.
 `/health` reports local readiness and returns 503 after a receipt-storage failure.
 A health response does not prove provider connectivity; `phone probe` does.
+
+## Instructions from files
+
+A line's `instructions` is a string in the private phone configuration, read once when the service starts. To change a
+persona without a reconfigure and a restart, keep it in files and give the line `instructionsFiles` (1..8 relative paths)
+and `instructionsRoot` (an absolute directory inside the container, for example a read-only folder the host binds there)
+instead of `instructions`; setting both is refused, and `instructionsFiles` requires `instructionsRoot`:
+
+```json
+{
+  "provider": "openai",
+  "apiKey": "PROVIDER_API_KEY",
+  "accountSid": "TWILIO_ACCOUNT_SID",
+  "authToken": "TWILIO_ACCOUNT_AUTH_TOKEN",
+  "number": "+15551230001",
+  "origin": "https://phone.example.com",
+  "instructionsRoot": "/state/agent",
+  "instructionsFiles": ["persona/phone.md", "rules/calls.md"]
+}
+```
+
+`instructionsRoot` may also be set on a line inside `lines`, where it wins over the top-level one (which is the default of
+every line that uses files). Configuration checks the shape only; the files need not exist when it is saved.
+
+At the start of every call (an inbound call's ticket; an outbound call when it is dialed, to stop a call that could not
+start, and again when it is answered) each file is read again as UTF-8 (a leading byte order mark is dropped) and the
+files are joined in the order listed with one blank line between them. The result is used exactly where a line's
+`instructions` string is: a per-call brief or a caller context is added to it, and the 15,000-character session limit
+applies as before. Nothing is cached between calls, so an edited file reaches the next call and a call already in progress
+keeps the text it started with. The text goes only to the speech provider, as `instructions` do.
+
+Every file must be a regular file inside the real path of `instructionsRoot` (a link that leaves it is refused), non-empty
+after trimming, valid UTF-8 and at most 12,000 characters, which is also the limit of all the files joined. A path is
+refused at configuration if it is absolute or has a `..`, a `.`, a backslash or an empty segment. The failure is closed: a
+file that is missing, unreadable, empty, not a regular file, outside the root, not UTF-8 or too large refuses the call, and
+nothing falls back to the default instructions or to an earlier read. An outbound `phone call` fails with an error that names the
+file and a reason code (never its text) and does not dial. An inbound call, or an outbound call answered after the file
+became unreadable, is refused like a call over capacity (`Reject` busy), holds no place, and the failure is saved as that call's
+receipt: `reason` `instructions_unavailable` and `instructionsError` `{path, reason}`.
+
+Each call's receipt records `instructionsSha256`, the SHA-256 (hex) of the line instructions the call started with (for a
+line with files, the joined text; the brief and caller context are not part of it), so a reader can tell which revision of
+a persona a call used. The text itself is stored nowhere new. `phone doctor` lists, per line that uses files, each file as
+`{path, ok: true}` or `{path, ok: false, reason}` (`missing`, `outside_root`, `not_a_file`, `empty`, `not_utf8`,
+`too_large`, `unreadable`, `root_unavailable`) with the digest of what a call would start with now, and `phone probe` starts its
+provider session with the files' text as a call would, failing with the same error when one is unreadable. Neither
+prints the text. They read the files from the process that runs them, so a folder bound into the running service must
+be visible to that process too.
 
 ## Providers
 
@@ -281,7 +329,7 @@ no native-agent delegation, owner history, workspace access or external-action
 tools. Its tools are `end_call` and, on an inbound call with prepared caller contexts, `find_case` (see Tools); a legacy
 client delegation (`tools: false`) receives a fixed capability-unavailable result. This plugin stores no audio; Twilio
 holds the call recording. What it keeps, all in its private volume (mode 0600, readable by the operator only): each call's
-receipt (call and provider IDs, input/output byte counts, provider error code, final usage, the recording outcome, the
+receipt (call and provider IDs, the digest of the line instructions, input/output byte counts, provider error code, final usage, the recording outcome, the
 ring and the call's transcript, up to 100,000 characters), kept until the operator removes it; outbound requests with
 their briefs (`calls.sqlite`); and the prepared caller contexts (`contexts.sqlite`), replaced as a whole by the operator.
 A caller context is chosen by the caller ID Twilio reports, which a caller can spoof: anyone presenting a known number is

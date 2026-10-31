@@ -41,6 +41,10 @@ For the Deepgram cascaded stack, its managed session receives audio, instruction
 private Google/ElevenLabs BYO keys to call those providers. Keys are transport configuration only;
 they never enter the model prompt, transcripts, doctor output or receipts. Provider endpoints are fixed.
 
+Instructions in `instructionsFiles` under `instructionsRoot` are read at each call from a
+read-only host-bound folder. Paths and resolved files stay under the real root; non-regular,
+missing, empty, oversized or unreadable files refuse the call. Receipts keep the text SHA-256.
+
 GPT-Live receives audio, compact bound identity, retained voice text and concise
 native-agent results. It cannot invoke installed plugins directly. Delegated
 transcript text enters the normal Ez application channel, where the native engine

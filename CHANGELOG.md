@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.28
+
+- Integrate fresh per-call instruction files with the Deepgram stack. Operators can update a bound persona without restarting the listener; each call records its instruction digest.
+
 ## 0.1.0-beta.11.rc.26
 
 - Preserve binary-framed JSON from Gemini Live while decoding Deepgram binary frames as audio.

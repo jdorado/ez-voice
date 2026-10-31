@@ -7,7 +7,8 @@ configuration) for inbound and outbound calls with
 audio-only phone channel with several lines in one install, a per-call brief, prepared caller contexts and a ringback
 while the session starts; callers receive no native-agent tools (the model's tools are `end_call` and, for prepared caller
 contexts, `find_case`). Every phone call is recorded at Twilio; this plugin stores no audio, and each call's receipt keeps
-its transcript as the provider heard it.
+its transcript as the provider heard it. A line's persona can instead be kept in files (`instructionsFiles` under
+`instructionsRoot`), read fresh at the start of every call so a change needs no restart; an unreadable file refuses the call.
 
 Owner-authenticated GPT-Live voice for an Ez agent. `gpt-live-1` owns the
 full-duplex spoken conversation and delegates work to the same native Ez agent
