@@ -27,8 +27,9 @@ import {DeepgramAdapter} from './deepgram.mjs';
 //     {type: 'error', code} / {type: 'fatal', reason}   a provider error / end the call
 //   toolResult(id, name, output, {final}) -> messages that hand a tool's output back (`final`: the call ends, no follow-up needed)
 //   closeMessages()              -> messages that ask the provider to finish ([] when the socket close is the end)
-//   thinkTarget() and withAdvice(body, note), only where the provider calls a language model the listener can relay
-//                                (the side coach, src/phone-advice.mjs and src/phone-think.mjs)
+//   thinkTarget() and withAdvice(body, note), only where the provider calls a language model the listener can relay,
+//   or adviceMessages(note) and static maxAdviceNote, where it takes session context during a call (confirmed with
+//                                {type: 'advice_ack'}): the side coach, src/phone-advice.mjs and src/phone-think.mjs
 export const PROVIDERS = {
   [OpenAIAdapter.id]: OpenAIAdapter,
   [ElevenLabsAdapter.id]: ElevenLabsAdapter,

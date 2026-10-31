@@ -4,7 +4,7 @@ import {EventEmitter} from 'node:events';
 import {createServer} from 'node:http';
 import WebSocket from 'ws';
 import {PhoneAudio} from '../src/phone-audio.mjs';
-import {PhoneAdvice} from '../src/phone-advice.mjs';
+import {PhoneAdvice, MAX_NOTES} from '../src/phone-advice.mjs';
 import {relayThink} from '../src/phone-think.mjs';
 import {installedAdvice} from '../src/phone-plugin-tools.mjs';
 import {servePhone, twilioSignature, validatePhoneConfig} from '../src/phone.mjs';
@@ -60,6 +60,44 @@ test('a coached Deepgram line relays its model requests and the latest note ride
     assert.equal(finished[0].advice[0].status, 'sent'); assert.equal(finished[0].advice[0].requests, 1);
     assert(!JSON.stringify(finished[0].advice).includes('Approved example'));
   } finally { await audio.close(); }
+});
+
+test('GPT-Live: the note joins the session context when the caller next speaks, never mid-reply', async () => {
+  let socket; const finished = [], requests = [];
+  const twilio = {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}};
+  const audio = new PhoneAudio(twilio, {...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined,
+    streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)},
+    advisor: {deadlineMs: 2000, run: async r => { requests.push(r); return {status: 'available', advice: advice()}; }}}, async s => { finished.push(s); },
+    {socketFactory: () => socket = new FakeSocket()});
+  try {
+    await tick();
+    socket.receive({type: 'session.input_transcript.delta', delta: 'I already have '});
+    socket.receive({type: 'session.input_transcript.delta', delta: 'a broker.'});
+    socket.receive({type: 'session.output_transcript.delta', delta: 'Understood.'});
+    await tick(); await tick(); await tick();
+    assert.equal(requests[0].text, 'I already have a broker.');
+    assert(!socket.events.some(e => e.type === 'session.thinking.append')); // the model is answering
+    socket.receive({type: 'session.output_transcript.delta', delta: ' Goodbye.'});
+    socket.receive({type: 'session.input_transcript.delta', delta: 'Wait, what would you pay?'});
+    const notes = socket.events.filter(e => e.type === 'session.thinking.append');
+    assert.equal(notes.length, 1); assert.equal(notes[0].delegation_id, null); assert.match(notes[0].event_id, /^adv_[a-f0-9]{24}$/);
+    assert.match(notes[0].content, /^Coach note 1, replacing any earlier coach note[^]*Approved example timing\./);
+    socket.receive({type: 'session.input_transcript.delta', delta: ' Seriously.'});
+    assert.equal(socket.events.filter(e => e.type === 'session.thinking.append').length, 1); // once per note
+    socket.receive({type: 'session.thinking.appended', client_event_id: notes[0].event_id});
+    const closed = audio.close(); socket.receive({type: 'session.closed'}); await closed;
+    assert.deepEqual([finished[0].advice[0].status, finished[0].advice[0].acknowledged], ['sent', true]);
+    assert(!JSON.stringify(finished[0].advice).includes('Approved example'));
+  } finally { await audio.close(); }
+});
+
+test('session notes stay within the provider limit and the call budget', async () => {
+  let n = 0; const s = coach(async () => ({status: 'available', advice: advice(`pick${n++}`)}));
+  for (let i = 0; i <= MAX_NOTES; i++) { s.hook.heard(`turn ${i}`, []); await tick(); await tick(); s.hook.push(1800); }
+  assert.equal(s.receipts.filter(r => r.status === 'sent').length, MAX_NOTES); assert.equal(s.receipts.at(-1).status, 'no_room');
+  const long = coach(async () => ({status: 'available', advice: advice()}));
+  long.hook.heard('hello', []); await tick(); await tick();
+  assert.equal(long.hook.push(50), undefined); assert.equal(long.receipts[0].status, 'too_long');
 });
 
 test('the relay streams the model answer back and the provider never sees the key', async t => {
@@ -159,10 +197,11 @@ test('the installed command is bound to the call and turn and returns only an ap
   assert.throws(() => installedAdvice({...binding, deadlineMs: 100}, core), /advice binding/);
 });
 
-test('advice is explicit per line, needs the installed binding and a relayable provider', () => {
+test('advice is explicit per line and needs the installed binding and a provider that takes a note', () => {
   const line = {...base, advice: true};
   assert.throws(() => validatePhoneConfig(line), /adviceBinding/);
   assert.equal(validatePhoneConfig({...line, adviceBinding: binding}).advice, true);
-  assert.throws(() => validatePhoneConfig({...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined, advice: true, adviceBinding: binding}), /relay \(deepgram\)/);
+  assert.equal(validatePhoneConfig({...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined, advice: true, adviceBinding: binding}).advice, true);
+  assert.throws(() => validatePhoneConfig({...base, provider: 'elevenlabs', apiKey: 'sk_' + 'a'.repeat(24), llmApiKey: undefined, ttsApiKey: undefined, advice: true, adviceBinding: binding}), /during a call \(openai, deepgram\)/);
   assert.equal(createAdapter({...base}).settings().agent.think.endpoint.headers['x-goog-api-key'], keys.llmApiKey); // an uncoached line calls Google
 });

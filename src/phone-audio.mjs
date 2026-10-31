@@ -179,10 +179,10 @@ export class PhoneAudio {
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else this.callerSpeaking = false;
         this.activeAt = Date.now();
-        // The side coach hears each finished caller utterance (whole, from the providers that support it).
-        if (this.advice && item.who === 'caller' && item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
+        if (this.advice) this.coach(item);
         this.transcript.add(item.who, item);
         break;
+      case 'advice_ack': this.advice?.acknowledged(); break;
       case 'turn':
         if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
         break;
@@ -253,6 +253,22 @@ export class PhoneAudio {
         abort.tool.id, abort.tool.name, {status: 'cancelled', error: 'caller_turn_changed'})) this.send(message);
     }
 
+  }
+  // The side coach hears each finished caller utterance: whole from a provider that sends it so, otherwise once the
+  // model starts to answer it. A session-context provider gets the latest note when the caller starts to speak.
+  coach(item) {
+    if (item.who === 'caller') {
+      if ((item.start || (item.delta && !this.callerOpen)) && this.adapter.adviceMessages) {
+        const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
+        if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
+      }
+      if (item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
+      else if (item.delta) this.callerOpen = true;
+    } else if (this.callerOpen) {
+      this.callerOpen = false;
+      const said = this.transcript.receipt().transcript ?? [], last = said.at(-1);
+      if (last?.who === 'caller') this.advice.heard(last.text, said.slice(0, -1));
+    }
   }
   // One language-model request relayed through the listener (src/phone-think.mjs): the latest coach note rides on it.
   think(body) {
