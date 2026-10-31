@@ -429,13 +429,14 @@ It is off by default. Voice holds no classifier, rules or coach key; the install
 Each finished caller utterance (whole from Deepgram; on GPT-Live, complete once the model starts to answer) goes to
 the command on stdin as `{call, turn, text, history, deadline_at}`, with identity from the call ticket, never from
 model arguments. It answers `{call_id, turn, status, advice?}`: status `available`, `no_match` or `unavailable`;
-advice `{id, text, source, source_revision, confidence}`, text at most 3,000 characters. An available note is added
-to the model's context for its later replies: Deepgram `UpdatePrompt`, GPT-Live `session.thinking.append` (context
-"without asking the model to say it immediately", at most 500 tokens). Other providers refuse `advice`.
+advice `{id, text, source, source_revision, confidence}`, text at most 3,000 characters. An available note joins the
+model's context when the caller next starts to speak: Deepgram `UpdatePrompt`, GPT-Live `session.thinking.append`
+(context "without asking the model to say it immediately", at most 500 tokens). Other providers refuse `advice`.
 
-Nothing waits for the coach: no reply is held or requested, so the reply already being formed does not see the note
-and the next ones do. A lookup slower than `deadlineMs` (500..5000), one a newer utterance overtook, or one that
-repeats the note last added adds nothing. Additions cannot be removed, so each note says it replaces the earlier
+Nothing waits for the coach: no reply is held or requested. A note never lands while the model is forming a reply or
+hanging up (in real-provider runs that made Deepgram repeat lookups and GPT-Live skip end_call); waiting for the
+caller's next turn costs nothing, since that is the first reply it could shape. A lookup slower than `deadlineMs`
+(500..5000), one a newer utterance overtook, or one that repeats the note last added adds nothing. Additions cannot be removed, so each note says it replaces the earlier
 ones, and a call adds at most eight, within Deepgram's 25,000-character prompt. The receipt's `advice` lists each
 lookup's status, timing, note ID, source revision and the provider's acknowledgement, never the note's text.
 Acknowledgement is not proof the model used the note, and GPT-Live warns that appended context may still be spoken:

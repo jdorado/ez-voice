@@ -255,9 +255,10 @@ export class PhoneAudio {
 
   }
   // The side coach hears each finished caller utterance: whole from a provider that sends it so, otherwise once the
-  // model starts to answer it.
+  // model starts to answer it. It delivers when the caller starts to speak (a start signal, or their first words).
   coach(item) {
     if (item.who === 'caller') {
+      if (item.start || (item.delta && !this.callerOpen)) this.advice.callerStarted();
       if (item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
       else if (item.delta) this.callerOpen = true;
     } else if (this.callerOpen) {

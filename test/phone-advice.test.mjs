@@ -32,7 +32,7 @@ function bridge(provider, run, settings = {}) {
   return {audio, finished, requests, socket: () => socket};
 }
 
-test('Deepgram: a finished caller utterance adds a coach note for later replies and never asks for a reply', async () => {
+test('Deepgram: a note for a finished caller utterance joins the prompt when the caller next speaks, never mid-reply', async () => {
   const c = bridge('deepgram', async () => ({status: 'available', advice: advice()}));
   try {
     await tick();
@@ -41,6 +41,10 @@ test('Deepgram: a finished caller utterance adds a coach note for later replies 
     assert.equal(c.requests[0].text, 'Not now, maybe next year.');
     assert.deepEqual(c.requests[0].history, []);
     await tick(); await tick();
+    // The model is answering: the ready note waits for the caller's next turn.
+    assert(!c.socket().events.some(e => e.type === 'UpdatePrompt'));
+    c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'No rush at all.'});
+    c.socket().receive({type: 'UserStartedSpeaking'});
     const notes = c.socket().events.filter(e => e.type === 'UpdatePrompt');
     assert.equal(notes.length, 1);
     assert.match(notes[0].prompt, /Coach note 1, replacing any earlier coach note/);
@@ -48,7 +52,6 @@ test('Deepgram: a finished caller utterance adds a coach note for later replies 
     // The coach sends context only: no response, injected user turn or agent speech.
     assert(!c.socket().events.some(e => ['InjectUserMessage', 'InjectAgentMessage', 'response.create'].includes(e.type)));
     c.socket().receive({type: 'PromptUpdated'});
-    c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'No rush at all.'});
     c.socket().receive({type: 'ConversationText', role: 'user', content: 'What would you pay?'});
     await tick();
     assert.deepEqual(c.requests[1].history, [{who: 'caller', text: 'Not now, maybe next year.'}, {who: 'model', text: 'No rush at all.'}]);
@@ -72,6 +75,8 @@ test('GPT-Live: the caller utterance is complete when the model answers; the not
     assert.equal(c.requests.length, 1);
     assert.equal(c.requests[0].text, 'I already have a broker.');
     await tick(); await tick();
+    assert(!c.socket().events.some(e => e.type === 'session.thinking.append'));
+    c.socket().receive({type: 'session.input_transcript.delta', delta: 'So what now?'});
     const note = c.socket().events.find(e => e.type === 'session.thinking.append');
     assert.equal(note.delegation_id, null); assert.match(note.event_id, /^adv_[a-f0-9]{24}$/);
     assert.match(note.content, /Approved example timing\./);
@@ -94,12 +99,24 @@ test('the latest utterance wins: a pick a newer one overtook is dropped and the 
   s.hook.heard('A', []); s.hook.heard('B', []);
   b.resolve({status: 'available', advice: advice('broker')}); await tick(); await tick();
   a.resolve({status: 'available', advice: advice('timing')}); await tick(); await tick();
+  assert.equal(s.sent.length, 0); // ready, waiting for the caller to speak
+  s.hook.callerStarted();
   assert.equal(s.sent.length, 1); assert.match(s.sent[0].note, /broker/);
   assert.deepEqual(s.receipts.map(r => r.status), ['superseded', 'sent']);
   s.hook.heard('C', []); await tick(); // still pending
   const again = coach(async () => ({status: 'available', advice: advice('broker')}));
-  again.hook.heard('one', []); await tick(); await tick(); again.hook.heard('two', []); await tick(); await tick();
+  again.hook.heard('one', []); await tick(); await tick(); again.hook.callerStarted();
+  again.hook.heard('two', []); await tick(); await tick();
   assert.deepEqual(again.receipts.map(r => r.status), ['sent', 'unchanged']);
+  // a ready note the caller never answered is replaced by the newer one, or left undelivered at the end
+  const waiting = coach(async r => ({status: 'available', advice: advice(r.text)}));
+  waiting.hook.heard('first', []); await tick(); await tick(); waiting.hook.heard('second', []); await tick(); await tick();
+  waiting.hook.close();
+  assert.deepEqual(waiting.receipts.map(r => r.status), ['superseded', 'undelivered']); assert.equal(waiting.sent.length, 0);
+  // a note ready while the caller is already speaking goes at once
+  const talking = coach(async () => ({status: 'available', advice: advice()}));
+  talking.hook.heard('one', []); talking.hook.callerStarted(); await tick(); await tick();
+  assert.equal(talking.sent.length, 1);
   s.hook.close(); assert.equal(s.receipts.at(-1).status, 'closed');
 });
 
@@ -114,11 +131,11 @@ test('a slow or failed lookup and a closed call add nothing; notes stay within t
   const failed = coach(async () => { throw Error('down'); }); failed.hook.heard('hello', []); await tick(); await tick();
   assert.equal(failed.receipts[0].status, 'unavailable');
   const tight = coach(async () => ({status: 'available', advice: advice()}), {room: 50});
-  tight.hook.heard('hello', []); await tick(); await tick(); assert.equal(tight.receipts[0].status, 'no_room');
+  tight.hook.heard('hello', []); await tick(); await tick(); tight.hook.callerStarted(); assert.equal(tight.receipts[0].status, 'no_room');
   const long = coach(async () => ({status: 'available', advice: advice()}), {maxAdviceNote: 50});
-  long.hook.heard('hello', []); await tick(); await tick(); assert.equal(long.receipts[0].status, 'too_long');
+  long.hook.heard('hello', []); await tick(); await tick(); long.hook.callerStarted(); assert.equal(long.receipts[0].status, 'too_long');
   let n = 0; const many = coach(async () => ({status: 'available', advice: advice(`pick${n++}`)}));
-  for (let i = 0; i <= MAX_NOTES; i++) { many.hook.heard(`turn ${i}`, []); await tick(); await tick(); }
+  for (let i = 0; i <= MAX_NOTES; i++) { many.hook.heard(`turn ${i}`, []); await tick(); await tick(); many.hook.callerStarted(); }
   assert.equal(many.sent.length, MAX_NOTES); assert.equal(many.receipts.at(-1).status, 'no_room');
   assert.equal(createAdapter({...base, provider: 'deepgram', apiKey: keys.deepgram, ...keys, instructions: 'x'.repeat(24000)}).adviceRoom(), 1000);
 });
