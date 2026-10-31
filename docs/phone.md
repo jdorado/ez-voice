@@ -419,3 +419,26 @@ Deepgram currently accepts `ttsModel: "eleven_flash_v2_5"` (also the default). E
 File-backed instructions require the Linux Docker runtime: containment is verified using the opened descriptor under `/proc/self/fd`, so a parent-directory swap cannot redirect a read outside its root. Native non-Linux file loading is refused. Packed Docker/CI runs the filesystem stories.
 
 The managed final-response window can leave the line open briefly after a goodbye. It is bounded by the existing end-call limit; an unrelated earlier AudioDone cannot close the call before the final response. Audible greeting activity also arms the configured idle timer when the caller remains silent.
+
+## Side coach (advice)
+
+An operator can give a Deepgram line a side coach: `advice: true` on the line and one shared installed command,
+`adviceBinding: {alias, invoke, deadlineMs}`, for example `{"alias": "advice", "invoke": ["evaluate", "-"], "deadlineMs": 4000}`.
+It is off by default. Voice holds no classifier, rules or coach key; the installed command owns what a note means.
+
+Each finished caller utterance goes to the command on stdin as `{call, turn, text, history, deadline_at}`, with identity
+from the call ticket, never from model arguments. It answers `{call_id, turn, status, advice?}`: status `available`,
+`no_match` or `unavailable`; advice `{id, text, source, source_revision, confidence}`, text at most 3,000 characters.
+
+A coached line's language-model requests come through the listener: Deepgram's think endpoint is
+`origin + pathPrefix + /think/...` with a per-call bearer token, and the listener holds the Google key and streams the
+answer back. The latest note joins the caller's latest words in each request until a newer one replaces it; a request
+that continues after a tool call goes as it is. Nothing waits for the coach, and a note never joins the standing
+prompt: in real-provider runs any `UpdatePrompt` addition, whatever it said and whenever it landed, sent the model
+into lookups on every call. A lookup slower than `deadlineMs` (500..5000), one a newer utterance overtook, or one that
+repeats the current note adds nothing. Providers whose model requests cannot be relayed refuse `advice` (GPT-Live's
+only silent channel, `session.thinking.append`, cost Annie hang-ups in the same runs).
+
+The receipt's `advice` lists each lookup's status, timing, note ID, source revision and how many requests carried it,
+never the note's text. Carrying a note is not proof the model used it; check on real calls that the model never
+reads one out.

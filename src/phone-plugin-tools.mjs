@@ -32,10 +32,40 @@ export async function installedTools(binding, core) {
   }};
 }
 
-export async function phonePluginTools(binding) {
-  if (!binding) return undefined;
+// The side coach's installed capability (src/phone-advice.mjs): one literal command, given each finished caller utterance
+// on stdin, and how long its answer may take before it is dropped (it never delays a reply).
+export function validateAdviceBinding(value) {
+  if (!value || Object.keys(value).sort().join() !== 'alias,deadlineMs,invoke'
+      || !/^[a-z][a-z0-9-]{0,63}$/.test(value.alias) || !Array.isArray(value.invoke) || !value.invoke.length || value.invoke.length > 8
+      || value.invoke.some(a => typeof a !== 'string' || !a || a.length > 100 || a.includes('\0'))
+      || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 500 || value.deadlineMs > 5000) throw Error('Invalid phone advice binding');
+  return value;
+}
+
+export function installedAdvice(binding, core) {
+  validateAdviceBinding(binding);
+  return {deadlineMs: binding.deadlineMs, async run(request, signal) {
+    const result = await core.request('tools.invoke', {alias: binding.alias, args: binding.invoke, stdin: JSON.stringify(request)}, signal);
+    if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 8000) throw Error('Advice unavailable');
+    const out = JSON.parse(result.stdout);
+    if (out.call_id !== request.call.id || out.turn !== request.turn
+        || !['available','unavailable','no_match'].includes(out.status)) throw Error('Advice result binding mismatch');
+    if (out.status === 'available') {
+      const a = out.advice;
+      if (!a || typeof a.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(a.id) || typeof a.text !== 'string' || !a.text.trim() || a.text.length > 3000
+          || typeof a.source !== 'string' || !a.source.startsWith('https://') || a.source.length > 500
+          || !/^[a-f0-9]{64}$/.test(a.source_revision) || !Number.isFinite(a.confidence) || a.confidence < 0 || a.confidence > 1) throw Error('Invalid advice result');
+      return {status: out.status, advice: {id: a.id, text: a.text, source: a.source, source_revision: a.source_revision, confidence: a.confidence}};
+    }
+    return {status: out.status};
+  }};
+}
+
+export async function phonePlugins(binding, adviceBinding) {
+  if (!binding && !adviceBinding) return {};
   const core = new CoreTools(process.stdout);
   frames(process.stdin, frame => core.receive(frame), () => core.close());
   process.stdin.on('end', () => core.close());
-  return installedTools(binding, core);
+  return {information: binding ? await installedTools(binding, core) : undefined,
+    advisor: adviceBinding ? installedAdvice(adviceBinding, core) : undefined};
 }

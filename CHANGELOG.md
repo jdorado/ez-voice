@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.35
+
+- Add an opt-in side coach for Deepgram phone lines: each finished caller utterance goes to an operator-bound installed command, and its latest note rides on each of the model's requests, relayed through the listener (which also keeps the Google key from the provider). Nothing waits for it, it never joins the standing prompt, and receipts keep no note text.
+
 ## 0.1.0-beta.11.rc.34
 
 - Refresh idle activity when actual provider speech arrives, so a slow startup cannot make the first audible greeting appear already idle.
