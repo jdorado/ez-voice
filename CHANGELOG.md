@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.32
+
+- Complete Deepgram final tool responses and wait for its final audio before the existing bounded playback drain.
+- Preserve streamed transcript word boundaries and exclude the injected transport greeting from caller speech.
+
 ## 0.1.0-beta.11.rc.31
 
 - Translate nested Gemini parameter schemas at the provider boundary while retaining domain validation.

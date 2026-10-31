@@ -36,7 +36,7 @@ export class PhoneAudio {
       const now = Date.now();
       if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up once Twilio has played it
         if (this.drainingAt) { if (now - this.drainingAt > (config.endCallDrainMs ?? 15000)) this.close('end_call'); }
-        else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
+        else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (!this.finalResponsePending && now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
       } else if (!this.pendingTools.size && this.idleMs > 0 && this.stats.inputTranscriptEvents && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
     // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
@@ -189,6 +189,7 @@ export class PhoneAudio {
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
         break;
       case 'tool': this.tool(item); break;
+      case 'output_done': this.finalResponsePending = false; break;
       case 'warning':
         if ((this.stats.providerWarnings ??= []).length < 8) this.stats.providerWarnings.push({code: item.code,
           ...(item.upstreamStatus && {upstreamStatus: item.upstreamStatus}), ...(item.category && {category: item.category})});
@@ -213,6 +214,7 @@ export class PhoneAudio {
     if (!external) {
       let output;
       try { output = tool ? tool.run(this, parseArgs(item.args)) : {error: 'unknown_tool'}; } catch { output = {error: 'tool_failed'}; }
+      if (tool?.final && this.adapter.constructor.expectsFinalResponse) this.finalResponsePending = true;
       for (const message of this.adapter.toolResult(item.id, item.name, output, {final: Boolean(tool?.final)})) this.send(message);
       return;
     }

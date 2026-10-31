@@ -16,6 +16,7 @@ import {DeepgramAdapter} from './deepgram.mjs';
 //   parse(providerEvent)         -> normalized items (Buffer for a binaryAudio provider):
 //     {type: 'ready', id}        the session accepts audio
 //     {type: 'audio', audio}     base64 mu-law 8 kHz for the caller (whole 20 ms frames are best)
+//     {type: 'output_done'}      final response audio is complete (expectsFinalResponse providers)
 //     {type: 'speech', who, delta?, text?, start?}   'caller' or 'model' is speaking (idle hang-up uses it); `delta`
 //                                continues the speaker's words, `text` is a whole utterance, `start` marks the caller
 //                                beginning to speak (the receipt's transcript)

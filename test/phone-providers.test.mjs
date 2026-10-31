@@ -817,7 +817,7 @@ test('Deepgram failure stays explicit, unknown tools cannot run, and provider de
     assert(!JSON.stringify(c.finished).includes(keys.gemini));
     const adapter = createAdapter({...base, provider: 'deepgram', ...deepgramKeys});
     assert.equal(adapter.parse(dgCall('bad', 'x'.repeat(65537)))[0].reason, 'invalid_provider_event');
-    assert.deepEqual(adapter.toolResult('end', 'end_call', {status: 'ending'}, {final: true}), []);
+    assert.equal(adapter.toolResult('end', 'end_call', {status: 'ending'}, {final: true})[0].type, 'FunctionCallResponse');
     assert(!createAdapter({...base, provider: 'deepgram', ...deepgramKeys, tools: false}).settings().agent.think.functions);
   } finally {await c.audio.close();}
 });
@@ -860,4 +860,28 @@ test('Gemini declarations remove unsupported schema keywords without weakening b
   const information = {tools: [{name: 'read_record', parameters: schema}]};
   const declarations = createAdapter({...base, provider: 'deepgram', ...deepgramKeys, information}).settings().agent.think.functions;
   assert.deepEqual(declarations.find(t => t.name === 'read_record').parameters, translated);
+});
+
+test('Deepgram answers end_call and waits for final audio before Twilio playback drain', async () => {
+  const c = await call('deepgram', {...deepgramKeys, idleSeconds: 0, endCallGraceMs: 10, endCallQuietMs: 40, endCallMaxMs: 2000});
+  try {
+    c.socket().receive({type: 'FunctionCallRequest', functions: [{id: 'stop', name: 'end_call', arguments: '{}', client_side: true}]});
+    assert(c.socket().events.some(e => e.type === 'FunctionCallResponse' && e.id === 'stop'));
+    await new Promise(r => setTimeout(r, 100));
+    assert(!markSent(c.twilio));
+    c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'Good'});
+    c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'bye.'});
+    c.socket().emit('message', Buffer.alloc(160, 10), true);
+    c.socket().receive({type: 'AgentAudioDone'});
+    await wait(() => markSent(c.twilio)); c.audio.mark('end_call');
+    const receipt = await c.audio.done;
+    assert.equal(receipt.reason, 'end_call'); assert.equal(receipt.transcript[0].text, 'Goodbye.');
+  } finally {await c.audio.close();}
+});
+
+test('Deepgram transport greeting is not retained as caller speech', () => {
+  const adapter = createAdapter({...base, provider: 'deepgram', ...deepgramKeys});
+  const [{content}] = adapter.greet();
+  assert.deepEqual(adapter.parse({type: 'ConversationText', role: 'user', content}), []);
+  assert.equal(adapter.parse({type: 'ConversationText', role: 'user', content: 'Hello'})[0].text, 'Hello');
 });

@@ -402,7 +402,7 @@ run its own STT/LLM/TTS loop or choose a fallback model.
 
 The adapter waits for Welcome, submits Settings, and waits for SettingsApplied before audio.
 The generic call-connected turn requests an inbound greeting; persona wording remains in
-the operator's instructions. Native functions use the existing tool registry, with
+the operator's instructions. Every admitted client function, including `end_call`, receives its protocol response; the bridge waits for final agent audio (bounded by its existing end-call limit) before Twilio playback drain. Native functions use the existing tool registry, with
 `defer_until_eot` so speculative turn detection cannot end the call. Gemini thought signatures
 return only with their originating function response. Cancelled functions receive no response,
 and late results cannot cross calls or turns. A readiness probe alone does not establish

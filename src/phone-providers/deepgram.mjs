@@ -5,6 +5,7 @@ import {geminiParameters} from './gemini-schema.mjs';
 // Deepgram owns the cascaded speech session and turn detection. This adapter only translates
 // its wire protocol; the existing bridge still owns admission, installed tools and cancellation.
 const SOCKET_URL = 'wss://agent.deepgram.com/v1/agent/converse';
+const CONNECTED = '(The call has connected: answer it.)';
 // Upstream descriptions can contain request content and credentials. Retain only
 // known categories/statuses, never the description or arbitrary provider fields.
 function diagnostic(event) {
@@ -34,6 +35,7 @@ export class DeepgramAdapter {
   static confirmsClose = false;
   static audioMeansSpeech = true;
   static binaryAudio = true;
+  static expectsFinalResponse = true;
   static supportsTools() { return true; }
 
   constructor(config) { this.config = config; this.signatures = new Map(); }
@@ -59,7 +61,7 @@ export class DeepgramAdapter {
           headers: {'xi-api-key': c.ttsApiKey}}},
     }};
   }
-  greet() { return [{type: 'InjectUserMessage', content: '(The call has connected: answer it.)'}]; }
+  greet() { this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}]; }
   audioIn(payload) { return [Buffer.from(payload, 'base64')]; }
   parse(event) {
     if (Buffer.isBuffer(event)) return event.length ? [{type: 'audio', audio: event.toString('base64')}] : [];
@@ -73,9 +75,12 @@ export class DeepgramAdapter {
         if (this.ready) return [];
         this.ready = true; return [{type: 'ready', id: this.id}];
       case 'UserStartedSpeaking': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
+      case 'AgentAudioDone': return [{type: 'output_done'}];
       case 'ConversationText':
+        if (this.greetingInjected && event.role === 'user' && event.content === CONNECTED) {this.greetingInjected = false; return [];}
         return ['user', 'assistant'].includes(event.role) && typeof event.content === 'string'
-          ? [{type: 'speech', who: event.role === 'user' ? 'caller' : 'model', text: words(event.content)}] : [];
+          ? [{type: 'speech', who: event.role === 'user' ? 'caller' : 'model',
+            ...(event.role === 'user' ? {text: words(event.content)} : {delta: words(event.content)})}] : [];
       case 'FunctionCallRequest': {
         if (!Array.isArray(event.functions)) return [{type: 'fatal', reason: 'invalid_provider_event'}];
         const items = [];
@@ -104,9 +109,9 @@ export class DeepgramAdapter {
   }
   toolResult(id, name, output, {final = false} = {}) {
     const signature = this.signatures.get(id); this.signatures.delete(id);
-    // Deepgram explicitly requires no response for cancelled calls. Final hang-up needs no
-    // additional model turn; the bridge waits for the queued goodbye before closing.
-    if (final || output?.status === 'cancelled') return [];
+    // Every admitted client-side function needs a response, including end_call, so
+    // the managed agent can produce its final words. Cancelled calls get no response.
+    if (output?.status === 'cancelled') return [];
     return [{type: 'FunctionCallResponse', id, name, content: JSON.stringify(output),
       ...(signature ? {thought_signature: signature} : {})}];
   }
