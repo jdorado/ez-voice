@@ -34,8 +34,8 @@ export class OpenAIAdapter {
   constructor(config) { this.config = config; }
   // A side-coach note as trusted application instructions for the session
   // (https://developers.openai.com/api/docs/guides/live-conversations). Thinking context cost end_call delegation in
-  // real-provider runs (0 of 6 hang-ups against 4 of 6); an instruction can interrupt speech, so it goes in only while
-  // the caller speaks (src/phone-advice.mjs).
+  // real-provider runs (0 of 6 hang-ups against 4 of 6); an instruction can interrupt speech, so it goes in only in a
+  // quiet moment (src/phone-audio.mjs).
   adviceMessages(note) { return [{type: 'session.instructions.append', event_id: `adv_${randomBytes(12).toString('hex')}`, delegation_id: null, content: note}]; }
 
   connection() {

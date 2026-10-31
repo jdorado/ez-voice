@@ -2,7 +2,7 @@
 
 ## 0.1.0-beta.11.rc.36
 
-- The side coach also serves GPT-Live lines: the latest note joins the session as application instructions (`session.instructions.append`) when the caller next starts to speak, never while the model forms a reply or a goodbye; at most eight notes a call.
+- The side coach also serves GPT-Live lines: the latest note joins the session as application instructions (`session.instructions.append`) in a quiet moment after the model's reply, never while either side speaks; at most eight notes a call.
 
 ## 0.1.0-beta.11.rc.35
 

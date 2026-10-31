@@ -24,7 +24,7 @@ export class PhoneAudio {
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
     this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
-    if (config.advisor) this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs,
+    if (config.advisor) this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs, onReady: () => this.pushAdvice(),
       receipts: this.stats.advice = []});
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
     // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
@@ -257,18 +257,25 @@ export class PhoneAudio {
   // The side coach hears each finished caller utterance: whole from a provider that sends it so, otherwise once the
   // model starts to answer it. A session-context provider gets the latest note when the caller starts to speak.
   coach(item) {
+    // A session-context provider takes a note only in a quiet moment: an addition while the caller spoke garbled their
+    // words, one while the model answered cost its end_call. The quiet starts adviceQuietMs after the model's words.
+    this.adviceQuiet = false; clearTimeout(this.adviceTimer);
     if (item.who === 'caller') {
-      if ((item.start || (item.delta && !this.callerOpen)) && this.adapter.adviceMessages) {
-        const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
-        if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
-      }
       if (item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
       else if (item.delta) this.callerOpen = true;
-    } else if (this.callerOpen) {
+      return;
+    }
+    if (this.callerOpen) {
       this.callerOpen = false;
       const said = this.transcript.receipt().transcript ?? [], last = said.at(-1);
       if (last?.who === 'caller') this.advice.heard(last.text, said.slice(0, -1));
     }
+    if (this.adapter.adviceMessages) this.adviceTimer = setTimeout(() => { this.adviceQuiet = true; this.pushAdvice(); }, this.config.adviceQuietMs ?? 1200);
+  }
+  pushAdvice() {
+    if (!this.adviceQuiet || this.callerOpen || this.closing || this.completed) return;
+    const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
+    if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }
   // One language-model request relayed through the listener (src/phone-think.mjs): the latest coach note rides on it.
   think(body) {
@@ -315,7 +322,7 @@ export class PhoneAudio {
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.stopRing('close');
-    this.advice?.close();
+    this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.closing = true; this.stats.reason = reason;
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);
@@ -331,7 +338,7 @@ export class PhoneAudio {
   }
   complete() {
     if (this.completed) return this.done;
-    this.advice?.close();
+    this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);

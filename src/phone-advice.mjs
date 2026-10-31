@@ -1,15 +1,15 @@
 // A side coach. Each finished caller utterance goes to an operator-installed advisory capability. Where the listener
 // relays the model's requests (src/phone-think.mjs), the latest note rides on each of them until a newer one replaces
 // it and never joins the standing instructions: an added prompt sent Deepgram's Gemini into lookups on every call,
-// whatever the note said. A speech-to-speech session (GPT-Live) takes the note as session context instead, when the
-// caller next starts to speak, never while the model forms a reply or a goodbye. Nothing waits for it, and a note a
+// whatever the note said. A speech-to-speech session (GPT-Live) takes the note as session instructions instead, in a
+// quiet moment after the model's reply (src/phone-audio.mjs), never while either side speaks. Nothing waits for it, and a note a
 // newer utterance overtook is dropped. The installed plugin owns what a note means; this only times and attaches it.
 export const MAX_NOTES = 8; // session notes a call can add: each stays in the session's context until the call ends
 const MAX_LOOKUPS = 64;
 
 export class PhoneAdvice {
-  constructor({call, run, deadlineMs, receipts, now = Date.now}) {
-    Object.assign(this, {call, run, deadlineMs, receipts, now});
+  constructor({call, run, deadlineMs, receipts, onReady = () => {}, now = Date.now}) {
+    Object.assign(this, {call, run, deadlineMs, receipts, onReady, now});
     this.turn = 0; this.pushed = 0; this.unacknowledged = []; this.closed = new AbortController();
   }
   // The caller finished an utterance; `history` is what was said before it.
@@ -29,7 +29,7 @@ export class PhoneAdvice {
       if (turn !== this.turn) return void (receipt.status = 'superseded');
       if (a.id === this.current?.receipt.id) return void (receipt.status = 'unchanged');
       if (this.current?.receipt.status === 'ready') this.current.receipt.status = 'unused';
-      this.current = {receipt, text: a.text}; receipt.status = 'ready';
+      this.current = {receipt, text: a.text}; receipt.status = 'ready'; this.onReady();
     }, () => {
       if (receipt.status === 'pending') Object.assign(receipt, {status: signal.aborted && !this.closed.signal.aborted ? 'timeout' : 'unavailable', milliseconds: this.now() - began});
     });
@@ -43,7 +43,7 @@ export class PhoneAdvice {
     if (receipt.status === 'ready') receipt.status = 'sent';
     receipt.requests = (receipt.requests ?? 0) + 1;
   }
-  // The latest note as session context, once: when the caller starts to speak. `maxNote` is the provider's limit.
+  // The latest note as session context, once, in a quiet moment. `maxNote` is the provider's limit.
   push(maxNote) {
     const current = this.current;
     if (!current || current.receipt.status !== 'ready' || this.closed.signal.aborted) return;

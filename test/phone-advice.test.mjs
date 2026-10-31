@@ -62,31 +62,36 @@ test('a coached Deepgram line relays its model requests and the latest note ride
   } finally { await audio.close(); }
 });
 
-test('GPT-Live: the note joins the session context when the caller next speaks, never mid-reply', async () => {
+test('GPT-Live: the note joins the session in a quiet moment after the reply, never while either side speaks', async () => {
   let socket; const finished = [], requests = [];
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const twilio = {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}};
   const audio = new PhoneAudio(twilio, {...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined,
-    streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)},
+    streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)}, adviceQuietMs: 40,
     advisor: {deadlineMs: 2000, run: async r => { requests.push(r); return {status: 'available', advice: advice()}; }}}, async s => { finished.push(s); },
     {socketFactory: () => socket = new FakeSocket()});
+  const notes = () => socket.events.filter(e => e.type === 'session.instructions.append');
   try {
     await tick();
     socket.receive({type: 'session.input_transcript.delta', delta: 'I already have '});
     socket.receive({type: 'session.input_transcript.delta', delta: 'a broker.'});
     socket.receive({type: 'session.output_transcript.delta', delta: 'Understood.'});
-    await tick(); await tick(); await tick();
+    await tick(); await tick();
     assert.equal(requests[0].text, 'I already have a broker.');
-    assert(!socket.events.some(e => e.type === 'session.instructions.append')); // the model is answering
-    socket.receive({type: 'session.output_transcript.delta', delta: ' Goodbye.'});
-    socket.receive({type: 'session.input_transcript.delta', delta: 'Wait, what would you pay?'});
-    const notes = socket.events.filter(e => e.type === 'session.instructions.append');
-    assert.equal(notes.length, 1); assert.equal(notes[0].delegation_id, null); assert.match(notes[0].event_id, /^adv_[a-f0-9]{24}$/);
-    assert.match(notes[0].content, /^Coach note 1, replacing any earlier coach note[^]*Approved example timing\./);
-    socket.receive({type: 'session.input_transcript.delta', delta: ' Seriously.'});
-    assert.equal(socket.events.filter(e => e.type === 'session.instructions.append').length, 1); // once per note
-    socket.receive({type: 'session.instructions.appended', client_event_id: notes[0].event_id});
+    await sleep(15); socket.receive({type: 'session.output_transcript.delta', delta: ' Is that'}); // still answering
+    await sleep(15); socket.receive({type: 'session.input_transcript.delta', delta: 'Yes.'}); // the caller cuts in
+    await sleep(60);
+    assert.equal(notes().length, 0); // never while either side speaks
+    socket.receive({type: 'session.output_transcript.delta', delta: 'Okay, thanks.'});
+    await sleep(60);
+    assert.equal(notes().length, 1);
+    assert.equal(notes()[0].delegation_id, null); assert.match(notes()[0].event_id, /^adv_[a-f0-9]{24}$/);
+    assert.match(notes()[0].content, /^Coach note 1, replacing any earlier coach note[^]*Approved example/);
+    socket.receive({type: 'session.output_transcript.delta', delta: ' Bye.'}); await sleep(60);
+    assert.equal(notes().length, 1); // once per note
+    socket.receive({type: 'session.instructions.appended', client_event_id: notes()[0].event_id});
     const closed = audio.close(); socket.receive({type: 'session.closed'}); await closed;
-    assert.deepEqual([finished[0].advice[0].status, finished[0].advice[0].acknowledged], ['sent', true]);
+    assert.equal(finished[0].advice.filter(r => r.status === 'sent' && r.acknowledged).length, 1);
     assert(!JSON.stringify(finished[0].advice).includes('Approved example'));
   } finally { await audio.close(); }
 });
