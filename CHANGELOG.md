@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.34
+
+- Refresh idle activity when actual provider speech arrives, so a slow startup cannot make the first audible greeting appear already idle.
+
 ## 0.1.0-beta.11.rc.33
 
 - Keep uncorrelated earlier audio completion from shortening a managed final response; retain the existing bounded closing window and playback drain.

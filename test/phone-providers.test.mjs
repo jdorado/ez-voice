@@ -899,3 +899,16 @@ test('Deepgram transport greeting is not retained as caller speech', () => {
   assert.deepEqual(adapter.parse({type: 'ConversationText', role: 'user', content}), []);
   assert.equal(adapter.parse({type: 'ConversationText', role: 'user', content: 'Hello'})[0].text, 'Hello');
 });
+
+test('first audible GPT-Live output refreshes idle activity after a slow startup', async () => {
+  const c = await call('openai', {idleSeconds: 0.06});
+  try {
+    await new Promise(r => setTimeout(r, 100));
+    c.socket().receive({type: 'session.started', session: {id: 'slow-greeting'}});
+    c.socket().receive({type: 'session.output_audio.delta', delta: Buffer.alloc(160, 10).toString('base64')});
+    await new Promise(r => setTimeout(r, 20));
+    assert(!c.audio.closing);
+    await wait(() => c.audio.closing); assert.equal(c.audio.stats.reason, 'idle_timeout');
+    c.socket().receive({type: 'session.closed'}); await c.audio.done;
+  } finally {c.socket().receive({type: 'session.closed'}); await c.audio.close();}
+});

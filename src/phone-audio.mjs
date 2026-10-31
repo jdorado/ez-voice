@@ -152,7 +152,7 @@ export class PhoneAudio {
         break;
       case 'audio':
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
-        if (audible(item.audio)) this.conversationStarted = true;
+        if (audible(item.audio)) {this.conversationStarted = true; this.activeAt = Date.now();}
         const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
         this.stats.firstAudioMs ??= Date.now() - this.startedAt;
         if (this.ringing) {
