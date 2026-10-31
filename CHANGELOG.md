@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.35
+
+- Add an opt-in side coach for phone lines: each finished caller utterance goes to an operator-bound installed command, and its note is added to the model's context for later replies (Deepgram `UpdatePrompt`, GPT-Live `session.thinking.append`). No reply waits for it; late, overtaken or repeated notes are dropped and receipts keep no note text.
+
 ## 0.1.0-beta.11.rc.34
 
 - Refresh idle activity when actual provider speech arrives, so a slow startup cannot make the first audible greeting appear already idle.

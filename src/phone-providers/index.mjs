@@ -27,6 +27,9 @@ import {DeepgramAdapter} from './deepgram.mjs';
 //     {type: 'error', code} / {type: 'fatal', reason}   a provider error / end the call
 //   toolResult(id, name, output, {final}) -> messages that hand a tool's output back (`final`: the call ends, no follow-up needed)
 //   closeMessages()              -> messages that ask the provider to finish ([] when the socket close is the end)
+//   adviceMessages(note), adviceRoom() and static maxAdviceNote, only where the provider takes context for later
+//                                replies during a call (the side coach, src/phone-advice.mjs); it confirms with
+//                                {type: 'advice_ack'}
 export const PROVIDERS = {
   [OpenAIAdapter.id]: OpenAIAdapter,
   [ElevenLabsAdapter.id]: ElevenLabsAdapter,

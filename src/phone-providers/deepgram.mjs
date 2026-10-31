@@ -36,9 +36,14 @@ export class DeepgramAdapter {
   static audioMeansSpeech = true;
   static binaryAudio = true;
   static expectsFinalResponse = true;
+  static maxAdviceNote = 4000;
   static supportsTools() { return true; }
 
   constructor(config) { this.config = config; this.signatures = new Map(); }
+  // UpdatePrompt adds to the prompt for later replies (it cannot be removed); the prompt, additions included, is at most
+  // 25,000 characters (https://developers.deepgram.com/docs/voice-agent-update-prompt).
+  adviceRoom() { return Math.max(0, 25000 - this.config.instructions.length); }
+  adviceMessages(note) { return [{type: 'UpdatePrompt', prompt: `\n\n${note}`}]; }
   connection() { return {url: SOCKET_URL, headers: {Authorization: `Token ${this.config.apiKey}`}}; }
   start() { return []; } // Welcome precedes Settings; SettingsApplied precedes audio.
   settings() {
@@ -101,6 +106,7 @@ export class DeepgramAdapter {
           if (typeof call?.id !== 'string') return [];
           this.signatures.delete(call.id); return [{type: 'cancelled', id: call.id}];
         });
+      case 'PromptUpdated': return [{type: 'advice_ack'}];
       case 'Warning': return [{type: 'warning', ...diagnostic(event)}];
       case 'Error': return [{type: 'warning', ...diagnostic(event)}, {type: 'error', code: diagnostic(event).code}];
       default: return [];

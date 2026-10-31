@@ -1,3 +1,4 @@
+import {randomBytes} from 'node:crypto';
 import {toolDefinitions, backendInstructions, DEFAULT_TOOL_MODEL, DEFAULT_TOOL_EFFORT} from '../phone-tools.mjs';
 import {words} from './transcript.mjs';
 
@@ -27,9 +28,14 @@ export class OpenAIAdapter {
   static keyPattern = /^sk-[A-Za-z0-9_-]{10,}$/;
   static confirmsClose = true;
   static audioMeansSpeech = false; // GPT-Live streams output audio nonstop, silence included
+  static maxAdviceNote = 1800; // session.thinking.append takes at most 500 tokens
   static supportsTools() { return true; }
 
   constructor(config) { this.config = config; }
+  // Context for later replies "without asking the model to say it immediately"
+  // (https://developers.openai.com/api/docs/guides/live-conversations); MAX_NOTES bounds what a call adds.
+  adviceRoom() { return Infinity; }
+  adviceMessages(note) { return [{type: 'session.thinking.append', event_id: `adv_${randomBytes(12).toString('hex')}`, delegation_id: null, content: note}]; }
 
   connection() {
     return {url: 'wss://api.openai.com/v1/live/sessions', headers: {Authorization: `Bearer ${this.config.apiKey}`}};
@@ -58,6 +64,7 @@ export class OpenAIAdapter {
       // Output audio flows nonstop, silence included, so only the transcripts say who is speaking.
       case 'session.input_transcript.delta': return [{type: 'speech', who: 'caller', delta: words(event.delta)}];
       case 'session.output_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
+      case 'session.thinking.appended': return [{type: 'advice_ack'}];
       case 'session.delegation.cancelled': return [{type: 'cancelled', request: event.delegation_id ?? event.delegation?.id}];
       case 'response.event': {
         if (event.event?.type === 'response.done' && ['cancelled','failed'].includes(event.event.response?.status)) return [{type: 'cancelled', request: event.delegation_id}];

@@ -1,64 +1,42 @@
-// One bounded advisory operation per finalized caller utterance. The installed plugin owns its meaning.
-import {randomBytes} from 'node:crypto';
+// A side coach. Each finished caller utterance goes to an operator-installed advisory capability; when it answers, its
+// note is added to the model's context for its later replies. Nothing waits for it: no reply is held, and a note a newer
+// utterance overtook is dropped. The installed plugin owns what a note means; this only times and delivers it.
+export const MAX_NOTES = 8; // notes a call can add: each one stays in the provider's context until the call ends
+const MAX_LOOKUPS = 64;
 
 export class PhoneAdvice {
-  constructor({call, run, deadlineMs, adapter, send, history, receipts, now = Date.now}) {
-    Object.assign(this, {call, run, deadlineMs, adapter, send, history, receipts, now}); this.turn = 0;
+  constructor({call, run, deadlineMs, adapter, send, receipts, now = Date.now}) {
+    Object.assign(this, {call, run, deadlineMs, adapter, send, receipts, now});
+    this.room = adapter.adviceRoom(); this.turn = 0; this.notes = 0; this.closed = new AbortController(); this.sent = [];
   }
-  begin(itemId) {
-    if (!itemId || this.current?.itemId === itemId) return;
-    this.cancel('superseded'); this.current = {itemId, turn: ++this.turn, revision: 0};
+  // The caller finished an utterance; `history` is what was said before it.
+  heard(text, history) {
+    if (this.closed.signal.aborted || typeof text !== 'string' || !text.trim() || this.turn >= MAX_LOOKUPS) return;
+    const turn = ++this.turn, began = this.now(), receipt = {turn, status: 'pending'};
+    const signal = AbortSignal.any([this.closed.signal, AbortSignal.timeout(this.deadlineMs)]);
+    const request = {call: this.call, turn, text: text.slice(0, 2000), deadline_at: began + this.deadlineMs,
+      history: history.slice(-6).map(t => ({who: t.who, text: t.text.slice(-1000)}))};
+    this.receipts.push(receipt);
+    const settle = status => { if (receipt.status === 'pending') Object.assign(receipt, {status, milliseconds: this.now() - began}); };
+    Promise.resolve().then(() => this.run(request, signal)).then(result => {
+      if (receipt.status !== 'pending') return;
+      if (result.status !== 'available') return settle(result.status);
+      const a = result.advice;
+      Object.assign(receipt, {id: a.id, source: a.source, source_revision: a.source_revision, confidence: a.confidence});
+      if (turn !== this.turn) return settle('superseded');
+      if (a.id === this.applied) return settle('unchanged');
+      const note = `Coach note ${this.notes + 1}, replacing any earlier coach note: a private reference for your next replies, not the caller's words and not to be read out.\n${a.text}`;
+      if (note.length > this.adapter.constructor.maxAdviceNote) return settle('too_long');
+      if (this.notes >= MAX_NOTES || note.length > this.room) return settle('no_room');
+      this.room -= note.length; this.notes++; this.applied = a.id;
+      for (const message of this.adapter.adviceMessages(note)) this.send(message);
+      this.sent.push(receipt); settle('sent');
+    }, () => settle(signal.aborted && !this.closed.signal.aborted ? 'timeout' : 'unavailable'));
   }
-  stop(itemId) {
-    if (!this.current) this.begin(itemId);
-    const c = this.current;
-    if (!c || itemId !== c.itemId || c.deadline || c.responded) return;
-    c.began = this.now(); c.deadline = c.began + this.deadlineMs;
-    c.timer = setTimeout(() => this.finish(c, c.note ? 'ack_timeout' : 'deadline'), this.deadlineMs);
-  }
-  final(itemId, text) {
-    const c = this.current;
-    if (!c || c.itemId !== itemId || c.responded || !text?.trim() || c.text === text) return;
-    this.stop(itemId); c.abort?.abort(); this.clearNote(c); c.advice = undefined; c.text = text;
-    const revision = ++c.revision, abort = c.abort = new AbortController();
-    const request = {call: this.call, turn: c.turn, revision, text: text.slice(0, 2000),
-      history: this.history().slice(-6).map(t => ({who: t.who, text: t.text.slice(-1000)})), deadline_at: c.deadline};
-    Promise.resolve().then(() => { abort.signal.throwIfAborted(); return this.run(request, abort.signal); }).then(result => {
-      if (this.current !== c || c.revision !== revision || c.responded || abort.signal.aborted || this.now() >= c.deadline) return;
-      if (result.status !== 'available') return this.finish(c, result.status);
-      c.advice = result.advice; c.note = 'adv_' + randomBytes(12).toString('hex');
-      for (const message of this.adapter.adviceItem(c.note, result.advice.text)) this.send(message);
-    }).catch(() => {
-      if (this.current === c && c.revision === revision && !c.responded && !abort.signal.aborted) this.finish(c, 'unavailable');
-    });
-  }
-  acknowledged(id) {
-    const c = this.current;
-    if (c && id === c.note && !c.responded && this.now() < c.deadline) this.finish(c, 'accepted_before_response');
-  }
-  responseStarted(id) {
-    const c = this.current;
-    if (c?.responded && c.awaitingResponse) { c.responseId = id; c.awaitingResponse = false; }
-    if (c && !c.responded && c.deadline) this.finish(c, 'provider_started_early', false);
-  }
-  responseDone(id) { if (id && id === this.current?.responseId) this.clearNote(this.current); }
-  clearNote(c) {
-    if (!c?.note) return;
-    for (const message of this.adapter.clearAdvice(c.note)) this.send(message);
-    c.note = undefined;
-  }
-  finish(c, status, respond = true) {
-    if (this.current !== c || c.responded) return;
-    c.responded = true; clearTimeout(c.timer); c.abort?.abort();
-    if (status !== 'accepted_before_response') this.clearNote(c);
-    this.receipts.push({turn: c.turn, revision: c.revision, status, milliseconds: Math.max(0, this.now() - c.began),
-      ...(c.advice && {id: c.advice.id, source: c.advice.source, source_revision: c.advice.source_revision})});
-    if (respond) { c.awaitingResponse = true; for (const message of this.adapter.respond()) this.send(message); }
-  }
-  cancel(reason = 'closed') {
-    const c = this.current; if (!c) return;
-    clearTimeout(c.timer); c.abort?.abort(); this.clearNote(c);
-    if (c.deadline && !c.responded) this.receipts.push({turn: c.turn, revision: c.revision, status: reason});
-    this.current = undefined;
+  // The provider confirmed the oldest note it had not yet confirmed.
+  acknowledged() { const receipt = this.sent.shift(); if (receipt) receipt.acknowledged = true; }
+  close() {
+    this.closed.abort();
+    for (const receipt of this.receipts) if (receipt.status === 'pending') receipt.status = 'closed';
   }
 }

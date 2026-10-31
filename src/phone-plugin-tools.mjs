@@ -32,11 +32,13 @@ export async function installedTools(binding, core) {
   }};
 }
 
+// The side coach's installed capability (src/phone-advice.mjs): one literal command, given each finished caller utterance
+// on stdin, and how long its answer may take before it is dropped (it never delays a reply).
 export function validateAdviceBinding(value) {
   if (!value || Object.keys(value).sort().join() !== 'alias,deadlineMs,invoke'
       || !/^[a-z][a-z0-9-]{0,63}$/.test(value.alias) || !Array.isArray(value.invoke) || !value.invoke.length || value.invoke.length > 8
       || value.invoke.some(a => typeof a !== 'string' || !a || a.length > 100 || a.includes('\0'))
-      || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 100 || value.deadlineMs > 1500) throw Error('Invalid phone advice binding');
+      || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 500 || value.deadlineMs > 5000) throw Error('Invalid phone advice binding');
   return value;
 }
 
@@ -46,7 +48,7 @@ export function installedAdvice(binding, core) {
     const result = await core.request('tools.invoke', {alias: binding.alias, args: binding.invoke, stdin: JSON.stringify(request)}, signal);
     if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 8000) throw Error('Advice unavailable');
     const out = JSON.parse(result.stdout);
-    if (out.call_id !== request.call.id || out.turn !== request.turn || out.revision !== request.revision
+    if (out.call_id !== request.call.id || out.turn !== request.turn
         || !['available','unavailable','no_match'].includes(out.status)) throw Error('Advice result binding mismatch');
     if (out.status === 'available') {
       const a = out.advice;

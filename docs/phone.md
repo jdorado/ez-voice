@@ -419,3 +419,24 @@ Deepgram currently accepts `ttsModel: "eleven_flash_v2_5"` (also the default). E
 File-backed instructions require the Linux Docker runtime: containment is verified using the opened descriptor under `/proc/self/fd`, so a parent-directory swap cannot redirect a read outside its root. Native non-Linux file loading is refused. Packed Docker/CI runs the filesystem stories.
 
 The managed final-response window can leave the line open briefly after a goodbye. It is bounded by the existing end-call limit; an unrelated earlier AudioDone cannot close the call before the final response. Audible greeting activity also arms the configured idle timer when the caller remains silent.
+
+## Side coach (advice)
+
+An operator can give a line a side coach: `advice: true` on the line and one shared installed command,
+`adviceBinding: {alias, invoke, deadlineMs}`, for example `{"alias": "advice", "invoke": ["evaluate", "-"], "deadlineMs": 4000}`.
+It is off by default. Voice holds no classifier, rules or coach key; the installed command owns what a note means.
+
+Each finished caller utterance (whole from Deepgram; on GPT-Live, complete once the model starts to answer) goes to
+the command on stdin as `{call, turn, text, history, deadline_at}`, with identity from the call ticket, never from
+model arguments. It answers `{call_id, turn, status, advice?}`: status `available`, `no_match` or `unavailable`;
+advice `{id, text, source, source_revision, confidence}`, text at most 3,000 characters. An available note is added
+to the model's context for its later replies: Deepgram `UpdatePrompt`, GPT-Live `session.thinking.append` (context
+"without asking the model to say it immediately", at most 500 tokens). Other providers refuse `advice`.
+
+Nothing waits for the coach: no reply is held or requested, so the reply already being formed does not see the note
+and the next ones do. A lookup slower than `deadlineMs` (500..5000), one a newer utterance overtook, or one that
+repeats the note last added adds nothing. Additions cannot be removed, so each note says it replaces the earlier
+ones, and a call adds at most eight, within Deepgram's 25,000-character prompt. The receipt's `advice` lists each
+lookup's status, timing, note ID, source revision and the provider's acknowledgement, never the note's text.
+Acknowledgement is not proof the model used the note, and GPT-Live warns that appended context may still be spoken:
+check on real calls that the model does not read a note out.

@@ -1,129 +1,143 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setTimeout as sleep, setImmediate as tick} from 'node:timers/promises';
-import {PhoneAdvice} from '../src/phone-advice.mjs';
-import {installedAdvice} from '../src/phone-plugin-tools.mjs';
-import {ElevenLabsAdapter} from '../src/phone-providers/elevenlabs.mjs';
-import {validatePhoneConfig} from '../src/phone.mjs';
 import {EventEmitter} from 'node:events';
+import WebSocket from 'ws';
 import {PhoneAudio} from '../src/phone-audio.mjs';
+import {PhoneAdvice, MAX_NOTES} from '../src/phone-advice.mjs';
+import {installedAdvice} from '../src/phone-plugin-tools.mjs';
+import {validatePhoneConfig} from '../src/phone.mjs';
+import {createAdapter} from '../src/phone-providers/index.mjs';
 
-const advice = {id: 'approved', text: 'Approved example only.', source: 'https://example.com/source', source_revision: 'a'.repeat(64), confidence: 0.9};
+const base = {accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com', instructions: 'Synthetic coach test'};
+const keys = {openai: 'sk-synthetic123456789', deepgram: 'c'.repeat(40), llmApiKey: 'AIza' + 'b'.repeat(35), ttsApiKey: 'sk_' + 'a'.repeat(24)};
+const advice = (id = 'timing') => ({id, text: `Approved example ${id}.`, source: 'https://example.com/source', source_revision: 'a'.repeat(64), confidence: 0.9});
+const binding = {alias: 'advice', invoke: ['evaluate', '-'], deadlineMs: 2000};
+const tick = () => new Promise(r => setImmediate(r));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return {promise, resolve}; };
-function setup(run, deadlineMs = 100) {
-  const sent = [], receipts = [], requests = [];
-  const adapter = new ElevenLabsAdapter({advice: true});
-  const hook = new PhoneAdvice({call: {id: 'call'}, deadlineMs, adapter, run: (request, signal) => {requests.push({request, signal}); return run(request, signal);},
-    send: message => {sent.push(message); return true;}, history: () => [], receipts});
-  return {hook, sent, receipts, requests};
+
+class FakeSocket extends EventEmitter {
+  readyState = WebSocket.OPEN; bufferedAmount = 0; events = [];
+  constructor() {super(); setImmediate(() => this.emit('open'));}
+  send(raw) {this.events.push(Buffer.isBuffer(raw) ? raw : JSON.parse(raw));}
+  receive(event) {this.emit('message', Buffer.from(JSON.stringify(event)));}
+  close() {this.readyState = WebSocket.CLOSED; this.emit('close', 1000);}
+  terminate() {this.close();}
+}
+function bridge(provider, run, settings = {}) {
+  let socket; const finished = [], requests = [];
+  const twilio = {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}};
+  const audio = new PhoneAudio(twilio, {...base, provider, apiKey: keys[provider], ...(provider === 'deepgram' && {llmApiKey: keys.llmApiKey, ttsApiKey: keys.ttsApiKey}),
+    streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)}, advisor: {deadlineMs: 2000, run: (request, signal) => { requests.push(request); return run(request, signal); }}, ...settings},
+    async stats => { finished.push(stats); }, {socketFactory: () => socket = new FakeSocket()});
+  return {audio, finished, requests, socket: () => socket};
 }
 
-test('only provider-acknowledged advice precedes the explicit response, then is removed', async () => {
-  const s = setup(async () => ({status: 'available', advice}));
-  s.hook.begin('utterance'); s.hook.stop('utterance'); s.hook.final('utterance', 'I am not ready yet.');
-  await tick();
-  assert.equal(s.sent.length, 1); assert.equal(s.sent[0].type, 'conversation.item.create');
-  s.hook.acknowledged(s.sent[0].item.id);
-  assert.equal(s.sent[1].type, 'response.create');
-  assert.equal(s.receipts[0].status, 'accepted_before_response');
-  assert.equal(s.receipts[0].source_revision, advice.source_revision);
-  assert.ok(!JSON.stringify(s.receipts).includes(advice.text));
-  s.hook.responseStarted('response-current');
-  s.hook.responseDone('response-old'); assert.equal(s.sent.length, 2);
-  s.hook.responseDone('response-current'); assert.equal(s.sent.at(-1).type, 'conversation.item.delete'); s.hook.cancel();
+test('Deepgram: a finished caller utterance adds a coach note for later replies and never asks for a reply', async () => {
+  const c = bridge('deepgram', async () => ({status: 'available', advice: advice()}));
+  try {
+    await tick();
+    c.socket().receive({type: 'ConversationText', role: 'user', content: 'Not now, maybe next year.'});
+    await tick();
+    assert.equal(c.requests[0].text, 'Not now, maybe next year.');
+    assert.deepEqual(c.requests[0].history, []);
+    await tick(); await tick();
+    const notes = c.socket().events.filter(e => e.type === 'UpdatePrompt');
+    assert.equal(notes.length, 1);
+    assert.match(notes[0].prompt, /Coach note 1, replacing any earlier coach note/);
+    assert.match(notes[0].prompt, /Approved example timing\./);
+    // The coach sends context only: no response, injected user turn or agent speech.
+    assert(!c.socket().events.some(e => ['InjectUserMessage', 'InjectAgentMessage', 'response.create'].includes(e.type)));
+    c.socket().receive({type: 'PromptUpdated'});
+    c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'No rush at all.'});
+    c.socket().receive({type: 'ConversationText', role: 'user', content: 'What would you pay?'});
+    await tick();
+    assert.deepEqual(c.requests[1].history, [{who: 'caller', text: 'Not now, maybe next year.'}, {who: 'model', text: 'No rush at all.'}]);
+    await c.audio.close();
+    const [first] = c.finished[0].advice;
+    assert.equal(first.status, 'sent'); assert.equal(first.acknowledged, true); assert.equal(first.source_revision, 'a'.repeat(64));
+    assert(!JSON.stringify(c.finished[0].advice).includes('Approved example'));
+  } finally { await c.audio.close(); }
 });
 
-test('late A cannot overwrite B or send advice to another call', async () => {
-  const a = deferred(), b = deferred();
-  const s = setup(r => r.text === 'A' ? a.promise : b.promise);
-  s.hook.begin('a'); s.hook.final('a', 'A'); await tick();
-  s.hook.begin('b'); s.hook.final('b', 'B'); await tick();
-  assert.equal(s.requests[0].signal.aborted, true);
-  b.resolve({status: 'available', advice: {...advice, id: 'B'}}); await tick();
-  a.resolve({status: 'available', advice: {...advice, id: 'A'}}); await tick();
-  assert.equal(s.sent.filter(m => m.type === 'conversation.item.create').length, 1);
-  s.hook.acknowledged(s.sent[0].item.id); assert.equal(s.receipts.at(-1).id, 'B');
-  const other = setup(async () => ({status: 'no_match'})); other.hook.begin('other'); other.hook.final('other', 'other'); await tick();
-  assert.equal(other.receipts.at(-1).status, 'no_match'); assert.equal(s.receipts.at(-1).id, 'B');
-  s.hook.cancel(); other.hook.cancel();
+test('GPT-Live: the caller utterance is complete when the model answers; the note is silent thinking context', async () => {
+  const c = bridge('openai', async () => ({status: 'available', advice: advice()}));
+  try {
+    await tick();
+    c.socket().receive({type: 'session.input_transcript.delta', delta: 'I already have '});
+    c.socket().receive({type: 'session.input_transcript.delta', delta: 'a broker.'});
+    assert.equal(c.requests.length, 0);
+    c.socket().receive({type: 'session.output_transcript.delta', delta: 'Understood.'});
+    c.socket().receive({type: 'session.output_transcript.delta', delta: ' Thanks.'});
+    await tick();
+    assert.equal(c.requests.length, 1);
+    assert.equal(c.requests[0].text, 'I already have a broker.');
+    await tick(); await tick();
+    const note = c.socket().events.find(e => e.type === 'session.thinking.append');
+    assert.equal(note.delegation_id, null); assert.match(note.event_id, /^adv_[a-f0-9]{24}$/);
+    assert.match(note.content, /Approved example timing\./);
+    assert(!c.socket().events.some(e => e.type === 'response.create' && c.socket().events.indexOf(e) > c.socket().events.indexOf(note)));
+    c.socket().receive({type: 'session.thinking.appended', client_event_id: note.event_id});
+    const closed = c.audio.close(); c.socket().receive({type: 'session.closed'}); await closed;
+    assert.equal(c.finished[0].advice[0].acknowledged, true);
+  } finally { await c.audio.close(); }
 });
 
-test('a corrected final transcript invalidates its earlier classifier result', async () => {
-  const first = deferred(); const s = setup(r => r.revision === 1 ? first.promise : Promise.resolve({status: 'available', advice}));
-  s.hook.begin('a'); s.hook.final('a', 'I am selling'); await tick();
-  s.hook.final('a', 'I am NOT selling'); await tick();
-  first.resolve({status: 'available', advice: {...advice, id: 'obsolete'}}); await tick();
-  assert.equal(s.requests[1].request.text, 'I am NOT selling');
-  assert.equal(s.sent.length, 1); s.hook.acknowledged(s.sent[0].item.id);
-  assert.equal(s.receipts.at(-1).revision, 2); s.hook.cancel();
+function coach(run, {deadlineMs = 2000, room = Infinity, maxAdviceNote = 4000} = {}) {
+  const sent = [], receipts = [];
+  const adapter = {constructor: {maxAdviceNote}, adviceRoom: () => room, adviceMessages: note => [{note}]};
+  return {hook: new PhoneAdvice({call: {id: 'call'}, run, deadlineMs, adapter, send: m => sent.push(m), receipts}), sent, receipts};
+}
+
+test('the latest utterance wins: a pick a newer one overtook is dropped and the same pick is not added twice', async () => {
+  const a = deferred(), b = deferred(), c = deferred();
+  const s = coach(r => ({A: a, B: b, C: c})[r.text].promise);
+  s.hook.heard('A', []); s.hook.heard('B', []);
+  b.resolve({status: 'available', advice: advice('broker')}); await tick(); await tick();
+  a.resolve({status: 'available', advice: advice('timing')}); await tick(); await tick();
+  assert.equal(s.sent.length, 1); assert.match(s.sent[0].note, /broker/);
+  assert.deepEqual(s.receipts.map(r => r.status), ['superseded', 'sent']);
+  s.hook.heard('C', []); await tick(); // still pending
+  const again = coach(async () => ({status: 'available', advice: advice('broker')}));
+  again.hook.heard('one', []); await tick(); await tick(); again.hook.heard('two', []); await tick(); await tick();
+  assert.deepEqual(again.receipts.map(r => r.status), ['sent', 'unchanged']);
+  s.hook.close(); assert.equal(s.receipts.at(-1).status, 'closed');
 });
 
-test('deadline and missing acknowledgement resume speech once, never inject late', async () => {
-  const waiting = deferred(); const s = setup(() => waiting.promise, 15);
-  s.hook.begin('a'); s.hook.stop('a'); s.hook.final('a', 'hello');
-  await sleep(30); assert.deepEqual(s.sent.map(m => m.type), ['response.create']);
-  waiting.resolve({status: 'available', advice}); await tick(); assert.equal(s.sent.length, 1);
-  const ack = setup(async () => ({status: 'available', advice}), 15);
-  ack.hook.begin('a'); ack.hook.final('a', 'hello'); await sleep(30);
-  assert.deepEqual(ack.sent.map(m => m.type), ['conversation.item.create','conversation.item.delete','response.create']);
-  ack.hook.acknowledged(ack.sent[0].item.id); assert.equal(ack.sent.length, 3);
-  s.hook.cancel(); ack.hook.cancel();
+test('a slow or failed lookup and a closed call add nothing; notes stay within the provider budget', async () => {
+  const slow = coach((_, signal) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason))), {deadlineMs: 20});
+  slow.hook.heard('hello', []); await new Promise(r => setTimeout(r, 40));
+  assert.equal(slow.receipts[0].status, 'timeout'); assert.equal(slow.sent.length, 0);
+  const late = deferred(), closed = coach(() => late.promise);
+  closed.hook.heard('hello', []); closed.hook.close();
+  late.resolve({status: 'available', advice: advice()}); await tick(); await tick();
+  assert.equal(closed.sent.length, 0); assert.equal(closed.receipts[0].status, 'closed');
+  const failed = coach(async () => { throw Error('down'); }); failed.hook.heard('hello', []); await tick(); await tick();
+  assert.equal(failed.receipts[0].status, 'unavailable');
+  const tight = coach(async () => ({status: 'available', advice: advice()}), {room: 50});
+  tight.hook.heard('hello', []); await tick(); await tick(); assert.equal(tight.receipts[0].status, 'no_room');
+  const long = coach(async () => ({status: 'available', advice: advice()}), {maxAdviceNote: 50});
+  long.hook.heard('hello', []); await tick(); await tick(); assert.equal(long.receipts[0].status, 'too_long');
+  let n = 0; const many = coach(async () => ({status: 'available', advice: advice(`pick${n++}`)}));
+  for (let i = 0; i <= MAX_NOTES; i++) { many.hook.heard(`turn ${i}`, []); await tick(); await tick(); }
+  assert.equal(many.sent.length, MAX_NOTES); assert.equal(many.receipts.at(-1).status, 'no_room');
+  assert.equal(createAdapter({...base, provider: 'deepgram', apiKey: keys.deepgram, ...keys, instructions: 'x'.repeat(24000)}).adviceRoom(), 1000);
 });
 
-test('closure and an early provider response prevent a second generation', async () => {
-  const waiting = deferred(), s = setup(() => waiting.promise);
-  s.hook.begin('a'); s.hook.final('a', 'hello'); await tick(); s.hook.cancel();
-  waiting.resolve({status: 'available', advice}); await tick(); assert.equal(s.sent.length, 0);
-  const early = setup(() => new Promise(() => {})); early.hook.begin('a'); early.hook.stop('a'); early.hook.responseStarted();
-  assert.equal(early.sent.length, 0); assert.equal(early.receipts.at(-1).status, 'provider_started_early'); early.hook.cancel();
-});
-
-test('installed advice binds call, turn and transcript revision and accepts no arbitrary actions', async () => {
-  const request = {call: {id: 'origin'}, turn: 2, revision: 3}; let params;
-  const core = {request: async (_, p) => {params = p; return {code: 0, stdout: JSON.stringify({call_id: 'origin', turn: 2, revision: 3, status: 'available', advice, tools: ['send_sms']})};}};
-  const binding = {alias: 'advice', invoke: ['evaluate','-'], deadlineMs: 500};
+test('the installed command is bound to the call and turn and returns only an approved note', async () => {
+  let params; const request = {call: {id: 'origin'}, turn: 2};
+  const core = {request: async (_, p) => { params = p; return {code: 0, stdout: JSON.stringify({call_id: 'origin', turn: 2, status: 'available', advice: advice(), tools: ['send_sms']})}; }};
   const out = await installedAdvice(binding, core).run(request);
-  assert.deepEqual(params.args, binding.invoke); assert.equal(JSON.parse(params.stdin).revision, 3); assert.equal(out.tools, undefined);
-  await assert.rejects(installedAdvice(binding, core).run({...request, revision: 4}), /binding mismatch/);
+  assert.deepEqual(params.args, binding.invoke); assert.equal(JSON.parse(params.stdin).turn, 2);
+  assert.deepEqual(Object.keys(out.advice).sort(), ['confidence', 'id', 'source', 'source_revision', 'text']); assert.equal(out.tools, undefined);
+  await assert.rejects(installedAdvice(binding, core).run({...request, turn: 3}), /binding mismatch/);
+  assert.throws(() => installedAdvice({...binding, deadlineMs: 100}, core), /advice binding/);
 });
 
-test('advice is explicit per line and unsupported speech providers refuse activation', () => {
-  const config = {accountSid: 'AC'+'a'.repeat(32), authToken: 'a'.repeat(32), origin: 'https://example.com',
-    number: '+15551230002', apiKey: 'sk_'+'a'.repeat(32), provider: 'elevenlabs', advice: true};
-  assert.throws(() => validatePhoneConfig(config), /adviceBinding/);
-  config.adviceBinding = {alias: 'advice', invoke: ['evaluate','-'], deadlineMs: 500};
-  assert.equal(validatePhoneConfig(config).advice, true);
-  assert.equal(new ElevenLabsAdapter(config).configure().session.audio.input.turn_detection.create_response, false);
-  assert.throws(() => validatePhoneConfig({...config, provider: 'openai', apiKey: 'sk-'+'a'.repeat(32)}), /ElevenLabs/);
-});
-
-test('the phone bridge carries finalized speech through advice acknowledgement into one provider response', async () => {
-  let socket, mint;
-  const events = [], finished = [];
-  const twilio = {readyState: 1, bufferedAmount: 0, send() {}, close() {this.readyState = 3;}};
-  const audio = new PhoneAudio(twilio, {provider: 'elevenlabs', apiKey: 'synthetic', model: 'eleven_realtime_v1_max',
-    voice: 'brian', advice: true, call: {id:'call'}, streamSid: 'MZ'+'1'.repeat(32),
-    advisor: {deadlineMs: 100, run: async () => ({status:'available',advice})}}, stats => finished.push(stats), {
-    fetch: async (_, options) => {mint=JSON.parse(options.body);return new Response(JSON.stringify({value:'synthetic-session'}));},
-    socketFactory: () => socket=Object.assign(new EventEmitter(), {readyState:1,bufferedAmount:0,
-      send: raw => events.push(JSON.parse(raw)),close() {this.readyState=3;this.emit('close',1000);},terminate() {this.close();}}),
-  });
-  await tick(); assert.equal(mint.session.audio.input.turn_detection.create_response,false);
-  const event=e=>socket.emit('message',Buffer.from(JSON.stringify(e)));
-  event({type:'session.updated'});
-  event({type:'input_audio_buffer.speech_started',item_id:'utterance'});
-  event({type:'input_audio_buffer.speech_stopped',item_id:'utterance'});
-  event({type:'conversation.item.input_audio_transcription.completed',item_id:'utterance',transcript:'Not now, maybe later.'});
-  await tick(); const note=events.find(e=>e.type==='conversation.item.create');assert.ok(note);
-  assert.equal(events.filter(e=>e.type==='response.create').length,0);
-  event({type:'conversation.item.created',item:{id:note.item.id}});
-  assert.equal(events.filter(e=>e.type==='response.create').length,1);
-  event({type:'response.created',response:{id:'response-current'}});
-  event({type:'response.done',response:{id:'older-response'}});
-  assert.equal(events.filter(e=>e.type==='conversation.item.delete').length,0);
-  event({type:'response.done',response:{id:'response-current'}});
-  assert.equal(events.filter(e=>e.type==='conversation.item.delete').length,1);
-  await audio.close();assert.equal(finished[0].advice[0].status,'accepted_before_response');
-  assert.equal(finished[0].transcript[0].text,'Not now, maybe later.');
-  assert.ok(!JSON.stringify(finished[0]).includes(advice.text));
+test('advice is explicit per line, needs the installed binding and a provider that takes added context', () => {
+  const line = {...base, provider: 'deepgram', apiKey: keys.deepgram, llmApiKey: keys.llmApiKey, ttsApiKey: keys.ttsApiKey, advice: true};
+  assert.throws(() => validatePhoneConfig(line), /adviceBinding/);
+  assert.equal(validatePhoneConfig({...line, adviceBinding: binding}).advice, true);
+  assert.equal(validatePhoneConfig({...base, provider: 'openai', apiKey: keys.openai, advice: true, adviceBinding: binding}).advice, true);
+  assert.throws(() => validatePhoneConfig({...base, provider: 'elevenlabs', apiKey: 'sk_' + 'a'.repeat(24), advice: true, adviceBinding: binding}), /openai, deepgram/);
+  assert.equal(validatePhoneConfig({...line, advice: false, adviceBinding: binding}).advice, false);
 });
