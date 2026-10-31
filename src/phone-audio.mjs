@@ -22,7 +22,7 @@ export class PhoneAudio {
     this.adapter = adapter ?? createAdapter(config, fetchImpl && {fetch: fetchImpl});
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
     this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
-    this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
+    this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
     // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
     this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
@@ -36,8 +36,10 @@ export class PhoneAudio {
       const now = Date.now();
       if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up once Twilio has played it
         if (this.drainingAt) { if (now - this.drainingAt > (config.endCallDrainMs ?? 15000)) this.close('end_call'); }
-        else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
-      } else if (!this.pendingTools.size && this.idleMs > 0 && this.stats.inputTranscriptEvents && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
+        // A managed final response has no correlated audio-completion ID. An earlier
+        // utterance's AudioDone cannot end that wait; use the existing bounded window.
+        else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (!this.adapter.constructor.expectsFinalResponse && now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
+      } else if (!this.pendingTools.size && this.idleMs > 0 && (this.stats.inputTranscriptEvents || this.conversationStarted) && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
     // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
     try {
@@ -52,10 +54,17 @@ export class PhoneAudio {
     if (this.closing || this.completed) return;
     this.provider = this.socketFactory(url, {headers, maxPayload: 1024 * 1024});
     this.provider.on('open', () => { for (const message of this.adapter.start()) this.send(message); });
-    this.provider.on('message', raw => {
-      try { this.event(JSON.parse(raw.toString())); } catch { this.close('invalid_provider_event'); }
+    this.provider.on('message', (raw, binary) => {
+      try {
+        this.event(binary && this.adapter.constructor.binaryAudio ? Buffer.from(raw) : JSON.parse(raw.toString()));
+      } catch { this.close('invalid_provider_event'); }
     });
     this.provider.on('error', () => this.close('provider_connection_failed'));
+    this.provider.on('unexpected-response', (_request, response) => {
+      this.stats.providerError = Number.isInteger(response.statusCode) ? `HTTP_${response.statusCode}` : 'upgrade_failed';
+      response.resume();
+      this.close('provider_connection_failed');
+    });
     this.provider.on('close', code => {
       // A provider that ends the session by closing the socket says why in the close code only (never keep its text).
       if (!this.closing && !this.completed) {
@@ -68,7 +77,7 @@ export class PhoneAudio {
   send(message) {
     if (this.provider?.readyState !== WebSocket.OPEN) return false;
     if (this.provider.bufferedAmount > 256000) { this.close('provider_backpressure'); return false; }
-    this.provider.send(JSON.stringify(message)); return true;
+    this.provider.send(Buffer.isBuffer(message) ? message : JSON.stringify(message)); return true;
   }
   input(payload) {
     if (this.closing) return;
@@ -143,7 +152,7 @@ export class PhoneAudio {
         break;
       case 'audio':
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
-        if (audible(item.audio)) this.conversationStarted = true;
+        if (audible(item.audio)) {this.conversationStarted = true; this.activeAt = Date.now();}
         const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
         this.stats.firstAudioMs ??= Date.now() - this.startedAt;
         if (this.ringing) {
@@ -173,7 +182,7 @@ export class PhoneAudio {
         if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
         break;
       case 'cancelled':
-        if (item.request) this.cancelTools(false, item.request);
+        if (item.id || item.request) this.cancelTools(false, item.request, item.id);
         break;
       case 'interrupted':
         this.cancelTools(true); this.turn++;
@@ -182,6 +191,10 @@ export class PhoneAudio {
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
         break;
       case 'tool': this.tool(item); break;
+      case 'warning':
+        if ((this.stats.providerWarnings ??= []).length < 8) this.stats.providerWarnings.push({code: item.code,
+          ...(item.upstreamStatus && {upstreamStatus: item.upstreamStatus}), ...(item.category && {category: item.category})});
+        break;
       case 'error':
         this.stats.providerError = item.code;
         this.close('provider_rejected');
@@ -222,8 +235,9 @@ export class PhoneAudio {
         for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
       }).finally(() => { clearTimeout(timer); this.pendingTools.delete(item.id); });
   }
-  cancelTools(notify = false, request) {
+  cancelTools(notify = false, request, callId) {
     for (const [id, abort] of this.pendingTools) {
+      if (callId && id !== callId) continue;
       if (request && abort.tool.request !== request) continue;
       abort.abort();
       this.pendingTools.delete(id);
