@@ -809,9 +809,11 @@ test('Deepgram failure stays explicit, unknown tools cannot run, and provider de
     await wait(() => c.socket().events.filter(e => e.type === 'FunctionCallResponse').length === 2);
     const output = c.socket().events.filter(e => e.type === 'FunctionCallResponse').map(e => JSON.parse(e.content));
     assert(output.some(o => o.error === 'unknown_tool')); assert(output.some(o => o.status === 'unavailable')); assert.equal(ran, 1);
+    c.socket().receive({type: 'Warning', code: 'THINK_REQUEST_FAILED', description: 'HTTP 429 RESOURCE_EXHAUSTED ' + keys.gemini});
     c.socket().receive({type: 'Error', code: 'INVALID_SETTINGS', description: keys.gemini});
     await c.audio.done;
     assert.equal(c.finished[0].providerError, 'INVALID_SETTINGS');
+    assert.deepEqual(c.finished[0].providerWarnings[0], {code: 'THINK_REQUEST_FAILED', upstreamStatus: 429, category: 'quota'});
     assert(!JSON.stringify(c.finished).includes(keys.gemini));
     const adapter = createAdapter({...base, provider: 'deepgram', ...deepgramKeys});
     assert.equal(adapter.parse(dgCall('bad', 'x'.repeat(65537)))[0].reason, 'invalid_provider_event');

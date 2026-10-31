@@ -4,6 +4,22 @@ import {words} from './transcript.mjs';
 // Deepgram owns the cascaded speech session and turn detection. This adapter only translates
 // its wire protocol; the existing bridge still owns admission, installed tools and cancellation.
 const SOCKET_URL = 'wss://agent.deepgram.com/v1/agent/converse';
+// Upstream descriptions can contain request content and credentials. Retain only
+// known categories/statuses, never the description or arbitrary provider fields.
+function diagnostic(event) {
+  const description = typeof event.description === 'string' ? event.description.slice(0, 16000) : '';
+  const status = description.match(/(?:status(?:_code)?[\s"':=]*|HTTP\D{0,5})([45]\d\d)\b/i)?.[1];
+  const categories = [
+    ['invalid_key', /API_KEY_INVALID|invalid.{0,20}api.?key|api.?key.{0,20}(invalid|expired)/i],
+    ['quota', /RESOURCE_EXHAUSTED|quota|rate.?limit/i],
+    ['permission', /PERMISSION_DENIED|permission|unauthorized|authentication/i],
+    ['model_unavailable', /NOT_FOUND|model.{0,60}(not found|not supported|not available)/i],
+    ['invalid_arguments', /INVALID_ARGUMENT|invalid json|unknown name|invalid schema/i],
+  ];
+  const category = categories.find(([, pattern]) => pattern.test(description))?.[0];
+  return {code: typeof event.code === 'string' && /^[A-Z0-9_]{1,100}$/.test(event.code) ? event.code : 'PROVIDER_ERROR',
+    ...(status && {upstreamStatus: Number(status)}), ...(category && {category})};
+}
 
 export class DeepgramAdapter {
   static id = 'deepgram';
@@ -80,7 +96,8 @@ export class DeepgramAdapter {
           if (typeof call?.id !== 'string') return [];
           this.signatures.delete(call.id); return [{type: 'cancelled', id: call.id}];
         });
-      case 'Error': return [{type: 'error', code: typeof event.code === 'string' ? event.code.slice(0, 100) : 'provider_error'}];
+      case 'Warning': return [{type: 'warning', ...diagnostic(event)}];
+      case 'Error': return [{type: 'warning', ...diagnostic(event)}, {type: 'error', code: diagnostic(event).code}];
       default: return [];
     }
   }

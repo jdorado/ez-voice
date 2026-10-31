@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.30
+
+- Retain bounded provider warning codes, upstream HTTP statuses and known failure categories; never retain free-form descriptions or request credentials.
+
 ## 0.1.0-beta.11.rc.29
 
 - Revalidate live file identity and the outbound session budget; preserve issued tickets and idempotent request readback.
