@@ -5,6 +5,7 @@ import {dirname, join} from 'node:path';
 import {WebSocketServer} from 'ws';
 import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
+import {relayThink} from './phone-think.mjs';
 import {phonePlugins, validateBinding, validateAdviceBinding} from './phone-plugin-tools.mjs';
 import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/index.mjs';
 
@@ -63,7 +64,7 @@ function validateLine(line) {
   if (line.tools !== undefined && typeof line.tools !== 'boolean') throw Error('tools must be true or false');
   if (line.answerTone !== undefined && !['ringback','none'].includes(line.answerTone)) throw Error('answerTone must be ringback or none');
   if (line.advice !== undefined && typeof line.advice !== 'boolean') throw Error('advice must be true or false');
-  if (line.advice && typeof Adapter.prototype.adviceMessages !== 'function') throw Error(`advice needs a provider that takes added context during a call (${Object.values(PROVIDERS).filter(p => p.prototype.adviceMessages).map(p => p.id).join(', ')})`);
+  if (line.advice && typeof Adapter.prototype.withAdvice !== 'function') throw Error(`advice needs a provider whose language-model requests the listener can relay (${Object.values(PROVIDERS).filter(p => p.prototype.withAdvice).map(p => p.id).join(', ')})`);
   if (line.toolModel !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(line.toolModel)) throw Error('toolModel must be a model name');
   if (line.toolEffort !== undefined && !['none','minimal','low','medium','high','xhigh','max'].includes(line.toolEffort)) throw Error('toolEffort must be a reasoning effort');
   return {...line, provider: Adapter.id, model, voice, ...(Adapter.defaultTtsModel && {ttsModel: line.ttsModel ?? Adapter.defaultTtsModel}), ...(files ? {instructionsFiles: [...line.instructionsFiles]} : {instructions})};
@@ -158,9 +159,10 @@ const startRecording = (provider, callSid) => Promise.resolve().then(() => provi
   recording => ({state: 'started', sid: recording.sid}),
   error => ({state: 'failed', code: Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'ERROR'}));
 
-export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, contexts, provider = new PhoneNumber(config)} = {}) {
+export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, contexts, provider = new PhoneNumber(config), fetch: fetchImpl = fetch} = {}) {
   const prefix = config.pathPrefix || '', mediaPath = prefix + '/media';
-  const tickets = new Map(), actives = new Map(); let admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
+  // thinkers: each coached call's relay token -> its bridge
+  const tickets = new Map(), actives = new Map(), thinkers = new Map(); let admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.loaded && ticket.expires<Date.now())tickets.delete(token);};
   // Calls in progress or reserved, up to maxCalls at once: an outbound request counts from creation to its end
   // (its answer ticket and audio are the same call), an inbound call from its ticket to its end.
@@ -171,6 +173,12 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
     try {
       if (request.method === 'GET' && request.url === '/health') { response.statusCode = unavailable ? 503 : 200; response.setHeader('Content-Type', 'application/json'); return response.end(JSON.stringify({ready: !unavailable, active: actives.size>0, calls: actives.size, admitted, provider: config.provider ?? DEFAULT_PROVIDER, model: config.model ?? providerClass(config).defaultModel, lines: linesOf(config).map(l=>l.number), ...(calls && {outboundPending:calls.pendingCount()>0})})); }
       const url=new URL(request.url,config.origin);
+      // A coached line's speech provider sends its language-model requests here, with the call's own token.
+      if (request.method === 'POST' && url.pathname.startsWith(prefix + '/think/')) {
+        const bridge = thinkers.get(/^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization ?? '')?.[1]);
+        if (!bridge) { response.writeHead(403); return response.end(); }
+        return await relayThink(request, response, bridge, {fetch: fetchImpl});
+      }
       if (request.method !== 'POST' || url.origin!==config.origin || !['/incoming',prefix+'/incoming'].includes(url.pathname) || !request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) { response.writeHead(404); return response.end(); }
       const params = new URLSearchParams(await body(request));
       if (!authentic(config, request.headers['x-twilio-signature'], request.url, params) || params.get('AccountSid') !== config.accountSid || !sid(params.get('CallSid'), 'CA')) { response.writeHead(403); return response.end(); }
@@ -241,12 +249,14 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           tickets.delete(start.customParameters.ticket); admitted++;
           // Caller contexts apply once a set was prepared (an empty or never-replaced store changes nothing).
           const prepared = !ticket.outbound && contexts !== undefined && contexts.status().count > 0;
-          bridge = new PhoneAudio(ws, {...line, instructions: ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context), streamSid: start.streamSid,
+          const thinkToken = line.advice && config.advisor ? randomBytes(32).toString('base64url') : undefined;
+          bridge = new PhoneAudio(ws, {...line, ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions: ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context), streamSid: start.streamSid,
             greet: !ticket.outbound, call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined, ...(prepared && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
-            finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); }
+            finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); thinkers.delete(thinkToken); }
           }, {socketFactory}); actives.set(start.callSid, {bridge, outbound: ticket.outbound});
+          if (thinkToken) thinkers.set(thinkToken, bridge);
           if (prepared) bridge.stats.callerContext = Boolean(ticket.context);
           bridge.stats.instructionsSha256 = ticket.instructionsSha256; // which instructions this call ran with (never their text)
           recording = startRecording(provider, start.callSid);
@@ -299,7 +309,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     'phone route', 'phone status', 'phone restore', 'phone receipt [--call-sid CA...]', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'phone context replace < contexts.json', 'phone context status', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions? or instructionsFiles?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
-      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for its configured Gemini/ElevenLabs stack)', 'ttsModel (deepgram only: eleven_flash_v2_5; v4 Turbo uses an incompatible protocol)', 'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)','advice (default false; deepgram and openai): a side coach, the shared adviceBinding {alias, invoke, deadlineMs: 500..5000}: each finished caller utterance goes to that installed command, and its note is added to the model\'s context for later replies; no reply waits for it']},
+      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for its configured Gemini/ElevenLabs stack)', 'ttsModel (deepgram only: eleven_flash_v2_5; v4 Turbo uses an incompatible protocol)', 'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)','advice (default false; deepgram): a side coach, the shared adviceBinding {alias, invoke, deadlineMs: 500..5000}: each finished caller utterance goes to that installed command, and its latest note rides on each of the model\'s language-model requests, relayed through this listener (origin + pathPrefix + /think/); no reply waits for it']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime, gemini Live or deepgram Flux/Gemini Flash/ElevenLabs TTS); no native-agent delegation or Retell/Vapi; tools are end_call, cache-only find_case on inbound calls, and an operator-bound installed information plugin when configured (with openai they run on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio (each receipt keeps the transcript of its call); an inbound call rings on until the first words of the model (answerTone); the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     contexts: 'phone context replace reads on stdin a JSON array of at most 500 caller contexts {number (E.164), text (1..6000 characters), claim (1..600), find (the property address, searchable), at?} and replaces the whole prepared set atomically; an inbound call from a number in it is answered with its text added to the line\'s instructions (before the greeting, no network call), and a caller from another number can name a property to the find_case tool (at most 3 tries a call), which answers with the claims whose address matches. phone context status reads the count and latest time.',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin, added to the configured instructions for that call only (the brief wins where they differ). Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',

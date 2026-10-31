@@ -25,7 +25,7 @@ export class PhoneAudio {
     this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     if (config.advisor) this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs,
-      adapter: this.adapter, send: message => this.send(message), receipts: this.stats.advice = []});
+      receipts: this.stats.advice = []});
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
     // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
     this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
@@ -179,10 +179,10 @@ export class PhoneAudio {
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else this.callerSpeaking = false;
         this.activeAt = Date.now();
-        if (this.advice) this.coach(item);
+        // The side coach hears each finished caller utterance (whole, from the providers that support it).
+        if (this.advice && item.who === 'caller' && item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
         this.transcript.add(item.who, item);
         break;
-      case 'advice_ack': this.advice?.acknowledged(); break;
       case 'turn':
         if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
         break;
@@ -254,18 +254,11 @@ export class PhoneAudio {
     }
 
   }
-  // The side coach hears each finished caller utterance: whole from a provider that sends it so, otherwise once the
-  // model starts to answer it. It delivers when the caller starts to speak (a start signal, or their first words).
-  coach(item) {
-    if (item.who === 'caller') {
-      if (item.start || (item.delta && !this.callerOpen)) this.advice.callerStarted();
-      if (item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
-      else if (item.delta) this.callerOpen = true;
-    } else if (this.callerOpen) {
-      this.callerOpen = false;
-      const said = this.transcript.receipt().transcript ?? [], last = said.at(-1);
-      if (last?.who === 'caller') this.advice.heard(last.text, said.slice(0, -1));
-    }
+  // One language-model request relayed through the listener (src/phone-think.mjs): the latest coach note rides on it.
+  think(body) {
+    const note = this.advice?.note(), out = note ? this.adapter.withAdvice(body, note.text) : body;
+    if (out !== body) this.advice.attached(note);
+    return out;
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
   // find_case: what the prepared contexts say to a stranger who names a property, a few tries a call (an address cannot be

@@ -1,21 +1,18 @@
-// A side coach. Each finished caller utterance goes to an operator-installed advisory capability; its note joins the
-// model's context when the caller next starts to speak, so it shapes the reply to that utterance. Nothing waits for it,
-// and a note never lands while the model is forming a reply or a hang-up: a mid-reply addition derailed Deepgram turns
-// into repeated lookups and cost GPT-Live its end_call. A note a newer utterance overtook is dropped. The installed
-// plugin owns what a note means; this only times and delivers it.
-export const MAX_NOTES = 8; // notes a call can add: each one stays in the provider's context until the call ends
+// A side coach. Each finished caller utterance goes to an operator-installed advisory capability; its latest note rides
+// on each of the model's requests (src/phone-think.mjs) until a newer one replaces it, and never joins the model's
+// standing instructions: an added prompt sent Deepgram's Gemini into lookups on every call, whatever the note said.
+// Nothing waits for it, and a note a newer utterance overtook is dropped. The installed plugin owns what a note means;
+// this only times and attaches it.
 const MAX_LOOKUPS = 64;
 
 export class PhoneAdvice {
-  constructor({call, run, deadlineMs, adapter, send, receipts, now = Date.now}) {
-    Object.assign(this, {call, run, deadlineMs, adapter, send, receipts, now});
-    this.room = adapter.adviceRoom(); this.turn = 0; this.notes = 0; this.closed = new AbortController(); this.sent = [];
+  constructor({call, run, deadlineMs, receipts, now = Date.now}) {
+    Object.assign(this, {call, run, deadlineMs, receipts, now});
+    this.turn = 0; this.closed = new AbortController();
   }
   // The caller finished an utterance; `history` is what was said before it.
   heard(text, history) {
     if (this.closed.signal.aborted || typeof text !== 'string' || !text.trim() || this.turn >= MAX_LOOKUPS) return;
-    this.speaking = false;
-    if (this.ready) { this.ready.receipt.status = 'superseded'; this.ready = undefined; }
     const turn = ++this.turn, began = this.now(), receipt = {turn, status: 'pending'};
     const signal = AbortSignal.any([this.closed.signal, AbortSignal.timeout(this.deadlineMs)]);
     const request = {call: this.call, turn, text: text.slice(0, 2000), deadline_at: began + this.deadlineMs,
@@ -28,30 +25,27 @@ export class PhoneAdvice {
       const a = result.advice;
       Object.assign(receipt, {id: a.id, source: a.source, source_revision: a.source_revision, confidence: a.confidence});
       if (turn !== this.turn) return void (receipt.status = 'superseded');
-      if (a.id === this.applied) return void (receipt.status = 'unchanged');
-      this.ready = {receipt, text: a.text};
-      if (this.speaking) this.deliver();
+      if (a.id === this.current?.receipt.id) return void (receipt.status = 'unchanged');
+      if (this.current?.receipt.status === 'ready') this.current.receipt.status = 'unused';
+      this.current = {receipt, text: a.text}; receipt.status = 'ready';
     }, () => {
       if (receipt.status === 'pending') Object.assign(receipt, {status: signal.aborted && !this.closed.signal.aborted ? 'timeout' : 'unavailable', milliseconds: this.now() - began});
     });
   }
-  // The caller started to speak: the model is listening, so a ready note can join its context.
-  callerStarted() { this.speaking = true; this.deliver(); }
-  deliver() {
-    const ready = this.ready; if (!ready || this.closed.signal.aborted) return;
-    this.ready = undefined;
-    const note = `Coach note ${this.notes + 1}, replacing any earlier coach note: a private reference for your next replies, not the caller's words and not to be read out.\n${ready.text}`;
-    if (note.length > this.adapter.constructor.maxAdviceNote) return void (ready.receipt.status = 'too_long');
-    if (this.notes >= MAX_NOTES || note.length > this.room) return void (ready.receipt.status = 'no_room');
-    this.room -= note.length; this.notes++; this.applied = ready.receipt.id;
-    for (const message of this.adapter.adviceMessages(note)) this.send(message);
-    ready.receipt.status = 'sent'; this.sent.push(ready.receipt);
+  // The note for the model's next request, if a pick is ready; `attached` once a request carries it.
+  note() {
+    const current = this.current; if (!current || this.closed.signal.aborted) return;
+    return {receipt: current.receipt, text: `Coach note, a private reference for your reply, not the caller's words and not to be read out:\n${current.text}`};
   }
-  // The provider confirmed the oldest note it had not yet confirmed.
-  acknowledged() { const receipt = this.sent.shift(); if (receipt) receipt.acknowledged = true; }
+  attached({receipt}) {
+    if (receipt.status === 'ready') receipt.status = 'sent';
+    receipt.requests = (receipt.requests ?? 0) + 1;
+  }
   close() {
     this.closed.abort();
-    if (this.ready) { this.ready.receipt.status = 'undelivered'; this.ready = undefined; }
-    for (const receipt of this.receipts) if (receipt.status === 'pending') receipt.status = 'closed';
+    for (const receipt of this.receipts) {
+      if (receipt.status === 'pending') receipt.status = 'closed';
+      else if (receipt.status === 'ready') receipt.status = 'unused';
+    }
   }
 }

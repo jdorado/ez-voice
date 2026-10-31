@@ -422,22 +422,23 @@ The managed final-response window can leave the line open briefly after a goodby
 
 ## Side coach (advice)
 
-An operator can give a line a side coach: `advice: true` on the line and one shared installed command,
+An operator can give a Deepgram line a side coach: `advice: true` on the line and one shared installed command,
 `adviceBinding: {alias, invoke, deadlineMs}`, for example `{"alias": "advice", "invoke": ["evaluate", "-"], "deadlineMs": 4000}`.
 It is off by default. Voice holds no classifier, rules or coach key; the installed command owns what a note means.
 
-Each finished caller utterance (whole from Deepgram; on GPT-Live, complete once the model starts to answer) goes to
-the command on stdin as `{call, turn, text, history, deadline_at}`, with identity from the call ticket, never from
-model arguments. It answers `{call_id, turn, status, advice?}`: status `available`, `no_match` or `unavailable`;
-advice `{id, text, source, source_revision, confidence}`, text at most 3,000 characters. An available note joins the
-model's context when the caller next starts to speak: Deepgram `UpdatePrompt`, GPT-Live `session.thinking.append`
-(context "without asking the model to say it immediately", at most 500 tokens). Other providers refuse `advice`.
+Each finished caller utterance goes to the command on stdin as `{call, turn, text, history, deadline_at}`, with identity
+from the call ticket, never from model arguments. It answers `{call_id, turn, status, advice?}`: status `available`,
+`no_match` or `unavailable`; advice `{id, text, source, source_revision, confidence}`, text at most 3,000 characters.
 
-Nothing waits for the coach: no reply is held or requested. A note never lands while the model is forming a reply or
-hanging up (in real-provider runs that made Deepgram repeat lookups and GPT-Live skip end_call); waiting for the
-caller's next turn costs nothing, since that is the first reply it could shape. A lookup slower than `deadlineMs`
-(500..5000), one a newer utterance overtook, or one that repeats the note last added adds nothing. Additions cannot be removed, so each note says it replaces the earlier
-ones, and a call adds at most eight, within Deepgram's 25,000-character prompt. The receipt's `advice` lists each
-lookup's status, timing, note ID, source revision and the provider's acknowledgement, never the note's text.
-Acknowledgement is not proof the model used the note, and GPT-Live warns that appended context may still be spoken:
-check on real calls that the model does not read a note out.
+A coached line's language-model requests come through the listener: Deepgram's think endpoint is
+`origin + pathPrefix + /think/...` with a per-call bearer token, and the listener holds the Google key and streams the
+answer back. The latest note joins the caller's latest words in each request until a newer one replaces it; a request
+that continues after a tool call goes as it is. Nothing waits for the coach, and a note never joins the standing
+prompt: in real-provider runs any `UpdatePrompt` addition, whatever it said and whenever it landed, sent the model
+into lookups on every call. A lookup slower than `deadlineMs` (500..5000), one a newer utterance overtook, or one that
+repeats the current note adds nothing. Providers whose model requests cannot be relayed refuse `advice` (GPT-Live's
+only silent channel, `session.thinking.append`, cost Annie hang-ups in the same runs).
+
+The receipt's `advice` lists each lookup's status, timing, note ID, source revision and how many requests carried it,
+never the note's text. Carrying a note is not proof the model used it; check on real calls that the model never
+reads one out.

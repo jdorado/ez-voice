@@ -36,14 +36,21 @@ export class DeepgramAdapter {
   static audioMeansSpeech = true;
   static binaryAudio = true;
   static expectsFinalResponse = true;
-  static maxAdviceNote = 4000;
   static supportsTools() { return true; }
 
   constructor(config) { this.config = config; this.signatures = new Map(); }
-  // UpdatePrompt adds to the prompt for later replies (it cannot be removed); the prompt, additions included, is at most
-  // 25,000 characters (https://developers.deepgram.com/docs/voice-agent-update-prompt).
-  adviceRoom() { return Math.max(0, 25000 - this.config.instructions.length); }
-  adviceMessages(note) { return [{type: 'UpdatePrompt', prompt: `\n\n${note}`}]; }
+  // A line with a side coach sends its model requests through the listener's think relay (src/phone-think.mjs), which
+  // adds the latest note to that one request and holds the Google key; other lines call Google directly.
+  thinkTarget() {
+    return {url: `https://generativelanguage.googleapis.com/v1beta/models/${this.config.model}:streamGenerateContent?alt=sse`,
+      headers: {'x-goog-api-key': this.config.llmApiKey}};
+  }
+  // The note joins the caller's latest words in this request only; a request that continues after a tool call goes as it is.
+  withAdvice(body, note) {
+    const last = Array.isArray(body?.contents) ? body.contents.at(-1) : undefined;
+    if (!note || last?.role !== 'user' || !Array.isArray(last.parts) || !last.parts.length || !last.parts.every(p => typeof p?.text === 'string')) return body;
+    return {...body, contents: [...body.contents.slice(0, -1), {...last, parts: [...last.parts, {text: note}]}]};
+  }
   connection() { return {url: SOCKET_URL, headers: {Authorization: `Token ${this.config.apiKey}`}}; }
   start() { return []; } // Welcome precedes Settings; SettingsApplied precedes audio.
   settings() {
@@ -55,8 +62,7 @@ export class DeepgramAdapter {
       listen: {provider: {type: 'deepgram', model: 'flux-general-en', version: 'v2'}},
       think: {
         provider: {type: 'google'},
-        endpoint: {url: `https://generativelanguage.googleapis.com/v1beta/models/${c.model}:streamGenerateContent?alt=sse`,
-          headers: {'x-goog-api-key': c.llmApiKey}},
+        endpoint: c.think ? {url: c.think.url, headers: {authorization: `Bearer ${c.think.token}`}} : this.thinkTarget(),
         prompt: c.instructions,
         ...(c.tools === false ? {} : {functions: toolDefinitions(c).map(({name, description, parameters}) =>
           ({name, description, parameters: geminiParameters(parameters), defer_until_eot: true}))}),
@@ -106,7 +112,6 @@ export class DeepgramAdapter {
           if (typeof call?.id !== 'string') return [];
           this.signatures.delete(call.id); return [{type: 'cancelled', id: call.id}];
         });
-      case 'PromptUpdated': return [{type: 'advice_ack'}];
       case 'Warning': return [{type: 'warning', ...diagnostic(event)}];
       case 'Error': return [{type: 'warning', ...diagnostic(event)}, {type: 'error', code: diagnostic(event).code}];
       default: return [];

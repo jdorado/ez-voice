@@ -2,7 +2,7 @@
 
 ## 0.1.0-beta.11.rc.35
 
-- Add an opt-in side coach for phone lines: each finished caller utterance goes to an operator-bound installed command, and its note joins the model's context when the caller next starts to speak (Deepgram `UpdatePrompt`, GPT-Live `session.thinking.append`), never mid-reply. No reply waits for it; late, overtaken or repeated notes are dropped and receipts keep no note text.
+- Add an opt-in side coach for Deepgram phone lines: each finished caller utterance goes to an operator-bound installed command, and its latest note rides on each of the model's requests, relayed through the listener (which also keeps the Google key from the provider). Nothing waits for it, it never joins the standing prompt, and receipts keep no note text.
 
 ## 0.1.0-beta.11.rc.34
 
