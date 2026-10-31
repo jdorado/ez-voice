@@ -862,21 +862,35 @@ test('Gemini declarations remove unsupported schema keywords without weakening b
   assert.deepEqual(declarations.find(t => t.name === 'read_record').parameters, translated);
 });
 
-test('Deepgram answers end_call and waits for final audio before Twilio playback drain', async () => {
-  const c = await call('deepgram', {...deepgramKeys, idleSeconds: 0, endCallGraceMs: 10, endCallQuietMs: 40, endCallMaxMs: 2000});
+test('Deepgram answers end_call and an older AudioDone cannot shorten its final response window', async () => {
+  const c = await call('deepgram', {...deepgramKeys, idleSeconds: 0, endCallGraceMs: 10, endCallQuietMs: 40, endCallMaxMs: 400});
   try {
     c.socket().receive({type: 'FunctionCallRequest', functions: [{id: 'stop', name: 'end_call', arguments: '{}', client_side: true}]});
     assert(c.socket().events.some(e => e.type === 'FunctionCallResponse' && e.id === 'stop'));
+    c.socket().receive({type: 'AgentAudioDone'}); // an older utterance, no response ID
     await new Promise(r => setTimeout(r, 100));
     assert(!markSent(c.twilio));
     c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'Good'});
     c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'bye.'});
     c.socket().emit('message', Buffer.alloc(160, 10), true);
     c.socket().receive({type: 'AgentAudioDone'});
+    assert(!markSent(c.twilio));
     await wait(() => markSent(c.twilio)); c.audio.mark('end_call');
     const receipt = await c.audio.done;
     assert.equal(receipt.reason, 'end_call'); assert.equal(receipt.transcript[0].text, 'Goodbye.');
   } finally {await c.audio.close();}
+});
+
+test('Deepgram idle timeout arms after its audible greeting even when the caller stays silent', async () => {
+  const c = await call('deepgram', {...deepgramKeys, idleSeconds: 0.08});
+  c.audio.adapter.greet();
+  c.socket().receive({type: 'ConversationText', role: 'user', content: '(The call has connected: answer it.)'});
+  c.socket().receive({type: 'ConversationText', role: 'assistant', content: 'Hello.'});
+  c.socket().emit('message', Buffer.alloc(160, 10), true);
+  const receipt = await c.audio.done;
+  assert.equal(receipt.reason, 'idle_timeout');
+  assert.equal(receipt.inputTranscriptEvents, 0);
+  assert.deepEqual(receipt.transcript.map(t => t.who), ['model']);
 });
 
 test('Deepgram transport greeting is not retained as caller speech', () => {

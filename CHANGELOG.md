@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.33
+
+- Keep uncorrelated earlier audio completion from shortening a managed final response; retain the existing bounded closing window and playback drain.
+- Arm idle termination after an audible greeting while excluding injected transport text from caller history.
+
 ## 0.1.0-beta.11.rc.32
 
 - Complete Deepgram final tool responses and wait for its final audio before the existing bounded playback drain.

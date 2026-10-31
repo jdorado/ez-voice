@@ -75,7 +75,6 @@ export class DeepgramAdapter {
         if (this.ready) return [];
         this.ready = true; return [{type: 'ready', id: this.id}];
       case 'UserStartedSpeaking': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
-      case 'AgentAudioDone': return [{type: 'output_done'}];
       case 'ConversationText':
         if (this.greetingInjected && event.role === 'user' && event.content === CONNECTED) {this.greetingInjected = false; return [];}
         return ['user', 'assistant'].includes(event.role) && typeof event.content === 'string'

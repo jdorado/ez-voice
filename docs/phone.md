@@ -402,7 +402,7 @@ run its own STT/LLM/TTS loop or choose a fallback model.
 
 The adapter waits for Welcome, submits Settings, and waits for SettingsApplied before audio.
 The generic call-connected turn requests an inbound greeting; persona wording remains in
-the operator's instructions. Every admitted client function, including `end_call`, receives its protocol response; the bridge waits for final agent audio (bounded by its existing end-call limit) before Twilio playback drain. Native functions use the existing tool registry, with
+the operator's instructions. Every admitted client function, including `end_call`, receives its protocol response; the bridge allows its existing 12-second closing window before Twilio playback drain, because audio-done events do not identify the post-tool response. Native functions use the existing tool registry, with
 `defer_until_eot` so speculative turn detection cannot end the call. Gemini thought signatures
 return only with their originating function response. Cancelled functions receive no response,
 and late results cannot cross calls or turns. A readiness probe alone does not establish
@@ -417,3 +417,5 @@ Provider contracts: [message flow](https://developers.deepgram.com/docs/voice-ag
 Deepgram currently accepts `ttsModel: "eleven_flash_v2_5"` (also the default). ElevenLabs v4 Turbo requires its Text-to-Dialogue WebSocket protocol, which this managed provider integration does not speak. It is refused at configuration time rather than producing a silent call. No automatic model substitution occurs.
 
 File-backed instructions require the Linux Docker runtime: containment is verified using the opened descriptor under `/proc/self/fd`, so a parent-directory swap cannot redirect a read outside its root. Native non-Linux file loading is refused. Packed Docker/CI runs the filesystem stories.
+
+The managed final-response window can leave the line open briefly after a goodbye. It is bounded by the existing end-call limit; an unrelated earlier AudioDone cannot close the call before the final response. Audible greeting activity also arms the configured idle timer when the caller remains silent.
