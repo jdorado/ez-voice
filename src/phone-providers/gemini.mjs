@@ -1,5 +1,6 @@
 import {toolDefinitions} from '../phone-tools.mjs';
 import {words} from './transcript.mjs';
+import {geminiParameters} from './gemini-schema.mjs';
 import {ulawToPcm, pcmToUlaw, pcmBytes, pcmFromBytes, Upsampler, Downsampler, Framer} from './g711.mjs';
 
 // Gemini Live (BidiGenerateContent). It takes 16-bit PCM at 16 kHz and answers with 16-bit PCM (24 kHz), never G.711, so the
@@ -9,7 +10,7 @@ const SOCKET_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generat
 // Gemini rejects JSON Schema keywords it does not know; a tool without parameters declares none.
 const declaration = (tool, model) => {
   const {name, description, parameters} = tool;
-  const {additionalProperties, ...schema} = parameters ?? {};
+  const schema = geminiParameters(parameters ?? {});
   // gemini-3.8-live calls tools without waiting unless told to; the thinking variant only supports that mode.
   return {name, description, ...(Object.keys(schema.properties ?? {}).length ? {parameters: schema} : {}),
     ...(model.endsWith('-extended-thinking') ? {} : {behavior: 'BLOCKING'})};

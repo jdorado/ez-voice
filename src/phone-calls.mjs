@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {frames, send} from './protocol.mjs';
 import {phone, sid} from './phone-provider.mjs';
+import {instructionsFromFiles} from './phone-instructions.mjs';
 
 export const LAST_CALL = 'last-call.json';
 const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected']);
@@ -89,8 +90,15 @@ export class PhoneCalls {
     if (!options || Object.keys(options).some(key=>!['to','from','requestId','instructions'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || this.numbers().includes(options.to)) throw Error('Supply a destination other than the configured numbers and a stable request ID');
     if (!this.numbers().includes(from)) throw Error('--from must be one of the configured lines');
     if (!brief(options.instructions)) throw Error(`Call instructions must contain 1..${MAX_CALL_INSTRUCTIONS} characters`);
+    const prior = this.row(options.requestId);
+    if (prior) {
+      if (prior.recipient !== options.to || this.from(prior) !== from) throw Error('Request ID was already used for a different destination or line');
+      return {...await this.status(prior.id), created: false};
+    }
     const line = (this.config.lines ?? [this.config]).find(l => l.number === from);
-    if (withBrief(line?.instructions ?? '', options.instructions).length > MAX_SESSION_INSTRUCTIONS)
+    // A line that reads its instructions from files reads them now, so a missing file stops the call before it is dialed
+    // (the answered call reads them again, at its start).
+    if (withBrief((line?.instructionsFiles ? await instructionsFromFiles(line, MAX_CALL_INSTRUCTIONS) : line?.instructions) ?? '', options.instructions).length > MAX_SESSION_INSTRUCTIONS)
       throw Error(`The line's instructions and this brief together exceed ${MAX_SESSION_INSTRUCTIONS} characters; shorten the brief`);
     this.db.exec('BEGIN IMMEDIATE');
     let existing;

@@ -1,8 +1,49 @@
 # Changelog
 
-## 0.1.0-beta.11.rc.27 (review candidate)
+## 0.1.0-beta.11.rc.34
 
-- Add opt-in installed-plugin advice on ElevenLabs phone lines, with an explicit deadline, per-utterance binding, provider acknowledgement and private receipts. Advice is off by default and requires provider acceptance before a live rollout.
+- Refresh idle activity when actual provider speech arrives, so a slow startup cannot make the first audible greeting appear already idle.
+
+## 0.1.0-beta.11.rc.33
+
+- Keep uncorrelated earlier audio completion from shortening a managed final response; retain the existing bounded closing window and playback drain.
+- Arm idle termination after an audible greeting while excluding injected transport text from caller history.
+
+## 0.1.0-beta.11.rc.32
+
+- Complete Deepgram final tool responses and wait for its final audio before the existing bounded playback drain.
+- Preserve streamed transcript word boundaries and exclude the injected transport greeting from caller speech.
+
+## 0.1.0-beta.11.rc.31
+
+- Translate nested Gemini parameter schemas at the provider boundary while retaining domain validation.
+- Resolve instruction file descriptors inside the Linux container and keep refused-call receipts in drain/shutdown accounting.
+
+## 0.1.0-beta.11.rc.30
+
+- Retain bounded provider warning codes, upstream HTTP statuses and known failure categories; never retain free-form descriptions or request credentials.
+
+## 0.1.0-beta.11.rc.29
+
+- Revalidate live file identity and the outbound session budget; preserve issued tickets and idempotent request readback.
+- Require a compatible ElevenLabs TTS model on Deepgram. v4 Turbo uses a different Text-to-Dialogue protocol and is rejected; the supported speech candidate is Flash v2.5.
+
+## 0.1.0-beta.11.rc.28
+
+- Integrate fresh per-call instruction files with the Deepgram stack. Operators can update a bound persona without restarting the listener; each call records its instruction digest.
+
+## 0.1.0-beta.11.rc.26
+
+- Preserve binary-framed JSON from Gemini Live while decoding Deepgram binary frames as audio.
+
+## 0.1.0-beta.11.rc.25
+
+- Report refused provider WebSocket upgrades by HTTP status, without retaining response bodies or credentials.
+
+## 0.1.0-beta.11.rc.24
+
+- Add a Deepgram Voice Agent adapter for Flux, Gemini 3.8 Flash and ElevenLabs v4 Turbo, with private BYO credentials, binary mu-law audio and the existing installed information tools.
+- Bind function cancellation and Gemini thought signatures to each call; discard interrupted or stale reads.
 
 ## 0.1.0-beta.11.rc.23
 

@@ -43,10 +43,14 @@ core application administration; installation alone grants no task access.
 One browser call can be active per Voice runtime. End it before another begins.
 
 `ez voice phone --help` describes the separate inbound/outbound Twilio audio channel. It
-connects directly to a speech provider (GPT-Live by default; ElevenLabs Realtime or Gemini Live by `provider` in its private configuration) and has no native-agent delegation, owner history,
+connects directly to a speech provider (GPT-Live by default; ElevenLabs Realtime, Gemini Live or Deepgram Voice Agent by `provider` in its private configuration) and has no native-agent delegation, owner history,
 workspace access or action tools: its tools are `end_call` and, on an inbound call when caller contexts are prepared,
 `find_case`. Its private configuration needs the provider key, Twilio Account SID and account Auth Token, voice-capable
-number(s) and HTTPS origin; `lines` serves several numbers from one install, `maxCalls` calls at once. Number routing
+number(s) and HTTPS origin; `lines` serves several numbers from one install, `maxCalls` calls at once. A line's persona is
+`instructions` (a string) or `instructionsFiles` (1..8 relative paths) with `instructionsRoot` (an absolute folder, top level or per
+line), never both: the files are read fresh at the start of every call, and a missing, empty, oversized or out-of-root file
+refuses the call (an outbound `phone call` names the file and does not dial). Each receipt keeps `instructionsSha256`;
+`phone doctor` reports which files are readable, never their text. Number routing
 requires deployment-owner authority. Preview/readback and restore affect voice routing only (the first line's number).
 The phone listener stays available until stopped, with a per-call limit (three minutes unless `maxCallSeconds` is set),
 and a call ends after `idleSeconds` with nobody speaking. An inbound call rings on until the model's first words

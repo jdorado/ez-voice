@@ -1,6 +1,7 @@
 import {OpenAIAdapter} from './openai.mjs';
 import {ElevenLabsAdapter} from './elevenlabs.mjs';
 import {GeminiAdapter} from './gemini.mjs';
+import {DeepgramAdapter} from './deepgram.mjs';
 
 // A phone provider is one speech-to-speech (or cascaded speech) service behind a WebSocket. PhoneAudio owns the Twilio bridge,
 // the timers, the tool registry and the receipt; an adapter owns one provider's wire protocol and nothing else. Each call gets a
@@ -12,7 +13,7 @@ import {GeminiAdapter} from './gemini.mjs';
 //   start()                      -> messages sent as soon as the socket opens
 //   greet()                      -> messages that ask the model to speak first on an answered call ([] when unsupported)
 //   audioIn(base64 mu-law 8 kHz) -> messages carrying one chunk of the caller's audio
-//   parse(providerEvent)         -> normalized items:
+//   parse(providerEvent)         -> normalized items (Buffer for a binaryAudio provider):
 //     {type: 'ready', id}        the session accepts audio
 //     {type: 'audio', audio}     base64 mu-law 8 kHz for the caller (whole 20 ms frames are best)
 //     {type: 'speech', who, delta?, text?, start?}   'caller' or 'model' is speaking (idle hang-up uses it); `delta`
@@ -20,6 +21,7 @@ import {GeminiAdapter} from './gemini.mjs';
 //                                beginning to speak (the receipt's transcript)
 //     {type: 'interrupted'}      the caller barged in: drop audio queued at Twilio
 //     {type: 'tool', id, name, args}   the model called a registered tool
+//     {type: 'cancelled', id? / request?}   cancel one function or one delegated request
 //     {type: 'send', message}    a message to send back now
 //     {type: 'closed', usage}    the provider confirmed the end of the session
 //     {type: 'error', code} / {type: 'fatal', reason}   a provider error / end the call
@@ -29,6 +31,7 @@ export const PROVIDERS = {
   [OpenAIAdapter.id]: OpenAIAdapter,
   [ElevenLabsAdapter.id]: ElevenLabsAdapter,
   [GeminiAdapter.id]: GeminiAdapter,
+  [DeepgramAdapter.id]: DeepgramAdapter,
 };
 export const DEFAULT_PROVIDER = OpenAIAdapter.id;
 

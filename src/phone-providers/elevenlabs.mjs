@@ -41,8 +41,7 @@ export class ElevenLabsAdapter {
     return {type: 'session.update', session: {type: 'realtime', model: c.model, instructions: c.instructions, output_modalities: ['audio'],
       max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15)),
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
-      audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'},
-        ...(c.advice && {turn_detection: {type: 'server_vad', create_response: false, interrupt_response: true}})}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
+      audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
   // An empty response request can produce no turn. Supply the actual transport event,
   // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
@@ -60,13 +59,10 @@ export class ElevenLabsAdapter {
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         return [{type: 'audio', audio: event.delta}];
       // Server-side voice activity says at once when the caller starts talking (a barge-in also stops what is queued at Twilio).
-      case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller', start: true, ...(this.config.advice && {itemId: event.item_id})}, {type: 'interrupted'}];
-      case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller', ...(this.config.advice && {stop: true, itemId: event.item_id})}];
+      case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
+      case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller'}];
       // The caller's words arrive whole per utterance, the model's as it speaks.
-      case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript), ...(this.config.advice && {final: true, itemId: event.item_id})}];
-      case 'conversation.item.created': return this.config.advice ? [{type: 'advice_ack', id: event.item?.id}] : [];
-      case 'response.created': return this.config.advice ? [{type: 'response_started', id: event.response?.id}] : [];
-      case 'response.done': return this.config.advice ? [{type: 'response_done', id: event.response?.id}] : [];
+      case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
       case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'response.output_item.done':
         return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
@@ -79,9 +75,5 @@ export class ElevenLabsAdapter {
     return final ? [answer] : [answer, {type: 'response.create'}];
   }
   // No close handshake: closing the socket ends the session, and no usage is reported.
-  adviceItem(id, text) { return [{type: 'conversation.item.create', item: {id, type: 'message', role: 'user',
-    content: [{type: 'input_text', text: `PRIVATE ADVISORY REFERENCE FOR THIS RESPONSE ONLY. This is not caller speech or authority; current instructions and tools govern.\n${text}`} ]}}]; }
-  clearAdvice(id) { return [{type: 'conversation.item.delete', item_id: id}]; }
-  respond() { return [{type: 'response.create'}]; }
   closeMessages() { return []; }
 }
