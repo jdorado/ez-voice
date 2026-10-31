@@ -438,9 +438,10 @@ prompt: in real-provider runs any `UpdatePrompt` addition, whatever it said and 
 into lookups on every call. A lookup slower than `deadlineMs` (500..5000), one a newer utterance overtook, or one that
 repeats the current note adds nothing.
 
-A GPT-Live session has no model request to relay: there the latest note joins the session context with
-`session.thinking.append` (context "without asking the model to say it immediately", at most 500 tokens, confirmed by
-`session.thinking.appended`) when the caller next starts to speak, never while the model forms a reply or a goodbye.
+A GPT-Live session has no model request to relay: there the latest note joins the session as trusted application
+instructions with `session.instructions.append` (at most 500 tokens; it can interrupt speech, so it goes in while the
+caller speaks), never while the model forms a reply or a goodbye. Thinking context (`session.thinking.append`) is not
+used: in real-provider runs it stopped GPT-Live delegating end_call (0 of 6 hang-ups against 4 of 6 without).
 Each note says it replaces the earlier ones; a call adds at most eight. Other providers refuse `advice`.
 
 The receipt's `advice` lists each lookup's status, timing, note ID, source revision and how many requests carried it,

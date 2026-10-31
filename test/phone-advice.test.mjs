@@ -76,15 +76,15 @@ test('GPT-Live: the note joins the session context when the caller next speaks, 
     socket.receive({type: 'session.output_transcript.delta', delta: 'Understood.'});
     await tick(); await tick(); await tick();
     assert.equal(requests[0].text, 'I already have a broker.');
-    assert(!socket.events.some(e => e.type === 'session.thinking.append')); // the model is answering
+    assert(!socket.events.some(e => e.type === 'session.instructions.append')); // the model is answering
     socket.receive({type: 'session.output_transcript.delta', delta: ' Goodbye.'});
     socket.receive({type: 'session.input_transcript.delta', delta: 'Wait, what would you pay?'});
-    const notes = socket.events.filter(e => e.type === 'session.thinking.append');
+    const notes = socket.events.filter(e => e.type === 'session.instructions.append');
     assert.equal(notes.length, 1); assert.equal(notes[0].delegation_id, null); assert.match(notes[0].event_id, /^adv_[a-f0-9]{24}$/);
     assert.match(notes[0].content, /^Coach note 1, replacing any earlier coach note[^]*Approved example timing\./);
     socket.receive({type: 'session.input_transcript.delta', delta: ' Seriously.'});
-    assert.equal(socket.events.filter(e => e.type === 'session.thinking.append').length, 1); // once per note
-    socket.receive({type: 'session.thinking.appended', client_event_id: notes[0].event_id});
+    assert.equal(socket.events.filter(e => e.type === 'session.instructions.append').length, 1); // once per note
+    socket.receive({type: 'session.instructions.appended', client_event_id: notes[0].event_id});
     const closed = audio.close(); socket.receive({type: 'session.closed'}); await closed;
     assert.deepEqual([finished[0].advice[0].status, finished[0].advice[0].acknowledged], ['sent', true]);
     assert(!JSON.stringify(finished[0].advice).includes('Approved example'));
