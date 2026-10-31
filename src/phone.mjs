@@ -38,7 +38,7 @@ async function save(path, value) {
 }
 // A line is one Twilio number with its own speech provider, voice, key and instructions. One install serves
 // several lines (`lines`); the old single-line form (the line's fields at the top level) is one line.
-const LINE_KEYS = ['provider','model','voice','language','thinking','apiKey','llmApiKey','ttsApiKey','number','instructions','tools','toolModel','toolEffort','answerTone','instructionsFiles','instructionsRoot'];
+const LINE_KEYS = ['provider','model','voice','language','thinking','apiKey','llmApiKey','ttsApiKey','ttsModel','number','instructions','tools','toolModel','toolEffort','answerTone','instructionsFiles','instructionsRoot'];
 const SHARED_KEYS = ['accountSid','authToken','origin','maxCallSeconds','idleSeconds','pathPrefix','maxCalls','lines','toolBinding'];
 function validateLine(line) {
   if (!line || typeof line !== 'object' || Array.isArray(line) || Object.keys(line).some(k => !LINE_KEYS.includes(k))) throw Error('Invalid phone line fields');
@@ -47,10 +47,11 @@ function validateLine(line) {
   if (!Adapter.keyPattern.test(line.apiKey || '') || !phone(line.number)) throw Error(`Supply the ${Adapter.label} key and the line's E.164 number privately`);
   const model = line.model ?? Adapter.defaultModel, voice = line.voice ?? Adapter.defaultVoice;
   if (Adapter.id === 'deepgram') {
+    if (line.ttsModel !== undefined && !Adapter.ttsModels.includes(line.ttsModel)) throw Error('Deepgram managed speech supports eleven_flash_v2_5; ElevenLabs v4 requires the different Text-to-Dialogue protocol');
     if (!PROVIDERS.gemini.keyPattern.test(line.llmApiKey || '') || !PROVIDERS.elevenlabs.keyPattern.test(line.ttsApiKey || ''))
       throw Error('Supply the Google llmApiKey and ElevenLabs ttsApiKey privately');
     if (line.language !== undefined && line.language !== 'en') throw Error('Deepgram Flux phone language must be en');
-  } else if (line.llmApiKey !== undefined || line.ttsApiKey !== undefined) throw Error('llmApiKey and ttsApiKey apply to provider deepgram only');
+  } else if (line.llmApiKey !== undefined || line.ttsApiKey !== undefined || line.ttsModel !== undefined) throw Error('llmApiKey, ttsApiKey and ttsModel apply to provider deepgram only');
   if (!Adapter.models.includes(model)) throw Error(`model must be one of ${Adapter.models.join(', ')} for provider ${Adapter.id}`);
   if (typeof voice !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(voice)) throw Error('voice must be a provider voice name or id');
   if (line.thinking !== undefined && (!['low','medium','high'].includes(line.thinking) || model !== 'gemini-3.8-live-extended-thinking')) throw Error('thinking must be low, medium or high, and applies to gemini-3.8-live-extended-thinking only');
@@ -63,7 +64,7 @@ function validateLine(line) {
   if (line.answerTone !== undefined && !['ringback','none'].includes(line.answerTone)) throw Error('answerTone must be ringback or none');
   if (line.toolModel !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(line.toolModel)) throw Error('toolModel must be a model name');
   if (line.toolEffort !== undefined && !['none','minimal','low','medium','high','xhigh','max'].includes(line.toolEffort)) throw Error('toolEffort must be a reasoning effort');
-  return {...line, provider: Adapter.id, model, voice, ...(files ? {instructionsFiles: [...line.instructionsFiles]} : {instructions})};
+  return {...line, provider: Adapter.id, model, voice, ...(Adapter.defaultTtsModel && {ttsModel: line.ttsModel ?? Adapter.defaultTtsModel}), ...(files ? {instructionsFiles: [...line.instructionsFiles]} : {instructions})};
 }
 // The runtime configuration: the shared fields, `lines`, and the first line's fields at the top level (the
 // install's primary line, which the single-line commands and older callers read).
@@ -185,20 +186,27 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
         return response.end('<Response><Reject reason="busy"/></Response>');
       }
       const token = existing || randomBytes(32).toString('hex');
-      const ticket = {callSid: params.get('CallSid'), expires: Date.now() + 60000, line, outbound: Boolean(outbound), instructions: outbound ? calls.instructions(outbound) : undefined,
+      const ticket = existing ? tickets.get(existing) : {callSid: params.get('CallSid'), expires: Date.now() + 60000, line, outbound: Boolean(outbound), instructions: outbound ? calls.instructions(outbound) : undefined,
         call: {id: params.get('CallSid'), remote: params.get(outbound ? 'To' : 'From'), line, direction: outbound ? 'out' : 'in', started_at: new Date().toISOString()},
         context: outbound ? undefined : contexts?.byNumber(params.get('From'))};
-      tickets.set(token, ticket); // the place is held while the line's instructions are read
-      // The line's instructions are read here, at the start of every call (a file is never cached). A file that cannot be
-      // read refuses the call as a full line does, and the failure (the file's path and a code, never its text) is recorded.
-      try {
-        const settings = lineConfig(config, line);
-        if (settings) { ticket.lineText = settings.instructionsFiles ? await instructionsFromFiles(settings, MAX_CALL_INSTRUCTIONS) : settings.instructions; ticket.instructionsSha256 = instructionsDigest(ticket.lineText); }
-      } catch (error) {
-        tickets.delete(token);
-        if (!(error instanceof InstructionsError)) throw error;
-        try { await record({callSid: ticket.callSid, line, direction: ticket.call.direction, reason: 'instructions_unavailable', instructionsError: {path: error.path, reason: error.reason}, at: new Date().toISOString()}); }
-        catch (failure) { unavailable = true; receiptError = true; throw failure; }
+      if (!existing) {
+        tickets.set(token, ticket); // the place is held while the line's instructions are read
+        // The line's instructions are read here, at the start of every call (a file is never cached). A file that cannot be
+        // read refuses the call as a full line does, and the failure (the file's path and a code, never its text) is recorded.
+        ticket.loading = (async () => { try {
+          const settings = lineConfig(config, line);
+          if (settings) { ticket.lineText = settings.instructionsFiles ? await instructionsFromFiles(settings, MAX_CALL_INSTRUCTIONS) : settings.instructions; ticket.instructionsSha256 = instructionsDigest(ticket.lineText); }
+          if (outbound && withBrief(ticket.lineText, ticket.instructions).length > MAX_SESSION_INSTRUCTIONS)
+            throw new InstructionsError('session', 'session_too_large');
+        } catch (error) {
+          tickets.delete(token);
+          if (!(error instanceof InstructionsError)) throw error;
+          try { await record({callSid: ticket.callSid, line, direction: ticket.call.direction, reason: 'instructions_unavailable', instructionsError: {path: error.path, reason: error.reason}, at: new Date().toISOString()}); }
+          catch (failure) { unavailable = true; receiptError = true; throw failure; }
+          return false;
+        } return true; })();
+      }
+      if (!await ticket.loading) {
         if (prefix && !outbound) response.statusCode=503;
         return response.end('<Response><Reject reason="busy"/></Response>');
       }
@@ -285,7 +293,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     'phone route', 'phone status', 'phone restore', 'phone receipt [--call-sid CA...]', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'phone context replace < contexts.json', 'phone context status', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions? or instructionsFiles?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
-      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for the fixed Gemini 3.8 Flash/v4 Turbo stack)', 'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)']},
+      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for its configured Gemini/ElevenLabs stack)', 'ttsModel (deepgram only: eleven_flash_v2_5; v4 Turbo uses an incompatible protocol)', 'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime, gemini Live or deepgram Flux/Gemini Flash/ElevenLabs TTS); no native-agent delegation or Retell/Vapi; tools are end_call, cache-only find_case on inbound calls, and an operator-bound installed information plugin when configured (with openai they run on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio (each receipt keeps the transcript of its call); an inbound call rings on until the first words of the model (answerTone); the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     contexts: 'phone context replace reads on stdin a JSON array of at most 500 caller contexts {number (E.164), text (1..6000 characters), claim (1..600), find (the property address, searchable), at?} and replaces the whole prepared set atomically; an inbound call from a number in it is answered with its text added to the line\'s instructions (before the greeting, no network call), and a caller from another number can name a property to the find_case tool (at most 3 tries a call), which answers with the claims whose address matches. phone context status reads the count and latest time.',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin, added to the configured instructions for that call only (the brief wins where they differ). Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
@@ -300,7 +308,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!stored && command === 'doctor') return {configured: false, providers: Object.keys(PROVIDERS), model: 'gpt-live-1', nativeTools: false, liveVerified: false};
   if (!stored) throw Error('Phone is not configured; use phone configure with private stdin');
   const config = validatePhoneConfig(stored);
-  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, lines: await Promise.all(config.lines.map(async l => ({number: l.number, provider: l.provider, model: l.model, ...(l.instructionsFiles && await inspectInstructions(l, MAX_CALL_INSTRUCTIONS))}))), maxCalls: config.maxCalls, outbound: true, nativeTools: false, liveVerified: false};
+  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, lines: await Promise.all(config.lines.map(async l => ({number: l.number, provider: l.provider, model: l.model, ...(l.ttsModel && {ttsModel: l.ttsModel}), ...(l.instructionsFiles && await inspectInstructions(l, MAX_CALL_INSTRUCTIONS))}))), maxCalls: config.maxCalls, outbound: true, nativeTools: false, liveVerified: false};
   if (command === 'probe') {
     // Every line's provider session, the first line's result at the top level as before.
     const probes = [];
@@ -314,7 +322,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
       // A provider with no close handshake cannot confirm finalization or usage; its probe proves the session started.
       const confirms = providerClass(line).confirmsClose;
       if (!result.ready || (confirms && !result.finalized)) throw Error(`Direct ${providerClass(line).label} audio probe failed for ${number} (${result.providerError || result.reason || 'unconfirmed finalization'})`);
-      probes.push({number, provider: line.provider, model: line.model, audio: 'pcmu/8000', ready: true, finalized: confirms ? true : 'unconfirmed (no provider close handshake)', usage: result.usage, readyMs: result.readyMs, phoneCallVerified: false, ...(line.instructionsFiles && {instructionsSha256: instructionsDigest(line.instructions)})});
+      probes.push({number, provider: line.provider, model: line.model, ...(line.ttsModel && {ttsModel: line.ttsModel}), audio: 'pcmu/8000', ready: true, finalized: confirms ? true : 'unconfirmed (no provider close handshake)', usage: result.usage, readyMs: result.readyMs, phoneCallVerified: false, ...(line.instructionsFiles && {instructionsSha256: instructionsDigest(line.instructions)})});
     }
     const {number: _, ...first} = probes[0];
     return {...first, lines: probes};

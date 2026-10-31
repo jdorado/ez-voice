@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.29
+
+- Revalidate live file identity and the outbound session budget; preserve issued tickets and idempotent request readback.
+- Require a compatible ElevenLabs TTS model on Deepgram. v4 Turbo uses a different Text-to-Dialogue protocol and is rejected; the supported speech candidate is Flash v2.5.
+
 ## 0.1.0-beta.11.rc.28
 
 - Integrate fresh per-call instruction files with the Deepgram stack. Operators can update a bound persona without restarting the listener; each call records its instruction digest.

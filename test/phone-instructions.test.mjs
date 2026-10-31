@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
+import fs from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
 import {createHash} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
@@ -229,4 +231,58 @@ test('phone doctor tells whether each instruction file is readable without print
   // a configuration that sets both, or a file path that climbs, is refused at configure and nothing is saved over the good one
   for (const bad of [{...settings, instructions: 'x'}, {...settings, instructionsFiles: ['../x.md']}]) await assert.rejects(() => phoneCommand(state, ['configure'], {stdin: Readable.from([JSON.stringify(bad)])}), /not both|relative file paths/);
   assert.equal(JSON.parse(await readFile(join(state, 'phone', 'config.json'), 'utf8')).lines[0].instructionsFiles.length, 3);
+});
+
+test('an instruction parent replaced during open cannot disclose an outside file', async t => {
+  const outside = await folder(t, {'phone.md': 'OUTSIDE PRIVATE CONTENT'});
+  const root = await folder(t, {'persona/phone.md': 'Approved persona'});
+  const original = fs.open;
+  fs.open = async (path, ...args) => {
+    if (path.endsWith('/persona/phone.md')) {
+      await fs.rename(join(root, 'persona'), join(root, 'original'));
+      await fs.symlink(outside, join(root, 'persona'));
+    }
+    return original(path, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(() => instructionsFromFiles({instructionsRoot: root, instructionsFiles: ['persona/phone.md']}, MAX_CALL_INSTRUCTIONS),
+      error => error.reason === 'outside_root' && !error.message.includes('PRIVATE'));
+  } finally {fs.open = original; syncBuiltinESMExports();}
+});
+
+test('an existing outbound request stays readable after its persona disappears', async t => {
+  const {root, calls, twilio} = await outbound(t, {'phone.md': 'Approved persona'});
+  assert.equal((await calls.call({requestId: 'stable', to}, () => false)).created, true);
+  await unlink(join(root, 'phone.md'));
+  const repeated = await calls.call({requestId: 'stable', to}, () => true);
+  assert.equal(repeated.created, false); assert.equal(repeated.status, 'queued'); assert.equal(twilio.creates, 1);
+  await assert.rejects(() => calls.call({requestId: 'stable', to: '+15551230003'}, () => false), /different destination/);
+});
+
+test('persona growth while ringing cannot exceed the answered-call session budget', async t => {
+  const {root, config, calls} = await outbound(t, {'phone.md': 'p'.repeat(1000)});
+  await calls.call({requestId: 'growing', to, instructions: 'b'.repeat(10000)}, () => false);
+  await put(root, 'phone.md', 'p'.repeat(MAX_CALL_INSTRUCTIONS));
+  const fx = await listener(t, config, {calls});
+  const answer = await ring(fx, {outbound: 'growing', sid: callSid});
+  assert.match(answer.xml, /Reject/); assert.equal(fx.sessions.length, 0);
+  assert.equal(fx.receipts[0].instructionsError.reason, 'session_too_large');
+});
+
+test('a webhook retry preserves the issued call snapshot and admits the original media ticket', async t => {
+  const root = await folder(t, {'phone.md': 'Approved persona'});
+  const fx = await listener(t, validatePhoneConfig({...base, instructionsRoot: root, instructionsFiles: ['phone.md']}));
+  const id = 'CA' + '8'.repeat(32), params = new URLSearchParams({AccountSid: base.accountSid, CallSid: id, To: base.number, From: to});
+  const original = await post(fx, '/incoming', params), xml = await original.text();
+  const ticket = xml.match(/value="([a-f0-9]+)"/)[1];
+  await unlink(join(root, 'phone.md'));
+  const repeated = await post(fx, '/incoming', params);
+  assert.equal(await repeated.text(), xml); assert.equal(fx.receipts.length, 0);
+  const ws = new WebSocket(`ws://127.0.0.1:${fx.server.port}/media`, {headers: {'x-twilio-signature': twilioSignature(base.authToken, base.origin + '/media')}});
+  fx.sockets.push(ws);
+  await new Promise((resolve, reject) => {ws.once('open', resolve); ws.once('error', reject);});
+  ws.send(JSON.stringify({event: 'start', start: {accountSid: base.accountSid, callSid: id, streamSid: 'MZ' + '9'.repeat(32), customParameters: {ticket}, mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
+  await wait(() => fx.sessions[0]?.events.some(e => e.type === 'session.start'));
+  assert(started(fx.sessions[0]).startsWith('Approved persona'));
 });

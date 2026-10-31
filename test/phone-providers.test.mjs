@@ -722,7 +722,7 @@ test('Deepgram requires separate private credentials and admits only the support
   const valid = validatePhoneConfig(config);
   assert.equal(valid.model, 'gemini-3.8-flash');
   for (const bad of [{llmApiKey: undefined}, {ttsApiKey: 'bad'}, {language: 'es'}, {model: 'gemini-3.8-live'},
-    {thinking: 'minimal'}, {endpoint: 'https://example.com'}]) assert.throws(() => validatePhoneConfig({...config, ...bad}));
+    {thinking: 'minimal'}, {ttsModel: 'eleven_v4_turbo'}, {endpoint: 'https://example.com'}]) assert.throws(() => validatePhoneConfig({...config, ...bad}));
   assert.throws(() => validatePhoneConfig({...base, apiKey: keys.openai, ...deepgramKeys}), /deepgram only/);
   const directory = await mkdtemp(join(tmpdir(), 'ez-deepgram-config-'));
   try {
@@ -748,7 +748,7 @@ test('Deepgram waits for Welcome and SettingsApplied, sends binary audio and ret
     assert.equal(settings.agent.listen.provider.model, 'flux-general-en');
     assert.match(settings.agent.think.endpoint.url, /gemini-3\.8-flash:streamGenerateContent/);
     assert.equal(settings.agent.think.endpoint.headers['x-goog-api-key'], keys.gemini);
-    assert.equal(settings.agent.speak.provider.model_id, 'eleven_v4_turbo');
+    assert.equal(settings.agent.speak.provider.model_id, 'eleven_flash_v2_5');
     assert(settings.agent.think.functions.every(f => f.defer_until_eot));
     assert.equal(c.ready(), 0);
     c.socket().receive({type: 'SettingsApplied'});

@@ -90,6 +90,11 @@ export class PhoneCalls {
     if (!options || Object.keys(options).some(key=>!['to','from','requestId','instructions'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || this.numbers().includes(options.to)) throw Error('Supply a destination other than the configured numbers and a stable request ID');
     if (!this.numbers().includes(from)) throw Error('--from must be one of the configured lines');
     if (!brief(options.instructions)) throw Error(`Call instructions must contain 1..${MAX_CALL_INSTRUCTIONS} characters`);
+    const prior = this.row(options.requestId);
+    if (prior) {
+      if (prior.recipient !== options.to || this.from(prior) !== from) throw Error('Request ID was already used for a different destination or line');
+      return {...await this.status(prior.id), created: false};
+    }
     const line = (this.config.lines ?? [this.config]).find(l => l.number === from);
     // A line that reads its instructions from files reads them now, so a missing file stops the call before it is dialed
     // (the answered call reads them again, at its start).

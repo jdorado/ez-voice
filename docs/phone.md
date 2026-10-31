@@ -393,7 +393,7 @@ response request alone is not reliable proof of an audible greeting.
 ### Deepgram cascaded speech
 
 `provider: "deepgram"` uses the managed Voice Agent session with Flux (`flux-general-en`, v2)
-turn detection, Google `gemini-3.8-flash` and ElevenLabs `eleven_v4_turbo`. It is English-only
+turn detection, Google `gemini-3.8-flash` and ElevenLabs `eleven_flash_v2_5`. It is English-only
 for now. `apiKey` is the Deepgram key; `llmApiKey` is the Google AI Studio key and `ttsApiKey`
 is the ElevenLabs key. `voice` is an ElevenLabs voice ID. Supply all three through private
 configuration stdin. Deepgram receives the two BYO keys to connect to those providers.
@@ -413,3 +413,5 @@ Provider contracts: [message flow](https://developers.deepgram.com/docs/voice-ag
 [BYO LLM](https://developers.deepgram.com/docs/voice-agent-llm-models),
 [BYO TTS](https://developers.deepgram.com/docs/voice-agent-tts-models),
 [functions](https://developers.deepgram.com/docs/voice-agent-function-call-request).
+
+Deepgram currently accepts `ttsModel: "eleven_flash_v2_5"` (also the default). ElevenLabs v4 Turbo requires its Text-to-Dialogue WebSocket protocol, which this managed provider integration does not speak. It is refused at configuration time rather than producing a silent call. No automatic model substitution occurs.

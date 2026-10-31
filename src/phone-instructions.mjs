@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
-import {open, realpath} from 'node:fs/promises';
+import {open, realpath, stat} from 'node:fs/promises';
 import {isAbsolute, join, relative} from 'node:path';
 
 // A line's persona can live in files the operator keeps in a folder bound read-only into the container
@@ -39,6 +39,12 @@ async function readOne(root, path, limit) {
     // The resolved path may not be swapped for a link or a pipe between the check and the read.
     handle = await open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const info = await handle.stat();
+    // O_NOFOLLOW covers only the leaf. Verify the opened inode against the path after
+    // opening too, so replacing a parent with a symlink cannot redirect the read.
+    const verified = await realpath(join(root, path)), within = relative(root, verified);
+    if (!within || within === '..' || within.startsWith('../') || isAbsolute(within)) return {path, reason: 'outside_root'};
+    const current = await stat(verified);
+    if (current.dev !== info.dev || current.ino !== info.ino) return {path, reason: 'source_changed'};
     if (!info.isFile()) return {path, reason: 'not_a_file'};
     const cap = limit * 4; // a character is at most four bytes
     if (info.size > cap) return {path, reason: 'too_large'};

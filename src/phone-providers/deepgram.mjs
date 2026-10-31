@@ -11,6 +11,8 @@ export class DeepgramAdapter {
   static models = ['gemini-3.8-flash'];
   static defaultModel = 'gemini-3.8-flash';
   static defaultVoice = 'JBFqnCBsd6RMkjVDRZzb';
+  static ttsModels = ['eleven_flash_v2_5'];
+  static defaultTtsModel = 'eleven_flash_v2_5';
   static keyPattern = /^[A-Za-z0-9_-]{20,200}$/;
   static confirmsClose = false;
   static audioMeansSpeech = true;
@@ -35,7 +37,7 @@ export class DeepgramAdapter {
         ...(c.tools === false ? {} : {functions: toolDefinitions(c).map(({name, description, parameters}) =>
           ({name, description, parameters, defer_until_eot: true}))}),
       },
-      speak: {provider: {type: 'eleven_labs', model_id: 'eleven_v4_turbo'},
+      speak: {provider: {type: 'eleven_labs', model_id: c.ttsModel ?? DeepgramAdapter.defaultTtsModel},
         endpoint: {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`,
           headers: {'xi-api-key': c.ttsApiKey}}},
     }};
