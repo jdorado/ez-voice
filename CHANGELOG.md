@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.36
+
+- The side coach also serves GPT-Live lines: the latest note joins the session as application instructions (`session.instructions.append`) in a quiet moment after the model's reply, never while either side speaks; at most eight notes a call.
+
 ## 0.1.0-beta.11.rc.35
 
 - Add an opt-in side coach for Deepgram phone lines: each finished caller utterance goes to an operator-bound installed command, and its latest note rides on each of the model's requests, relayed through the listener (which also keeps the Google key from the provider). Nothing waits for it, it never joins the standing prompt, and receipts keep no note text.
