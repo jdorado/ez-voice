@@ -188,11 +188,12 @@ export class PhoneAudio {
         break;
       case 'advice_ack': this.advice?.acknowledged(); break;
       case 'turn':
-        if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = this.delegating = item.request; }
+        if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
+        this.delegating = item.request; this.delegatingAt = Date.now();
         break;
-      case 'settled': if (item.request === this.delegating) this.delegating = null; break;
-      case 'cancelled':
-        if (item.request === this.delegating) this.delegating = null;
+      case 'settled': case 'cancelled':
+        if (item.request === this.delegating) { this.delegating = null; this.wordsAt = Date.now(); if (this.advice) this.pushAdvice(); }
+        if (item.type === 'settled') break;
         if (item.id || item.request) this.cancelTools(false, item.request, item.id);
         break;
       case 'interrupted':
@@ -278,14 +279,16 @@ export class PhoneAudio {
   }
   // A session-context provider takes a ready note only once the line has been quiet for adviceQuietMs, counted from the
   // last words and from the end of the model's audible audio at Twilio, with the caller's words answered, no delegated
-  // work in flight and the call not ending. In real-provider runs an addition as the caller began garbled their words,
+  // work in flight (held at most adviceDelegationMs, so an event that never arrives cannot block notes for good) and the
+  // call not ending. In real-provider runs an addition as the caller began garbled their words,
   // and one timed from the model's words alone (they run ahead of its audio) cut replies and goodbyes short.
   pushAdvice() {
     clearTimeout(this.adviceTimer);
-    if (!this.adapter.adviceMessages || !this.advice.ready() || this.callerOpen || this.delegating || this.pendingTools.size
+    if (!this.adapter.adviceMessages || !this.advice.ready() || this.callerOpen || this.pendingTools.size
         || this.endingAt || this.closing || this.completed) return;
-    const wait = Math.max(this.wordsAt ?? 0, this.soundUntil ?? 0) + (this.config.adviceQuietMs ?? 1200) - Date.now();
-    if (wait > 0) return void (this.adviceTimer = setTimeout(() => this.pushAdvice(), wait));
+    const now = Date.now(), quiet = Math.max(this.wordsAt ?? 0, this.soundUntil ?? 0) + (this.config.adviceQuietMs ?? 1200) - now;
+    const held = this.delegating ? this.delegatingAt + (this.config.adviceDelegationMs ?? 20000) - now : 0;
+    if (Math.max(quiet, held) > 0) return void (this.adviceTimer = setTimeout(() => this.pushAdvice(), Math.max(quiet, held)));
     const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }

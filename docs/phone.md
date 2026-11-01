@@ -441,7 +441,7 @@ repeats the current note adds nothing.
 A GPT-Live session has no model request to relay: there the latest note joins the session as trusted application
 instructions with `session.instructions.append` (at most 500 tokens), in a quiet moment: 1.2 s after the model's last
 words and after its audible audio has played at Twilio, with the caller's words answered, no delegated work in flight
-and the call not ending (end_call). In real-provider runs an addition as the caller began garbled the caller's words,
+and the call not ending (end_call); a delegation that never reports its end holds a note for 20 s at most. In real-provider runs an addition as the caller began garbled the caller's words,
 and one timed from the model's words alone (they run ahead of its audio) cut replies and goodbyes short; thinking context
 (`session.thinking.append`) stopped end_call delegation altogether (0 of 6 hang-ups against 4 of 6 without).
 Each note says it replaces the earlier ones; a call adds at most eight. Other providers refuse `advice`.

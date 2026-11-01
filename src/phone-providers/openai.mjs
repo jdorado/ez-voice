@@ -68,7 +68,9 @@ export class OpenAIAdapter {
       case 'session.instructions.appended': return [{type: 'advice_ack'}];
       case 'session.delegation.cancelled': return [{type: 'cancelled', request: event.delegation_id ?? event.delegation?.id}];
       case 'response.event': {
-        if (event.event?.type === 'response.done') return [{type: ['cancelled','failed'].includes(event.event.response?.status) ? 'cancelled' : 'settled', request: event.delegation_id}];
+        if (event.event?.type === 'response.done' && ['cancelled','failed'].includes(event.event.response?.status)) return [{type: 'cancelled', request: event.delegation_id}];
+        // A delegated request ends with a nested response.completed (https://developers.openai.com/api/docs/guides/live-delegation).
+        if (['response.completed', 'response.done'].includes(event.event?.type)) return [{type: 'settled', request: event.delegation_id}];
         const item = event.event?.type === 'response.output_item.done' ? event.event.item : null;
         return item?.type === 'function_call' ? [{type: 'tool', id: item.call_id, name: item.name, args: item.arguments, request: event.delegation_id}] : [];
       }

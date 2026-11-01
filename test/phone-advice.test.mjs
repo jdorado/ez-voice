@@ -68,7 +68,7 @@ test('GPT-Live: the note joins the session once the reply has played, never whil
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const twilio = {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}};
   const audio = new PhoneAudio(twilio, {...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined,
-    streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)}, adviceQuietMs: 40,
+    streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)}, adviceQuietMs: 40, adviceDelegationMs: 200,
     advisor: {deadlineMs: 2000, run: async r => { requests.push(r); return {status: 'available', advice: advice(`pick${requests.length}`)}; }}}, async s => { finished.push(s); },
     {socketFactory: () => socket = new FakeSocket()});
   const notes = () => socket.events.filter(e => e.type === 'session.instructions.append');
@@ -95,16 +95,21 @@ test('GPT-Live: the note joins the session once the reply has played, never whil
     caller('What is the address?'); model('Let me check.');
     socket.receive({type: 'session.delegation.created', delegation: {id: 'dlg_1', target: 'responses'}});
     await sleep(100); assert.equal(notes().length, 2); // delegated work in flight
-    socket.receive({type: 'response.event', delegation_id: 'dlg_1', event: {type: 'response.done', response: {status: 'completed'}}});
+    socket.receive({type: 'response.event', delegation_id: 'dlg_1', event: {type: 'response.completed', response: {status: 'completed'}}});
     model('It is on Main Street.'); await sleep(100); assert.equal(notes().length, 3);
+
+    caller('One more thing.'); model('Go on.');
+    socket.receive({type: 'session.delegation.created', delegation: {id: 'dlg_stuck', target: 'responses'}}); // never completes
+    await sleep(100); assert.equal(notes().length, 3);
+    await sleep(250); assert.equal(notes().length, 4); // an event that never arrives holds a note only for adviceDelegationMs
 
     caller('Okay, bye.'); model('Goodbye.');
     socket.receive({type: 'session.delegation.created', delegation: {id: 'dlg_2', target: 'responses'}});
     socket.receive({type: 'response.event', delegation_id: 'dlg_2', event: {type: 'response.output_item.done', item: {type: 'function_call', call_id: 'call_1', name: 'end_call', arguments: '{}'}}});
-    socket.receive({type: 'response.event', delegation_id: 'dlg_2', event: {type: 'response.done', response: {status: 'completed'}}});
-    await sleep(100); assert.equal(notes().length, 3); // never once the call is ending
+    socket.receive({type: 'response.event', delegation_id: 'dlg_2', event: {type: 'response.completed', response: {status: 'completed'}}});
+    await sleep(100); assert.equal(notes().length, 4); // never once the call is ending
     const closed = audio.close(); socket.receive({type: 'session.closed'}); await closed;
-    assert.equal(finished[0].advice.filter(r => r.status === 'sent').length, 3);
+    assert.equal(finished[0].advice.filter(r => r.status === 'sent').length, 4);
     assert.equal(finished[0].advice.filter(r => r.acknowledged).length, 1);
     assert(!JSON.stringify(finished[0].advice).includes('Approved example'));
   } finally { await audio.close(); }
