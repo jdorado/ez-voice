@@ -155,17 +155,21 @@ export class PhoneAudio {
         break;
       case 'audio':
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
-        if (audible(item.audio)) {this.conversationStarted = true; this.activeAt = Date.now();}
+        const sound = audible(item.audio), now = Date.now();
+        if (sound) {this.conversationStarted = true; this.activeAt = now;}
         const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
-        this.stats.firstAudioMs ??= Date.now() - this.startedAt;
+        this.stats.firstAudioMs ??= now - this.startedAt;
         if (this.ringing) {
-          if (!audible(item.audio)) break; // the silence some providers stream while the line still rings
+          if (!sound) break; // the silence some providers stream while the line still rings
           this.stopRing('speech');
         }
-        // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence).
-        // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so a provider that sends speech faster than
-        // that has the model speaking until the queue is empty: the idle hang-up must not fire while it is still being played.
-        if (this.adapter.constructor.audioMeansSpeech) { const now = Date.now(); this.activeAt = now; this.speakingUntil = Math.max(this.speakingUntil ?? 0, now) + bytes / 8; }
+        // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so audio a provider sends faster than
+        // that is still playing after it arrived: `playedUntil` is when Twilio's queue runs out, `soundUntil` when its last speech does.
+        this.playedUntil = Math.max(this.playedUntil ?? 0, now) + bytes / 8;
+        if (sound) this.soundUntil = this.playedUntil;
+        // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence):
+        // the idle hang-up must not fire while it is still being played.
+        if (this.adapter.constructor.audioMeansSpeech) { this.activeAt = now; this.speakingUntil = this.playedUntil; }
         if (this.twilio.readyState === WebSocket.OPEN) {
           if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
           this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: item.audio}}));
@@ -184,15 +188,17 @@ export class PhoneAudio {
         break;
       case 'advice_ack': this.advice?.acknowledged(); break;
       case 'turn':
-        if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
+        if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = this.delegating = item.request; }
         break;
+      case 'settled': if (item.request === this.delegating) this.delegating = null; break;
       case 'cancelled':
+        if (item.request === this.delegating) this.delegating = null;
         if (item.id || item.request) this.cancelTools(false, item.request, item.id);
         break;
       case 'interrupted':
         this.cancelTools(true); this.turn++;
         // The caller talked over the model: what Twilio has queued would play after they stopped.
-        this.speakingUntil = 0;
+        this.speakingUntil = this.playedUntil = this.soundUntil = 0;
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
         break;
       case 'tool': this.tool(item); break;
@@ -255,11 +261,9 @@ export class PhoneAudio {
 
   }
   // The side coach hears each finished caller utterance: whole from a provider that sends it so, otherwise once the
-  // model starts to answer it. A session-context provider gets the latest note when the caller starts to speak.
+  // model starts to answer it.
   coach(item) {
-    // A session-context provider takes a note only in a quiet moment: an addition while the caller spoke garbled their
-    // words, one while the model answered cost its end_call. The quiet starts adviceQuietMs after the model's words.
-    this.adviceQuiet = false; clearTimeout(this.adviceTimer);
+    this.wordsAt = Date.now();
     if (item.who === 'caller') {
       if (item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
       else if (item.delta) this.callerOpen = true;
@@ -270,10 +274,18 @@ export class PhoneAudio {
       const said = this.transcript.receipt().transcript ?? [], last = said.at(-1);
       if (last?.who === 'caller') this.advice.heard(last.text, said.slice(0, -1));
     }
-    if (this.adapter.adviceMessages) this.adviceTimer = setTimeout(() => { this.adviceQuiet = true; this.pushAdvice(); }, this.config.adviceQuietMs ?? 1200);
+    this.pushAdvice();
   }
+  // A session-context provider takes a ready note only once the line has been quiet for adviceQuietMs, counted from the
+  // last words and from the end of the model's audible audio at Twilio, with the caller's words answered, no delegated
+  // work in flight and the call not ending. In real-provider runs an addition as the caller began garbled their words,
+  // and one timed from the model's words alone (they run ahead of its audio) cut replies and goodbyes short.
   pushAdvice() {
-    if (!this.adviceQuiet || this.callerOpen || this.closing || this.completed) return;
+    clearTimeout(this.adviceTimer);
+    if (!this.adapter.adviceMessages || !this.advice.ready() || this.callerOpen || this.delegating || this.pendingTools.size
+        || this.endingAt || this.closing || this.completed) return;
+    const wait = Math.max(this.wordsAt ?? 0, this.soundUntil ?? 0) + (this.config.adviceQuietMs ?? 1200) - Date.now();
+    if (wait > 0) return void (this.adviceTimer = setTimeout(() => this.pushAdvice(), wait));
     const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }

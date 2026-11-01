@@ -22,6 +22,7 @@ import {DeepgramAdapter} from './deepgram.mjs';
 //     {type: 'interrupted'}      the caller barged in: drop audio queued at Twilio
 //     {type: 'tool', id, name, args}   the model called a registered tool
 //     {type: 'cancelled', id? / request?}   cancel one function or one delegated request
+//     {type: 'settled', request} a delegated request finished
 //     {type: 'send', message}    a message to send back now
 //     {type: 'closed', usage}    the provider confirmed the end of the session
 //     {type: 'error', code} / {type: 'fatal', reason}   a provider error / end the call

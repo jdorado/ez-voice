@@ -2,7 +2,7 @@
 // relays the model's requests (src/phone-think.mjs), the latest note rides on each of them until a newer one replaces
 // it and never joins the standing instructions: an added prompt sent Deepgram's Gemini into lookups on every call,
 // whatever the note said. A speech-to-speech session (GPT-Live) takes the note as session instructions instead, in a
-// quiet moment after the model's reply (src/phone-audio.mjs), never while either side speaks. Nothing waits for it, and a note a
+// quiet moment after the model's reply has played (src/phone-audio.mjs), never while either side speaks. Nothing waits for it, and a note a
 // newer utterance overtook is dropped. The installed plugin owns what a note means; this only times and attaches it.
 export const MAX_NOTES = 8; // session notes a call can add: each stays in the session's context until the call ends
 const MAX_LOOKUPS = 64;
@@ -43,6 +43,7 @@ export class PhoneAdvice {
     if (receipt.status === 'ready') receipt.status = 'sent';
     receipt.requests = (receipt.requests ?? 0) + 1;
   }
+  ready() { return this.current?.receipt.status === 'ready' && !this.closed.signal.aborted; }
   // The latest note as session context, once, in a quiet moment. `maxNote` is the provider's limit.
   push(maxNote) {
     const current = this.current;

@@ -10,6 +10,7 @@ import {installedAdvice} from '../src/phone-plugin-tools.mjs';
 import {servePhone, twilioSignature, validatePhoneConfig} from '../src/phone.mjs';
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {createAdapter} from '../src/phone-providers/index.mjs';
+import {pcmToUlaw} from '../src/phone-providers/g711.mjs';
 
 const keys = {deepgram: 'c'.repeat(40), llmApiKey: 'AIza' + 'b'.repeat(35), ttsApiKey: 'sk_' + 'a'.repeat(24)};
 const base = {accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com',
@@ -62,36 +63,49 @@ test('a coached Deepgram line relays its model requests and the latest note ride
   } finally { await audio.close(); }
 });
 
-test('GPT-Live: the note joins the session in a quiet moment after the reply, never while either side speaks', async () => {
+test('GPT-Live: the note joins the session once the reply has played, never while either side speaks or work is in flight', async () => {
   let socket; const finished = [], requests = [];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const twilio = {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}};
   const audio = new PhoneAudio(twilio, {...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined,
     streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)}, adviceQuietMs: 40,
-    advisor: {deadlineMs: 2000, run: async r => { requests.push(r); return {status: 'available', advice: advice()}; }}}, async s => { finished.push(s); },
+    advisor: {deadlineMs: 2000, run: async r => { requests.push(r); return {status: 'available', advice: advice(`pick${requests.length}`)}; }}}, async s => { finished.push(s); },
     {socketFactory: () => socket = new FakeSocket()});
   const notes = () => socket.events.filter(e => e.type === 'session.instructions.append');
+  const caller = delta => socket.receive({type: 'session.input_transcript.delta', delta});
+  const model = delta => socket.receive({type: 'session.output_transcript.delta', delta});
+  const speech = pcmToUlaw(Int16Array.from({length: 3200}, (_, i) => Math.round(8000 * Math.sin(i / 3)))).toString('base64'); // 400 ms
   try {
     await tick();
-    socket.receive({type: 'session.input_transcript.delta', delta: 'I already have '});
-    socket.receive({type: 'session.input_transcript.delta', delta: 'a broker.'});
-    socket.receive({type: 'session.output_transcript.delta', delta: 'Understood.'});
+    caller('I already have '); caller('a broker.'); model('Understood.');
+    socket.receive({type: 'session.output_audio.delta', delta: speech}); // the words run ahead of the audio Twilio plays
     await tick(); await tick();
     assert.equal(requests[0].text, 'I already have a broker.');
-    await sleep(15); socket.receive({type: 'session.output_transcript.delta', delta: ' Is that'}); // still answering
-    await sleep(15); socket.receive({type: 'session.input_transcript.delta', delta: 'Yes.'}); // the caller cuts in
-    await sleep(60);
-    assert.equal(notes().length, 0); // never while either side speaks
-    socket.receive({type: 'session.output_transcript.delta', delta: 'Okay, thanks.'});
-    await sleep(60);
-    assert.equal(notes().length, 1);
+    await sleep(200); assert.equal(notes().length, 0); // still playing
+    await sleep(320); assert.equal(notes().length, 1);
     assert.equal(notes()[0].delegation_id, null); assert.match(notes()[0].event_id, /^adv_[a-f0-9]{24}$/);
-    assert.match(notes()[0].content, /^Coach note 1, replacing any earlier coach note[^]*Approved example/);
-    socket.receive({type: 'session.output_transcript.delta', delta: ' Bye.'}); await sleep(60);
-    assert.equal(notes().length, 1); // once per note
+    assert.match(notes()[0].content, /^Coach note 1, replacing any earlier coach note[^]*Approved example pick1/);
     socket.receive({type: 'session.instructions.appended', client_event_id: notes()[0].event_id});
+
+    caller('Can you call back later?'); model('Sure,'); caller('Actually wait.'); // the caller cuts in
+    await sleep(100); assert.equal(notes().length, 1);
+    model('Of course.'); await sleep(100); assert.equal(notes().length, 2); // the reply to the latest words
+    assert.match(notes()[1].content, /^Coach note 2[^]*pick3/);
+
+    caller('What is the address?'); model('Let me check.');
+    socket.receive({type: 'session.delegation.created', delegation: {id: 'dlg_1', target: 'responses'}});
+    await sleep(100); assert.equal(notes().length, 2); // delegated work in flight
+    socket.receive({type: 'response.event', delegation_id: 'dlg_1', event: {type: 'response.done', response: {status: 'completed'}}});
+    model('It is on Main Street.'); await sleep(100); assert.equal(notes().length, 3);
+
+    caller('Okay, bye.'); model('Goodbye.');
+    socket.receive({type: 'session.delegation.created', delegation: {id: 'dlg_2', target: 'responses'}});
+    socket.receive({type: 'response.event', delegation_id: 'dlg_2', event: {type: 'response.output_item.done', item: {type: 'function_call', call_id: 'call_1', name: 'end_call', arguments: '{}'}}});
+    socket.receive({type: 'response.event', delegation_id: 'dlg_2', event: {type: 'response.done', response: {status: 'completed'}}});
+    await sleep(100); assert.equal(notes().length, 3); // never once the call is ending
     const closed = audio.close(); socket.receive({type: 'session.closed'}); await closed;
-    assert.equal(finished[0].advice.filter(r => r.status === 'sent' && r.acknowledged).length, 1);
+    assert.equal(finished[0].advice.filter(r => r.status === 'sent').length, 3);
+    assert.equal(finished[0].advice.filter(r => r.acknowledged).length, 1);
     assert(!JSON.stringify(finished[0].advice).includes('Approved example'));
   } finally { await audio.close(); }
 });
