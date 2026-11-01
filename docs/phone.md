@@ -422,7 +422,7 @@ The managed final-response window can leave the line open briefly after a goodby
 
 ## Side coach (advice)
 
-An operator can give a Deepgram line a side coach: `advice: true` on the line and one shared installed command,
+An operator can give a Deepgram or GPT-Live line a side coach: `advice: true` on the line and one shared installed command,
 `adviceBinding: {alias, invoke, deadlineMs}`, for example `{"alias": "advice", "invoke": ["evaluate", "-"], "deadlineMs": 4000}`.
 It is off by default. Voice holds no classifier, rules or coach key; the installed command owns what a note means.
 
@@ -436,8 +436,15 @@ answer back. The latest note joins the caller's latest words in each request unt
 that continues after a tool call goes as it is. Nothing waits for the coach, and a note never joins the standing
 prompt: in real-provider runs any `UpdatePrompt` addition, whatever it said and whenever it landed, sent the model
 into lookups on every call. A lookup slower than `deadlineMs` (500..5000), one a newer utterance overtook, or one that
-repeats the current note adds nothing. Providers whose model requests cannot be relayed refuse `advice` (GPT-Live's
-only silent channel, `session.thinking.append`, cost Annie hang-ups in the same runs).
+repeats the current note adds nothing.
+
+A GPT-Live session has no model request to relay: there the latest note joins the session as trusted application
+instructions with `session.instructions.append` (at most 500 tokens), in a quiet moment: 1.2 s after the model's last
+words and after its audible audio has played at Twilio, with the caller's words answered, no delegated work in flight
+and the call not ending (end_call); a delegation that never reports its end holds a note for 20 s at most. In real-provider runs an addition as the caller began garbled the caller's words,
+and one timed from the model's words alone (they run ahead of its audio) cut replies and goodbyes short; thinking context
+(`session.thinking.append`) stopped end_call delegation altogether (0 of 6 hang-ups against 4 of 6 without).
+Each note says it replaces the earlier ones; a call adds at most eight. Other providers refuse `advice`.
 
 The receipt's `advice` lists each lookup's status, timing, note ID, source revision and how many requests carried it,
 never the note's text. Carrying a note is not proof the model used it; check on real calls that the model never
