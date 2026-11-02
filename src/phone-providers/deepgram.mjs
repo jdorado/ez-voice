@@ -54,9 +54,28 @@ export class DeepgramAdapter {
     if (!note || last?.role !== 'user' || !Array.isArray(last.parts) || !last.parts.length || !last.parts.every(p => typeof p?.text === 'string')) return body;
     return {...body, contents: [...body.contents.slice(0, -1), {...last, parts: [...last.parts, {text: note}]}]};
   }
-  speechTarget() {
-    return {url: `wss://api.elevenlabs.io/v1/text-to-speech/${this.config.voice}/multi-stream-input?model_id=${this.config.ttsModel ?? DeepgramAdapter.defaultTtsModel}&output_format=ulaw_8000`,
-      headers: {'xi-api-key': this.config.ttsApiKey}};
+  speechTarget(query = new URLSearchParams()) {
+    const model = this.config.ttsModel ?? DeepgramAdapter.defaultTtsModel;
+    const url = new URL(`wss://api.elevenlabs.io/v1/text-to-speech/${this.config.voice}/multi-stream-input?model_id=${model}&output_format=ulaw_8000`);
+    // Preserve the managed provider's streaming/normalization choices, never its target or credentials.
+    const allowed = {
+      model_id: value => value === model,
+      output_format: value => /^(ulaw_8000|alaw_8000|pcm_(8000|16000|22050|24000|44100|48000))$/.test(value),
+      auto_mode: value => ['true', 'false'].includes(value),
+      sync_alignment: value => ['true', 'false'].includes(value),
+      enable_logging: value => ['true', 'false'].includes(value),
+      enable_ssml_parsing: value => ['true', 'false'].includes(value),
+      language_code: value => /^[a-z]{2}(-[A-Za-z]{2})?$/.test(value),
+      apply_text_normalization: value => ['auto', 'on', 'off'].includes(value),
+      inactivity_timeout: value => /^\d{1,3}$/.test(value) && Number(value) >= 1 && Number(value) <= 180,
+      seed: value => /^\d{1,10}$/.test(value) && Number(value) <= 4294967295,
+    };
+    for (const [key, value] of query) {
+      if (!Object.hasOwn(allowed, key)) continue;
+      if (query.getAll(key).length !== 1 || !allowed[key](value)) throw Error('Invalid TTS streaming option');
+      url.searchParams.set(key, value);
+    }
+    return {url: url.href, headers: {'xi-api-key': this.config.ttsApiKey}};
   }
   connection() { return {url: SOCKET_URL, headers: {Authorization: `Token ${this.config.apiKey}`}}; }
   start() { return []; } // Welcome precedes Settings; SettingsApplied precedes audio.

@@ -235,7 +235,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
       const entry = speakers.get(/^[A-Za-z0-9_-]{43}$/.test(request.headers['xi-api-key'] ?? '') ? request.headers['xi-api-key'] : undefined);
       if (unavailable || !entry || entry.bridge.closing || entry.relay) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
       speechSockets.handleUpgrade(request, socket, head, ws => {
-        entry.relay = relaySpeech(ws, entry.bridge, {socketFactory: speechSocketFactory, finished: () => { entry.relay = undefined; }});
+        entry.relay = relaySpeech(ws, entry.bridge, {socketFactory: speechSocketFactory, query: new URLSearchParams((request.url || '').split('?')[1] || ''), finished: () => { entry.relay = undefined; }});
       });
       return;
     }

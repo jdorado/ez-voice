@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.43
+
+- Preserve validated managed-provider streaming, codec and normalization query options through the fixed ElevenLabs relay, with bounded metadata and negative tests for query overrides.
+
 ## 0.1.0-beta.11.rc.42
 
 - Preserve ElevenLabs’ required `multi-stream-input` endpoint suffix in the call-bound relay and keep fixed local TTS failure categories in receipts.

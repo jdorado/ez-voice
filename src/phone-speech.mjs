@@ -23,7 +23,7 @@ export function speechMessage(raw, speed, contexts) {
   return JSON.stringify(message);
 }
 
-export function relaySpeech(client, bridge, {socketFactory = (url, options) => new WebSocket(url, options), finished = () => {}} = {}) {
+export function relaySpeech(client, bridge, {socketFactory = (url, options) => new WebSocket(url, options), finished = () => {}, query = new URLSearchParams()} = {}) {
   const contexts = new Set(), queued = []; let bytes = 0, stopped = false, upstream;
   bridge.stats.tts = {speed: bridge.config.ttsSpeed, contexts: 0};
   const close = () => {
@@ -62,7 +62,8 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
     } catch (error) { fail(error); }
   });
   try {
-    const target = bridge.adapter.speechTarget();
+    const target = bridge.adapter.speechTarget(query);
+    bridge.stats.tts.streaming = Object.fromEntries(new URL(target.url).searchParams);
     upstream = socketFactory(target.url, {headers: target.headers, maxPayload: 1024 * 1024, handshakeTimeout: 10000});
     upstream.on('open', () => {
       if (stopped) return upstream.terminate();

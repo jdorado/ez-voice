@@ -69,7 +69,7 @@ test('the TTS relay applies the rate over WebSockets and passes audio back witho
   client.send(JSON.stringify({context_id: 'ctx', text: 'Hi.', flush: true}));
   assert.equal(JSON.parse((await audio)[0]).audio, 'AQID');
   assert.equal(seen[0].voice_settings.speed, 0.95);
-  assert.deepEqual(bridge.stats, {tts: {speed: 0.95, contexts: 1}});
+  assert.deepEqual(bridge.stats, {tts: {speed: 0.95, contexts: 1, streaming: {}}});
   assert(!JSON.stringify(bridge.stats).includes('private-key'));
 });
 
@@ -121,4 +121,18 @@ test('malformed, binary and oversized TTS frames fail closed without echoing the
     assert.equal(upstream.events.length, 0);
     assert(!JSON.stringify(bridge.stats).includes('private-secret'));
   }
+});
+
+
+test('the speech relay preserves supported streaming options without accepting target or credential changes', () => {
+  const adapter = createAdapter({...base, ttsSpeed: 0.95});
+  const target = adapter.speechTarget(new URLSearchParams('auto_mode=true&sync_alignment=true&output_format=pcm_16000&enable_logging=false&url=https://evil.invalid&xi-api-key=untrusted'));
+  const url = new URL(target.url);
+  assert.equal(url.hostname, 'api.elevenlabs.io');
+  assert.equal(url.searchParams.get('auto_mode'), 'true');
+  assert.equal(url.searchParams.get('output_format'), 'pcm_16000');
+  assert.equal(url.searchParams.get('enable_logging'), 'false');
+  assert.equal(target.headers['xi-api-key'], base.ttsApiKey);
+  assert(!target.url.includes('untrusted'));
+  for (const query of ['auto_mode=true&auto_mode=false','model_id=unapproved','output_format=invalid','inactivity_timeout=181']) assert.throws(() => adapter.speechTarget(new URLSearchParams(query)), /streaming option/);
 });
