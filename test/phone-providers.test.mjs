@@ -912,3 +912,15 @@ test('first audible GPT-Live output refreshes idle activity after a slow startup
     c.socket().receive({type: 'session.closed'}); await c.audio.done;
   } finally {c.socket().receive({type: 'session.closed'}); await c.audio.close();}
 });
+
+
+test('invalid endpoint receipts preserve only fixed vocabulary hints, never provider text', async () => {
+  const c = await call('deepgram', deepgramKeys);
+  try {
+    await wait(() => c.socket());
+    c.socket().receive({type: 'Warning', code: 'INVALID_SETTINGS', description: 'The endpoint URL must start with wss://api.elevenlabs.io/v1/text-to-speech/. secret-value-do-not-log'});
+    await c.audio.close();
+    assert.deepEqual(c.finished[0].providerWarnings[0].endpointHints, ['wss', 'api.elevenlabs.io', 'text-to-speech', 'url', 'endpoint', 'must', 'start']);
+    assert(!JSON.stringify(c.finished).includes('secret-value-do-not-log'));
+  } finally {await c.audio.close();}
+});

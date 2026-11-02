@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.41
+
+- Carry sanitized endpoint hints through the call receipt warning boundary, with an end-to-end receipt regression.
+
 ## 0.1.0-beta.11.rc.40
 
 - Expose only fixed vocabulary hints for invalid provider endpoint settings, never raw descriptions, request content or keys.

@@ -206,7 +206,7 @@ export class PhoneAudio {
       case 'tool': this.tool(item); break;
       case 'warning':
         if ((this.stats.providerWarnings ??= []).length < 8) this.stats.providerWarnings.push({code: item.code,
-          ...(item.upstreamStatus && {upstreamStatus: item.upstreamStatus}), ...(item.category && {category: item.category})});
+          ...(item.upstreamStatus && {upstreamStatus: item.upstreamStatus}), ...(item.category && {category: item.category}), ...(item.endpointHints && {endpointHints: item.endpointHints})});
         break;
       case 'error':
         this.stats.providerError = item.code;
