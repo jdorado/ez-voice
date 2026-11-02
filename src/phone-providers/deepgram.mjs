@@ -51,10 +51,15 @@ export class DeepgramAdapter {
     if (!note || last?.role !== 'user' || !Array.isArray(last.parts) || !last.parts.length || !last.parts.every(p => typeof p?.text === 'string')) return body;
     return {...body, contents: [...body.contents.slice(0, -1), {...last, parts: [...last.parts, {text: note}]}]};
   }
+  speechTarget() {
+    return {url: `wss://api.elevenlabs.io/v1/text-to-speech/${this.config.voice}/multi-stream-input?model_id=${this.config.ttsModel ?? DeepgramAdapter.defaultTtsModel}&output_format=ulaw_8000`,
+      headers: {'xi-api-key': this.config.ttsApiKey}};
+  }
   connection() { return {url: SOCKET_URL, headers: {Authorization: `Token ${this.config.apiKey}`}}; }
   start() { return []; } // Welcome precedes Settings; SettingsApplied precedes audio.
   settings() {
     const c = this.config;
+    if (c.ttsSpeed !== undefined && !c.speech) throw Error('ttsSpeed requires the call-bound speech relay');
     return {type: 'Settings', audio: {
       input: {encoding: 'mulaw', sample_rate: 8000},
       output: {encoding: 'mulaw', sample_rate: 8000, container: 'none'},
@@ -68,8 +73,8 @@ export class DeepgramAdapter {
           ({name, description, parameters: geminiParameters(parameters), defer_until_eot: true}))}),
       },
       speak: {provider: {type: 'eleven_labs', model_id: c.ttsModel ?? DeepgramAdapter.defaultTtsModel},
-        endpoint: {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`,
-          headers: {'xi-api-key': c.ttsApiKey}}},
+        endpoint: c.speech ? {url: c.speech.url, headers: {authorization: `Bearer ${c.speech.token}`}} :
+          {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`, headers: {'xi-api-key': c.ttsApiKey}}},
     }};
   }
   greet() { this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}]; }

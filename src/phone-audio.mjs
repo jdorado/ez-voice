@@ -24,6 +24,7 @@ export class PhoneAudio {
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
     this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
+    if (config.ttsSpeed !== undefined) this.stats.ttsSpeed = config.ttsSpeed;
     if (config.advisor) this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs, onReady: () => this.pushAdvice(),
       receipts: this.stats.advice = []});
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only

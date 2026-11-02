@@ -392,6 +392,16 @@ response request alone is not reliable proof of an audible greeting.
 
 ### Deepgram cascaded speech
 
+`ttsSpeed` sets ElevenLabs speaking rate for one Deepgram line (`0.7`–`1.2`; `1.0` is normal).
+When set, the listener relays that call's TTS WebSocket and applies `voice_settings.speed` on each
+context initialization. It never edits the saved ElevenLabs voice or falls back to an untuned rate.
+The relay uses a call-bound token and a fixed ElevenLabs endpoint; the ElevenLabs key stays in Voice.
+The public origin must forward WebSocket upgrades under `pathPrefix` (the same ingress as media).
+An unset speed retains the provider default. `phone doctor` shows the configured rate; a real call's
+receipt has `ttsSpeed` and `tts: {speed, contexts}` once synthesis connects. `phone probe` verifies
+provider readiness only and reports `speedVerified: false`; it does not synthesize speech.
+
+
 `provider: "deepgram"` uses the managed Voice Agent session with Flux (`flux-general-en`, v2)
 turn detection, Google `gemini-3.8-flash` and ElevenLabs `eleven_flash_v2_5`. It is English-only
 for now. `apiKey` is the Deepgram key; `llmApiKey` is the Google AI Studio key and `ttsApiKey`

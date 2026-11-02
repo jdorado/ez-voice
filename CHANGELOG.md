@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.37
+
+- Add per-line `ttsSpeed` for managed ElevenLabs phone speech. A call-bound WebSocket relay applies the configured rate to each TTS context without changing shared voice defaults. Doctor and call receipts expose the rate; the readiness probe explicitly does not verify speech speed.
+
 ## 0.1.0-beta.11.rc.36
 
 - The side coach also serves GPT-Live lines: the latest note joins the session as application instructions (`session.instructions.append`) in a quiet moment once the model's reply has played at Twilio, never while either side speaks, while delegated work is in flight or once the call is ending; at most eight notes a call.
