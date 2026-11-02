@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.42
+
+- Preserve ElevenLabs’ required `multi-stream-input` endpoint suffix in the call-bound relay and keep fixed local TTS failure categories in receipts.
+
 ## 0.1.0-beta.11.rc.41
 
 - Carry sanitized endpoint hints through the call receipt warning boundary, with an end-to-end receipt regression.

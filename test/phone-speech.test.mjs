@@ -84,7 +84,7 @@ test('the speech endpoint requires its live call token and closes with that call
       assert.equal(options.headers['xi-api-key'], base.ttsApiKey);
       ttsSocket = new FakeSocket(); setImmediate(() => ttsSocket.emit('open')); return ttsSocket;
     }});
-  const speech = token => new WebSocket(`ws://127.0.0.1:${server.port}/voice/speak`, {headers: {'xi-api-key': token}});
+  const speech = token => new WebSocket(`ws://127.0.0.1:${server.port}/voice/speak/multi-stream-input`, {headers: {'xi-api-key': token}});
   const refused = token => new Promise(resolve => { const ws = speech(token); ws.on('error', () => resolve(true)); ws.on('open', () => { ws.close(); resolve(false); }); });
   try {
     assert(await refused('x'.repeat(43)));
@@ -95,7 +95,7 @@ test('the speech endpoint requires its live call token and closes with that call
     ws.send(JSON.stringify({event: 'start', start: {accountSid: config.accountSid, callSid: id, streamSid: 'MZ' + '4'.repeat(32), customParameters: {ticket}, mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
     await wait(() => socket); socket.receive({type: 'Welcome'});
     const endpoint = socket.events.find(e => e.type === 'Settings').agent.speak.endpoint;
-    assert.equal(endpoint.url, 'wss://phone.example.com/voice/speak');
+    assert.equal(endpoint.url, 'wss://phone.example.com/voice/speak/multi-stream-input');
     assert(!JSON.stringify(endpoint).includes(base.ttsApiKey));
     const token = endpoint.headers['xi-api-key'], spoken = speech(token); await once(spoken, 'open');
     assert(await refused(token)); // one upstream socket at a time for the call

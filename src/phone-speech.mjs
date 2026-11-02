@@ -31,8 +31,14 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
     stopped = true; queued.length = 0; clearTimeout(timeout);
     client.terminate(); upstream?.terminate(); finished();
   };
-  const fail = () => {
+  const fail = reason => {
     if (stopped) return;
+    const reasons = {
+      'Invalid TTS message': 'invalid_message', 'Invalid voice settings': 'invalid_settings',
+      'Invalid TTS context': 'invalid_context', 'Too many TTS contexts': 'context_limit',
+      'Invalid TTS frame': 'invalid_frame', 'TTS backpressure': 'backpressure', 'TTS queue full': 'queue_full',
+    };
+    bridge.stats.tts.error = reasons[reason?.message] ?? 'connection_failed';
     bridge.stats.providerError ??= 'TTS_CONNECTION_FAILED';
     close(); bridge.close('tts_connection_failed');
   };
@@ -53,7 +59,7 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
         if (bytes > MAX_BUFFER) throw Error('TTS queue full');
         queued.push(item);
       }
-    } catch { fail(); }
+    } catch (error) { fail(error); }
   });
   try {
     const target = bridge.adapter.speechTarget();

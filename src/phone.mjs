@@ -231,7 +231,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
   const speechSockets = new WebSocketServer({noServer: true, maxPayload: 256000});
   const sockets = new WebSocketServer({noServer: true, maxPayload: 32000});
   server.on('upgrade', (request, socket, head) => {
-    if ((request.url || '').split('?')[0] === prefix + '/speak') {
+    if ((request.url || '').split('?')[0] === prefix + '/speak/multi-stream-input') {
       const entry = speakers.get(/^[A-Za-z0-9_-]{43}$/.test(request.headers['xi-api-key'] ?? '') ? request.headers['xi-api-key'] : undefined);
       if (unavailable || !entry || entry.bridge.closing || entry.relay) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
       speechSockets.handleUpgrade(request, socket, head, ws => {
@@ -262,7 +262,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           const prepared = !ticket.outbound && contexts !== undefined && contexts.status().count > 0;
           const thinkToken = line.advice && config.advisor && providerClass(line).prototype.withAdvice ? randomBytes(32).toString('base64url') : undefined;
           const speechToken = line.ttsSpeed !== undefined ? randomBytes(32).toString('base64url') : undefined;
-          bridge = new PhoneAudio(ws, {...line, ...(speechToken && {speech: {token: speechToken, url: `${config.origin.replace('https:', 'wss:')}${prefix}/speak`}}), ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions: ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context), streamSid: start.streamSid,
+          bridge = new PhoneAudio(ws, {...line, ...(speechToken && {speech: {token: speechToken, url: `${config.origin.replace('https:', 'wss:')}${prefix}/speak/multi-stream-input`}}), ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions: ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context), streamSid: start.streamSid,
             greet: !ticket.outbound, call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined, ...(prepared && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
