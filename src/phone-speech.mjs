@@ -43,14 +43,15 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
     try {
       if (binary || raw.length > MAX_BUFFER) throw Error('Invalid TTS frame');
       const before = contexts.size, message = speechMessage(raw, bridge.config.ttsSpeed, contexts);
-      if (contexts.size > before) bridge.stats.tts.contexts++;
+      const item = {message, context: contexts.size > before};
       if (upstream?.readyState === WebSocket.OPEN) {
-        if (upstream.bufferedAmount > MAX_BUFFER) throw Error('TTS backpressure');
+        if (upstream.bufferedAmount + Buffer.byteLength(message) > MAX_BUFFER) throw Error('TTS backpressure');
         upstream.send(message);
+        if (item.context) bridge.stats.tts.contexts++;
       } else {
         bytes += Buffer.byteLength(message);
         if (bytes > MAX_BUFFER) throw Error('TTS queue full');
-        queued.push(message);
+        queued.push(item);
       }
     } catch { fail(); }
   });
@@ -60,13 +61,15 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
     upstream.on('open', () => {
       if (stopped) return upstream.terminate();
       clearTimeout(timeout);
-      for (const message of queued) upstream.send(message);
-      queued.length = 0; bytes = 0;
+      try {
+        for (const item of queued) { upstream.send(item.message); if (item.context) bridge.stats.tts.contexts++; }
+        queued.length = 0; bytes = 0;
+      } catch { fail(); }
     });
     upstream.on('message', (raw, binary) => {
       if (stopped) return;
       if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > MAX_BUFFER) return fail();
-      client.send(raw, {binary});
+      try { client.send(raw, {binary}); } catch { fail(); }
     });
     upstream.on('error', fail);
     upstream.on('unexpected-response', (_request, response) => { response.resume(); fail(); });

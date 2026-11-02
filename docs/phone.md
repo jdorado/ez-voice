@@ -398,7 +398,7 @@ context initialization. It never edits the saved ElevenLabs voice or falls back 
 The relay uses a call-bound token and a fixed ElevenLabs endpoint; the ElevenLabs key stays in Voice.
 The public origin must forward WebSocket upgrades under `pathPrefix` (the same ingress as media).
 An unset speed retains the provider default. `phone doctor` shows the configured rate; a real call's
-receipt has `ttsSpeed` and `tts: {speed, contexts}` once synthesis connects. `phone probe` verifies
+receipt has `ttsSpeed` and `tts: {speed, contexts}` for contexts sent to synthesis. This records the request, not provider acceptance or audible pace. `phone probe` verifies
 provider readiness only and reports `speedVerified: false`; it does not synthesize speech.
 
 

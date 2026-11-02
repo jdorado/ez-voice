@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.38
+
+- Count only TTS contexts actually sent upstream, not queued initialization, and bound send failures without retaining payloads.
+
 ## 0.1.0-beta.11.rc.37
 
 - Add per-line `ttsSpeed` for managed ElevenLabs phone speech. A call-bound WebSocket relay applies the configured rate to each TTS context without changing shared voice defaults. Doctor and call receipts expose the rate; the readiness probe explicitly does not verify speech speed.
