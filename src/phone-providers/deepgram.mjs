@@ -21,8 +21,9 @@ function diagnostic(event) {
     ['invalid_endpoint', /endpoint|hostname|domain|\bURL\b/i],
   ];
   const category = categories.find(([, pattern]) => pattern.test(description))?.[0];
+  const endpointHints = event.code === 'INVALID_SETTINGS' ? ['https', 'wss', 'api.elevenlabs.io', 'multi-stream-input', 'text-to-speech', 'hostname', 'domain', 'host', 'path', 'xi-api-key', 'url', 'endpoint', 'not allowed', 'must', 'required', 'unsupported', 'start', 'scheme', 'protocol', 'voice', 'match', 'invalid'].filter(word => description.toLowerCase().includes(word)) : [];
   return {code: typeof event.code === 'string' && /^[A-Z0-9_]{1,100}$/.test(event.code) ? event.code : 'PROVIDER_ERROR',
-    ...(status && {upstreamStatus: Number(status)}), ...(category && {category})};
+    ...(status && {upstreamStatus: Number(status)}), ...(category && {category}), ...(endpointHints.length && {endpointHints})};
 }
 
 export class DeepgramAdapter {
