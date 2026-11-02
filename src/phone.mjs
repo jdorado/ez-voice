@@ -232,7 +232,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
   const sockets = new WebSocketServer({noServer: true, maxPayload: 32000});
   server.on('upgrade', (request, socket, head) => {
     if ((request.url || '').split('?')[0] === prefix + '/speak') {
-      const entry = speakers.get(/^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization ?? '')?.[1]);
+      const entry = speakers.get(/^[A-Za-z0-9_-]{43}$/.test(request.headers['xi-api-key'] ?? '') ? request.headers['xi-api-key'] : undefined);
       if (unavailable || !entry || entry.bridge.closing || entry.relay) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
       speechSockets.handleUpgrade(request, socket, head, ws => {
         entry.relay = relaySpeech(ws, entry.bridge, {socketFactory: speechSocketFactory, finished: () => { entry.relay = undefined; }});

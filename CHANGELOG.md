@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.39
+
+- Use ElevenLabs’ required `xi-api-key` header for the call-bound speech relay token, while retaining the real key only at the upstream adapter. Classify rejected endpoint/key settings without logging provider descriptions.
+
 ## 0.1.0-beta.11.rc.38
 
 - Count only TTS contexts actually sent upstream, not queued initialization, and bound send failures without retaining payloads.

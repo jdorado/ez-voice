@@ -17,6 +17,8 @@ function diagnostic(event) {
     ['permission', /PERMISSION_DENIED|permission|unauthorized|authentication/i],
     ['model_unavailable', /NOT_FOUND|model.{0,60}(not found|not supported|not available)/i],
     ['invalid_arguments', /INVALID_ARGUMENT|invalid json|unknown name|invalid schema/i],
+    ['missing_tts_key', /xi-api-key/i],
+    ['invalid_endpoint', /endpoint|hostname|domain|\bURL\b/i],
   ];
   const category = categories.find(([, pattern]) => pattern.test(description))?.[0];
   return {code: typeof event.code === 'string' && /^[A-Z0-9_]{1,100}$/.test(event.code) ? event.code : 'PROVIDER_ERROR',
@@ -73,7 +75,7 @@ export class DeepgramAdapter {
           ({name, description, parameters: geminiParameters(parameters), defer_until_eot: true}))}),
       },
       speak: {provider: {type: 'eleven_labs', model_id: c.ttsModel ?? DeepgramAdapter.defaultTtsModel},
-        endpoint: c.speech ? {url: c.speech.url, headers: {authorization: `Bearer ${c.speech.token}`}} :
+        endpoint: c.speech ? {url: c.speech.url, headers: {'xi-api-key': c.speech.token}} :
           {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`, headers: {'xi-api-key': c.ttsApiKey}}},
     }};
   }
