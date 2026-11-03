@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.43
+
+- Preserve validated managed-provider streaming, codec and normalization query options through the fixed ElevenLabs relay, with bounded metadata and negative tests for query overrides.
+
+## 0.1.0-beta.11.rc.42
+
+- Preserve ElevenLabs’ required `multi-stream-input` endpoint suffix in the call-bound relay and keep fixed local TTS failure categories in receipts.
+
+## 0.1.0-beta.11.rc.41
+
+- Carry sanitized endpoint hints through the call receipt warning boundary, with an end-to-end receipt regression.
+
+## 0.1.0-beta.11.rc.40
+
+- Expose only fixed vocabulary hints for invalid provider endpoint settings, never raw descriptions, request content or keys.
+
+## 0.1.0-beta.11.rc.39
+
+- Use ElevenLabs’ required `xi-api-key` header for the call-bound speech relay token, while retaining the real key only at the upstream adapter. Classify rejected endpoint/key settings without logging provider descriptions.
+
+## 0.1.0-beta.11.rc.38
+
+- Count only TTS contexts actually sent upstream, not queued initialization, and bound send failures without retaining payloads.
+
+## 0.1.0-beta.11.rc.37
+
+- Add per-line `ttsSpeed` for managed ElevenLabs phone speech. A call-bound WebSocket relay applies the configured rate to each TTS context without changing shared voice defaults. Doctor and call receipts expose the rate; the readiness probe explicitly does not verify speech speed.
+
 ## 0.1.0-beta.11.rc.36
 
 - The side coach also serves GPT-Live lines: the latest note joins the session as application instructions (`session.instructions.append`) in a quiet moment once the model's reply has played at Twilio, never while either side speaks, while delegated work is in flight or once the call is ending; at most eight notes a call.

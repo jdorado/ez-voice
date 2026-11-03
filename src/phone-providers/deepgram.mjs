@@ -17,10 +17,13 @@ function diagnostic(event) {
     ['permission', /PERMISSION_DENIED|permission|unauthorized|authentication/i],
     ['model_unavailable', /NOT_FOUND|model.{0,60}(not found|not supported|not available)/i],
     ['invalid_arguments', /INVALID_ARGUMENT|invalid json|unknown name|invalid schema/i],
+    ['missing_tts_key', /xi-api-key/i],
+    ['invalid_endpoint', /endpoint|hostname|domain|\bURL\b/i],
   ];
   const category = categories.find(([, pattern]) => pattern.test(description))?.[0];
+  const endpointHints = event.code === 'INVALID_SETTINGS' ? ['https', 'wss', 'api.elevenlabs.io', 'multi-stream-input', 'text-to-speech', 'hostname', 'domain', 'host', 'path', 'xi-api-key', 'url', 'endpoint', 'not allowed', 'must', 'required', 'unsupported', 'start', 'scheme', 'protocol', 'voice', 'match', 'invalid'].filter(word => description.toLowerCase().includes(word)) : [];
   return {code: typeof event.code === 'string' && /^[A-Z0-9_]{1,100}$/.test(event.code) ? event.code : 'PROVIDER_ERROR',
-    ...(status && {upstreamStatus: Number(status)}), ...(category && {category})};
+    ...(status && {upstreamStatus: Number(status)}), ...(category && {category}), ...(endpointHints.length && {endpointHints})};
 }
 
 export class DeepgramAdapter {
@@ -51,10 +54,34 @@ export class DeepgramAdapter {
     if (!note || last?.role !== 'user' || !Array.isArray(last.parts) || !last.parts.length || !last.parts.every(p => typeof p?.text === 'string')) return body;
     return {...body, contents: [...body.contents.slice(0, -1), {...last, parts: [...last.parts, {text: note}]}]};
   }
+  speechTarget(query = new URLSearchParams()) {
+    const model = this.config.ttsModel ?? DeepgramAdapter.defaultTtsModel;
+    const url = new URL(`wss://api.elevenlabs.io/v1/text-to-speech/${this.config.voice}/multi-stream-input?model_id=${model}&output_format=ulaw_8000`);
+    // Preserve the managed provider's streaming/normalization choices, never its target or credentials.
+    const allowed = {
+      model_id: value => value === model,
+      output_format: value => /^(ulaw_8000|alaw_8000|pcm_(8000|16000|22050|24000|44100|48000))$/.test(value),
+      auto_mode: value => ['true', 'false'].includes(value),
+      sync_alignment: value => ['true', 'false'].includes(value),
+      enable_logging: value => ['true', 'false'].includes(value),
+      enable_ssml_parsing: value => ['true', 'false'].includes(value),
+      language_code: value => /^[a-z]{2}(-[A-Za-z]{2})?$/.test(value),
+      apply_text_normalization: value => ['auto', 'on', 'off'].includes(value),
+      inactivity_timeout: value => /^\d{1,3}$/.test(value) && Number(value) >= 1 && Number(value) <= 180,
+      seed: value => /^\d{1,10}$/.test(value) && Number(value) <= 4294967295,
+    };
+    for (const [key, value] of query) {
+      if (!Object.hasOwn(allowed, key)) continue;
+      if (query.getAll(key).length !== 1 || !allowed[key](value)) throw Error('Invalid TTS streaming option');
+      url.searchParams.set(key, value);
+    }
+    return {url: url.href, headers: {'xi-api-key': this.config.ttsApiKey}};
+  }
   connection() { return {url: SOCKET_URL, headers: {Authorization: `Token ${this.config.apiKey}`}}; }
   start() { return []; } // Welcome precedes Settings; SettingsApplied precedes audio.
   settings() {
     const c = this.config;
+    if (c.ttsSpeed !== undefined && !c.speech) throw Error('ttsSpeed requires the call-bound speech relay');
     return {type: 'Settings', audio: {
       input: {encoding: 'mulaw', sample_rate: 8000},
       output: {encoding: 'mulaw', sample_rate: 8000, container: 'none'},
@@ -68,8 +95,8 @@ export class DeepgramAdapter {
           ({name, description, parameters: geminiParameters(parameters), defer_until_eot: true}))}),
       },
       speak: {provider: {type: 'eleven_labs', model_id: c.ttsModel ?? DeepgramAdapter.defaultTtsModel},
-        endpoint: {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`,
-          headers: {'xi-api-key': c.ttsApiKey}}},
+        endpoint: c.speech ? {url: c.speech.url, headers: {'xi-api-key': c.speech.token}} :
+          {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`, headers: {'xi-api-key': c.ttsApiKey}}},
     }};
   }
   greet() { this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}]; }

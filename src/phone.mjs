@@ -6,6 +6,7 @@ import {WebSocketServer} from 'ws';
 import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
 import {relayThink} from './phone-think.mjs';
+import {relaySpeech} from './phone-speech.mjs';
 import {phonePlugins, validateBinding, validateAdviceBinding} from './phone-plugin-tools.mjs';
 import {PROVIDERS, DEFAULT_PROVIDER, providerClass} from './phone-providers/index.mjs';
 
@@ -39,7 +40,7 @@ async function save(path, value) {
 }
 // A line is one Twilio number with its own speech provider, voice, key and instructions. One install serves
 // several lines (`lines`); the old single-line form (the line's fields at the top level) is one line.
-const LINE_KEYS = ['provider','model','voice','language','thinking','apiKey','llmApiKey','ttsApiKey','ttsModel','number','instructions','tools','toolModel','toolEffort','answerTone','instructionsFiles','instructionsRoot','advice'];
+const LINE_KEYS = ['provider','model','voice','language','thinking','apiKey','llmApiKey','ttsApiKey','ttsModel','ttsSpeed','number','instructions','tools','toolModel','toolEffort','answerTone','instructionsFiles','instructionsRoot','advice'];
 const SHARED_KEYS = ['accountSid','authToken','origin','maxCallSeconds','idleSeconds','pathPrefix','maxCalls','lines','toolBinding','adviceBinding'];
 function validateLine(line) {
   if (!line || typeof line !== 'object' || Array.isArray(line) || Object.keys(line).some(k => !LINE_KEYS.includes(k))) throw Error('Invalid phone line fields');
@@ -51,8 +52,9 @@ function validateLine(line) {
     if (line.ttsModel !== undefined && !Adapter.ttsModels.includes(line.ttsModel)) throw Error('Deepgram managed speech supports eleven_flash_v2_5; ElevenLabs v4 requires the different Text-to-Dialogue protocol');
     if (!PROVIDERS.gemini.keyPattern.test(line.llmApiKey || '') || !PROVIDERS.elevenlabs.keyPattern.test(line.ttsApiKey || ''))
       throw Error('Supply the Google llmApiKey and ElevenLabs ttsApiKey privately');
+    if (line.ttsSpeed !== undefined && (typeof line.ttsSpeed !== 'number' || !Number.isFinite(line.ttsSpeed) || line.ttsSpeed < 0.7 || line.ttsSpeed > 1.2)) throw Error('ttsSpeed must be a number from 0.7 to 1.2');
     if (line.language !== undefined && line.language !== 'en') throw Error('Deepgram Flux phone language must be en');
-  } else if (line.llmApiKey !== undefined || line.ttsApiKey !== undefined || line.ttsModel !== undefined) throw Error('llmApiKey, ttsApiKey and ttsModel apply to provider deepgram only');
+  } else if (line.llmApiKey !== undefined || line.ttsApiKey !== undefined || line.ttsModel !== undefined || line.ttsSpeed !== undefined) throw Error('llmApiKey, ttsApiKey, ttsModel and ttsSpeed apply to provider deepgram only');
   if (!Adapter.models.includes(model)) throw Error(`model must be one of ${Adapter.models.join(', ')} for provider ${Adapter.id}`);
   if (typeof voice !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(voice)) throw Error('voice must be a provider voice name or id');
   if (line.thinking !== undefined && (!['low','medium','high'].includes(line.thinking) || model !== 'gemini-3.8-live-extended-thinking')) throw Error('thinking must be low, medium or high, and applies to gemini-3.8-live-extended-thinking only');
@@ -159,10 +161,10 @@ const startRecording = (provider, callSid) => Promise.resolve().then(() => provi
   recording => ({state: 'started', sid: recording.sid}),
   error => ({state: 'failed', code: Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'ERROR'}));
 
-export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, contexts, provider = new PhoneNumber(config), fetch: fetchImpl = fetch} = {}) {
+export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDrained = false, record = async () => {}, socketFactory, calls, contexts, provider = new PhoneNumber(config), fetch: fetchImpl = fetch, speechSocketFactory} = {}) {
   const prefix = config.pathPrefix || '', mediaPath = prefix + '/media';
   // thinkers: each coached call's relay token -> its bridge
-  const tickets = new Map(), actives = new Map(), thinkers = new Map(); let admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
+  const tickets = new Map(), actives = new Map(), thinkers = new Map(), speakers = new Map(); let admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.loaded && ticket.expires<Date.now())tickets.delete(token);};
   // Calls in progress or reserved, up to maxCalls at once: an outbound request counts from creation to its end
   // (its answer ticket and audio are the same call), an inbound call from its ticket to its end.
@@ -226,8 +228,17 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
       response.end(`<Response><Connect><Stream url="${config.origin.replace('https:', 'wss:')}${mediaPath}"><Parameter name="ticket" value="${token}"/></Stream></Connect><Hangup/></Response>`);
     } catch { response.writeHead(400); response.end(); }
   });
+  const speechSockets = new WebSocketServer({noServer: true, maxPayload: 256000});
   const sockets = new WebSocketServer({noServer: true, maxPayload: 32000});
   server.on('upgrade', (request, socket, head) => {
+    if ((request.url || '').split('?')[0] === prefix + '/speak/multi-stream-input') {
+      const entry = speakers.get(/^[A-Za-z0-9_-]{43}$/.test(request.headers['xi-api-key'] ?? '') ? request.headers['xi-api-key'] : undefined);
+      if (unavailable || !entry || entry.bridge.closing || entry.relay) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
+      speechSockets.handleUpgrade(request, socket, head, ws => {
+        entry.relay = relaySpeech(ws, entry.bridge, {socketFactory: speechSocketFactory, query: new URLSearchParams((request.url || '').split('?')[1] || ''), finished: () => { entry.relay = undefined; }});
+      });
+      return;
+    }
     if (unavailable || request.url !== mediaPath || !authentic(config, request.headers['x-twilio-signature'], mediaPath)) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
     sockets.handleUpgrade(request, socket, head, ws => sockets.emit('connection', ws));
   });
@@ -250,13 +261,15 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           // Caller contexts apply once a set was prepared (an empty or never-replaced store changes nothing).
           const prepared = !ticket.outbound && contexts !== undefined && contexts.status().count > 0;
           const thinkToken = line.advice && config.advisor && providerClass(line).prototype.withAdvice ? randomBytes(32).toString('base64url') : undefined;
-          bridge = new PhoneAudio(ws, {...line, ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions: ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context), streamSid: start.streamSid,
+          const speechToken = line.ttsSpeed !== undefined ? randomBytes(32).toString('base64url') : undefined;
+          bridge = new PhoneAudio(ws, {...line, ...(speechToken && {speech: {token: speechToken, url: `${config.origin.replace('https:', 'wss:')}${prefix}/speak/multi-stream-input`}}), ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions: ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context), streamSid: start.streamSid,
             greet: !ticket.outbound, call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined, ...(prepared && {lookup: query => contexts.search(query)})}, async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
-            finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); thinkers.delete(thinkToken); }
+            finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); thinkers.delete(thinkToken); speakers.get(speechToken)?.relay?.close(); speakers.delete(speechToken); }
           }, {socketFactory}); actives.set(start.callSid, {bridge, outbound: ticket.outbound});
           if (thinkToken) thinkers.set(thinkToken, bridge);
+          if (speechToken) speakers.set(speechToken, {bridge});
           if (prepared) bridge.stats.callerContext = Boolean(ticket.context);
           bridge.stats.instructionsSha256 = ticket.instructionsSha256; // which instructions this call ran with (never their text)
           recording = startRecording(provider, start.callSid);
@@ -275,6 +288,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
     await Promise.allSettled([...tickets.values()].map(ticket => ticket.loading));
     await Promise.allSettled([...actives.values()].map(a => a.bridge.close('service_stopped')));
     for (const ws of sockets.clients) ws.terminate(); sockets.close();
+    for (const ws of speechSockets.clients) ws.terminate(); speechSockets.close();
     await stopped;
     if (receiptError) throw Error('Phone call receipt could not be persisted');
   })()};
@@ -309,7 +323,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     'phone route', 'phone status', 'phone restore', 'phone receipt [--call-sid CA...]', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
     'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'phone context replace < contexts.json', 'phone context status', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions? or instructionsFiles?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
-      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for its configured Gemini/ElevenLabs stack)', 'ttsModel (deepgram only: eleven_flash_v2_5; v4 Turbo uses an incompatible protocol)', 'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)','advice (default false; deepgram, openai): a side coach, the shared adviceBinding {alias, invoke, deadlineMs: 500..5000}: each finished caller utterance goes to that installed command; on deepgram its latest note rides on each of the model\'s language-model requests, relayed through this listener (origin + pathPrefix + /think/), on openai it joins the session context when the caller next speaks; no reply waits for it']},
+      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for its configured Gemini/ElevenLabs stack)', 'ttsModel (deepgram only: eleven_flash_v2_5; v4 Turbo uses an incompatible protocol)', 'ttsSpeed (deepgram only: 0.7..1.2, 1 is normal; applies ElevenLabs voice_settings.speed through a call-bound TTS relay; unset inherits the provider rate)', 'voice (a provider voice name or id)','language (transcription language code, default en)','thinking (gemini-3.8-live-extended-thinking only: low, medium or high, default low; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)','advice (default false; deepgram, openai): a side coach, the shared adviceBinding {alias, invoke, deadlineMs: 500..5000}: each finished caller utterance goes to that installed command; on deepgram its latest note rides on each of the model\'s language-model requests, relayed through this listener (origin + pathPrefix + /think/), on openai it joins the session context when the caller next speaks; no reply waits for it']},
     limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime, gemini Live or deepgram Flux/Gemini Flash/ElevenLabs TTS); no native-agent delegation or Retell/Vapi; tools are end_call, cache-only find_case on inbound calls, and an operator-bound installed information plugin when configured (with openai they run on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio (each receipt keeps the transcript of its call); an inbound call rings on until the first words of the model (answerTone); the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     contexts: 'phone context replace reads on stdin a JSON array of at most 500 caller contexts {number (E.164), text (1..6000 characters), claim (1..600), find (the property address, searchable), at?} and replaces the whole prepared set atomically; an inbound call from a number in it is answered with its text added to the line\'s instructions (before the greeting, no network call), and a caller from another number can name a property to the find_case tool (at most 3 tries a call), which answers with the claims whose address matches. phone context status reads the count and latest time.',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin, added to the configured instructions for that call only (the brief wins where they differ). Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
@@ -324,7 +338,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!stored && command === 'doctor') return {configured: false, providers: Object.keys(PROVIDERS), model: 'gpt-live-1', nativeTools: false, liveVerified: false};
   if (!stored) throw Error('Phone is not configured; use phone configure with private stdin');
   const config = validatePhoneConfig(stored);
-  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, lines: await Promise.all(config.lines.map(async l => ({number: l.number, provider: l.provider, model: l.model, ...(l.ttsModel && {ttsModel: l.ttsModel}), ...(l.advice && {advice: true}), ...(l.instructionsFiles && await inspectInstructions(l, MAX_CALL_INSTRUCTIONS))}))), maxCalls: config.maxCalls, outbound: true, nativeTools: false, liveVerified: false};
+  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, lines: await Promise.all(config.lines.map(async l => ({number: l.number, provider: l.provider, model: l.model, ...(l.ttsModel && {ttsModel: l.ttsModel}), ...(l.ttsSpeed !== undefined && {ttsSpeed: l.ttsSpeed}), ...(l.advice && {advice: true}), ...(l.instructionsFiles && await inspectInstructions(l, MAX_CALL_INSTRUCTIONS))}))), maxCalls: config.maxCalls, outbound: true, nativeTools: false, liveVerified: false};
   if (command === 'probe') {
     // Every line's provider session, the first line's result at the top level as before.
     const probes = [];
@@ -333,12 +347,13 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
       // a line that reads its instructions from files probes with what a call would start with now, or fails naming the file
       const line = settings.instructionsFiles ? {...settings, instructions: await instructionsFromFiles(settings, MAX_CALL_INSTRUCTIONS)} : settings;
       const result = await new Promise(resolve => {
-        const audio = new PhoneAudio({readyState: 1, close() {}, send() {}}, line, resolve, {onReady: () => audio.close('probe_complete')});
+        // A readiness probe generates no speech. Rate delivery is established by real calls, not this handshake.
+        const audio = new PhoneAudio({readyState: 1, close() {}, send() {}}, {...line, ttsSpeed: undefined}, resolve, {onReady: () => audio.close('probe_complete')});
       });
       // A provider with no close handshake cannot confirm finalization or usage; its probe proves the session started.
       const confirms = providerClass(line).confirmsClose;
       if (!result.ready || (confirms && !result.finalized)) throw Error(`Direct ${providerClass(line).label} audio probe failed for ${number} (${result.providerError || result.reason || 'unconfirmed finalization'})`);
-      probes.push({number, provider: line.provider, model: line.model, ...(line.ttsModel && {ttsModel: line.ttsModel}), audio: 'pcmu/8000', ready: true, finalized: confirms ? true : 'unconfirmed (no provider close handshake)', usage: result.usage, readyMs: result.readyMs, phoneCallVerified: false, ...(line.instructionsFiles && {instructionsSha256: instructionsDigest(line.instructions)})});
+      probes.push({number, provider: line.provider, model: line.model, ...(line.ttsModel && {ttsModel: line.ttsModel}), ...(line.ttsSpeed !== undefined && {ttsSpeed: line.ttsSpeed, speedVerified: false}), audio: 'pcmu/8000', ready: true, finalized: confirms ? true : 'unconfirmed (no provider close handshake)', usage: result.usage, readyMs: result.readyMs, phoneCallVerified: false, ...(line.instructionsFiles && {instructionsSha256: instructionsDigest(line.instructions)})});
     }
     const {number: _, ...first} = probes[0];
     return {...first, lines: probes};
