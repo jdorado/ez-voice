@@ -27,32 +27,46 @@ class ProviderSocket extends EventEmitter {
   terminate() {this.close();}
 }
 
-// One inbound call from `caller`, with the live provider `run` and a prepared table of `entries`; resolves to what the model was told.
-async function answered(t, {entries = [], run, deadlineMs = 400, hangUpEarly = false}) {
+// A listener with a prepared table of `entries` and, unless `noProvider`, a live provider `run` that is asked with each call.
+async function listener(t, {entries = [], run, deadlineMs = 400, noProvider = false, line = {}} = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'voice-live-context-'));
   const contexts = new PhoneContexts(directory);
   if (entries.length) contexts.replace(entries);
   t.after(async () => {contexts.close(); await rm(directory, {recursive: true, force: true});});
   const sockets = [], receipts = [], asked = [];
-  const contextProvider = {deadlineMs, run: async (call, signal) => {asked.push(call); return run(call, signal);}};
-  const server = await servePhone({...config, contextProvider}, {port: 0, host: '127.0.0.1', contexts, provider: new PhoneNumber(config, async () => new Response('{}', {status: 201})),
+  const contextProvider = noProvider ? undefined : {deadlineMs, run: async (call, signal) => {asked.push(call); return run(call, signal);}};
+  const server = await servePhone({...config, ...line, contextProvider}, {port: 0, host: '127.0.0.1', contexts, provider: new PhoneNumber(config, async () => new Response('{}', {status: 201})),
     socketFactory: () => sockets[sockets.length] = new ProviderSocket(), record: async r => {receipts.push(r);}});
   t.after(() => server.close());
-  const id = 'CA' + '5'.repeat(32);
+  return {server, sockets, receipts, asked};
+}
+// The Twilio webhook for one inbound call from `caller`; resolves to the call's ticket.
+async function ring(server, id = 'CA' + '5'.repeat(32)) {
   const params = new URLSearchParams({AccountSid: config.accountSid, To: config.number, From: caller, CallSid: id});
   const response = await fetch(`http://127.0.0.1:${server.port}/incoming`, {method: 'POST', body: params,
     headers: {'x-twilio-signature': twilioSignature(config.authToken, config.origin + '/incoming', params)}});
-  const ticket = (await response.text()).match(/value="([a-f0-9]+)"/)[1];
+  const text = await response.text();
+  return {id, ticket: text.match(/value="([a-f0-9]+)"/)?.[1], status: response.status, text};
+}
+async function stream(server) {
   const ws = new WebSocket(`ws://127.0.0.1:${server.port}/media`, {headers: {'x-twilio-signature': twilioSignature(config.authToken, config.origin + '/media')}});
   await new Promise((resolve, reject) => {ws.once('open', resolve); ws.once('error', reject);});
-  ws.send(JSON.stringify({event: 'start', start: {accountSid: config.accountSid, callSid: id, streamSid, customParameters: {ticket}, mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
-  // audio behind the start waits for it, in order
-  ws.send(JSON.stringify({event: 'media', media: {payload: Buffer.alloc(160, 0xff).toString('base64')}}));
-  if (hangUpEarly) {ws.close(); await new Promise(r => setTimeout(r, deadlineMs + 100)); return {sockets, receipts, asked, server};}
-  await wait(() => sockets[0]?.events[0]);
-  const session = sockets[0].events[0].session;
-  ws.close(); await wait(() => receipts.length === 1);
-  return {session, receipts, asked, sockets, server};
+  return ws;
+}
+const start = (ws, id, ticket) => ws.send(JSON.stringify({event: 'start', start: {accountSid: config.accountSid, callSid: id, streamSid, customParameters: {ticket}, mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
+const media = ws => ws.send(JSON.stringify({event: 'media', media: {payload: Buffer.alloc(160, 0xff).toString('base64')}}));
+const pause = ms => new Promise(r => setTimeout(r, ms));
+
+// One inbound call from `caller`: resolves to what the model was told, with the audio sent right behind the start.
+async function answered(t, options) {
+  const heard = await listener(t, options);
+  const {id, ticket} = await ring(heard.server);
+  const ws = await stream(heard.server);
+  start(ws, id, ticket); media(ws);
+  await wait(() => heard.sockets[0]?.events[0]);
+  const session = heard.sockets[0].events[0].session;
+  ws.close(); await wait(() => heard.receipts.length === 1);
+  return {...heard, session};
 }
 
 test('the caller context is asked as the call arrives, from the call itself, and its answer replaces a stale prepared one', async t => {
@@ -65,6 +79,7 @@ test('the caller context is asked as the call arrives, from the call itself, and
   assert.equal(receipts[0].callerContext, true);
   assert.equal(receipts[0].callerContextLive.status, 'available'); assert.ok(Number.isInteger(receipts[0].callerContextLive.milliseconds));
   assert.equal(JSON.stringify(receipts).includes('FRESH'), false); // a receipt never holds the context's text
+  assert.equal(receipts[0].inputBytes, 160); // the audio sent right behind the start was held, then reached the call
 });
 
 test('the live answer is the records\' own word: no_match drops a stale prepared text, a failure keeps it', async t => {
@@ -86,9 +101,45 @@ test('with no prepared table at all the live answer alone is the context, and fi
   assert.equal(receipts[0].callerContext, true);
 });
 
-test('a caller who hangs up while the live answer is pending gets no speech session', async t => {
-  const {sockets, receipts} = await answered(t, {run: () => new Promise(resolve => setTimeout(() => resolve({status: 'available', text: 'FRESH'}), 150)), deadlineMs: 400, hangUpEarly: true});
-  assert.equal(sockets.length, 0); assert.equal(receipts.length, 0);
+test('a caller who hangs up while the live answer is pending gets no speech session, by closing or by a queued stop', async t => {
+  const slow = () => new Promise(resolve => setTimeout(() => resolve({status: 'available', text: 'FRESH'}), 150));
+  for (const how of ['close', 'stop']) {
+    const heard = await listener(t, {run: slow, deadlineMs: 400});
+    const {id, ticket} = await ring(heard.server);
+    const ws = await stream(heard.server);
+    start(ws, id, ticket); media(ws);
+    if (how === 'close') ws.close(); else ws.send(JSON.stringify({event: 'stop'}));
+    await pause(500);
+    assert.equal(heard.sockets.length, 0, how); assert.equal(heard.receipts.length, 0, how);
+    assert.equal(heard.server.capacity().tickets, 0, how); // the place is free again
+    ws.close();
+  }
+});
+
+test('a ticket starts one call, also while its live answer is pending', async t => {
+  const heard = await listener(t, {run: () => new Promise(resolve => setTimeout(() => resolve({status: 'available', text: 'FRESH'}), 150))});
+  const {id, ticket} = await ring(heard.server);
+  const [first, second] = [await stream(heard.server), await stream(heard.server)];
+  start(first, id, ticket); start(second, id, ticket);
+  await wait(() => heard.sockets[0]?.events[0]); await pause(300);
+  assert.equal(heard.sockets.length, 1);
+  first.close(); second.close(); await wait(() => heard.receipts.length === 1); await pause(100);
+  assert.equal(heard.receipts.length, 1);
+});
+
+test('without a context binding a start is handled the moment it arrives, even if the caller closes right behind it', async t => {
+  const heard = await listener(t, {noProvider: true});
+  const {id, ticket} = await ring(heard.server);
+  const ws = await stream(heard.server);
+  start(ws, id, ticket); ws.close();
+  await wait(() => heard.receipts.length === 1);
+  assert.equal(heard.sockets.length, 1);
+});
+
+test('a refused call asks the backend nothing', async t => {
+  const heard = await listener(t, {run: async () => ({status: 'available', text: 'FRESH'}), line: {instructions: undefined, instructionsFiles: ['missing.md'], instructionsRoot: tmpdir()}});
+  const refused = await ring(heard.server);
+  assert.match(refused.text, /Reject/); assert.equal(heard.asked.length, 0);
 });
 
 test('a context binding is one literal command with a deadline, and the config carries it', () => {
@@ -111,6 +162,8 @@ test('the installed command is given the call and its answer is bound to it', as
   assert.deepEqual(await ok.run(call), {status: 'available', text: 'known'});
   assert.equal(seen[0].method, 'tools.invoke'); assert.deepEqual(seen[0].params.args, ['call', 'context', '-']); assert.deepEqual(JSON.parse(seen[0].params.stdin), {call});
   assert.deepEqual(await installedContext(binding, core(() => ({code: 0, stdout: JSON.stringify({call_id: call.id, status: 'no_match'})}))).run(call), {status: 'no_match'});
+  const accents = 'é'.repeat(2500); // within the text limit, but escaped as \u00e9 it is 15,000 characters of stdout
+  assert.deepEqual(await installedContext(binding, core(() => ({code: 0, stdout: JSON.stringify({call_id: call.id, status: 'available', context: {text: accents}}).replace(/é/g, '\\u00e9')}))).run(call), {status: 'available', text: accents});
   for (const reply of [() => ({code: 1, stdout: ''}), () => ({code: 0, stdout: JSON.stringify({call_id: 'CA' + '8'.repeat(32), status: 'available', context: {text: 'x'}})}),
     () => ({code: 0, stdout: JSON.stringify({call_id: call.id, status: 'available', context: {text: ''}})}), () => ({code: 0, stdout: JSON.stringify({call_id: call.id, status: 'available', context: {text: 'x'.repeat(6001)}})}),
     () => ({code: 0, stdout: JSON.stringify({call_id: call.id, status: 'maybe'})}), () => ({code: 0, stdout: 'not json'})]) {

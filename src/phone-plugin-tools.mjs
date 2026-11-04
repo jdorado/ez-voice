@@ -76,7 +76,7 @@ export function installedContext(binding, core) {
   validateContextBinding(binding);
   return {deadlineMs: binding.deadlineMs, async run(call, signal) {
     const result = await core.request('tools.invoke', {alias: binding.alias, args: binding.invoke, stdin: JSON.stringify({call})}, signal);
-    if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 12000) throw Error('Context unavailable');
+    if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 40000) throw Error('Context unavailable');
     const out = JSON.parse(result.stdout);
     if (out.call_id !== call.id || !['available', 'no_match', 'unavailable'].includes(out.status)) throw Error('Context result binding mismatch');
     if (out.status !== 'available') return {status: out.status};

@@ -256,7 +256,13 @@ for the answer up to `deadlineMs`, and the audio behind it waits in order. An `a
 text for this call; `no_match` is the backend's own word that nothing is known, so it drops a stale table entry too; a late, failed,
 mismatched or invalid answer leaves the table's text, if any. A caller who hangs up while the answer is pending gets no speech
 session. With a context binding every inbound call is told it is incoming and whether the number matched; the receipt records
-`callerContext` and `callerContextLive` {status, milliseconds}, never the text. `find_case` stays tied to the prepared table.
+`callerContext` and `callerContextLive` {status, milliseconds}, never the text. The call begins, and its ringback and greeting with
+it, only once the answer is in or the deadline has passed, so a caller can hear silence for up to `deadlineMs` after answering:
+keep it short (a few seconds at most). The ask is made only for a call that has been accepted (a call refused for unreadable
+instructions asks nothing), and a ticket starts one call, also while its answer is pending.
+
+`no_match` drops the text of *this caller's own number* only. `find_case`, which answers a caller from another number who names a
+property, keeps reading the prepared table, so a stale entry there can still be named until the table is retired.
 
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone

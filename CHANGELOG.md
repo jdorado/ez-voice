@@ -2,7 +2,7 @@
 
 ## 0.1.0-beta.11.rc.44
 
-- Add `contextBinding {alias, invoke, deadlineMs}`: an inbound call asks one installed command, as it arrives, what the operator's backend knows of the caller now, and the answer replaces the prepared table's text (`no_match` drops a stale one; a late, failed or invalid answer leaves it). The question is the call's identity, the webhook never waits for it (the stream's start does, up to the deadline), and the receipt records only `callerContextLive` {status, milliseconds}, never the text. A caller who hangs up while it is pending gets no speech session. Stream events are now handled one at a time.
+- Add `contextBinding {alias, invoke, deadlineMs}`: an inbound call asks one installed command, as it arrives, what the operator's backend knows of the caller now, and the answer replaces the prepared table's text (`no_match` drops a stale one; a late, failed or invalid answer leaves it). The question is the call's identity, the webhook never waits for it (the stream's start does, up to the deadline), and the receipt records only `callerContextLive` {status, milliseconds}, never the text. A caller who hangs up (by closing or by a stop) while it is pending gets no speech session, a ticket starts one call also while the answer is pending, and the ask is made only for an accepted call. While a start waits, the events behind it are held in order; with no binding every event is handled the moment it arrives. The command's stdout may be up to 40,000 characters (a JSON-escaped non-ASCII context is six bytes a character).
 
 ## 0.1.0-beta.11.rc.43
 

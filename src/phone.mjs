@@ -208,9 +208,6 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
         context: outbound ? undefined : contexts?.byNumber(params.get('From'))};
       if (!existing) {
         tickets.set(token, ticket); // the place is held while the line's instructions are read
-        // What the operator's backend knows of this caller now is asked as the call arrives, in parallel with the answer to
-        // Twilio, and awaited when the stream starts: a slow backend never holds up the webhook.
-        if (!outbound && config.contextProvider) ticket.live = liveContext(config.contextProvider, ticket.call);
         // The line's instructions are read here, at the start of every call (a file is never cached). A file that cannot be
         // read refuses the call as a full line does, and the failure (the file's path and a code, never its text) is recorded.
         ticket.loading = (async () => { try {
@@ -230,6 +227,9 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
         if (prefix && !outbound) response.statusCode=503;
         return response.end('<Response><Reject reason="busy"/></Response>');
       }
+      // What the operator's backend knows of this caller now is asked once the call is accepted, in parallel with the answer to
+      // Twilio, and awaited when the stream starts: a slow backend never holds up the webhook, and a refused call asks nothing.
+      if (!existing && !outbound && config.contextProvider) ticket.live = liveContext(config.contextProvider, ticket.call);
       response.end(`<Response><Connect><Stream url="${config.origin.replace('https:', 'wss:')}${mediaPath}"><Parameter name="ticket" value="${token}"/></Stream></Connect><Hangup/></Response>`);
     } catch { response.writeHead(400); response.end(); }
   });
@@ -248,14 +248,19 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
     sockets.handleUpgrade(request, socket, head, ws => sockets.emit('connection', ws));
   });
   sockets.on('connection', ws => {
-    let bridge, recording, started = false;
+    let bridge, recording, started = false, stopped = false, waiting = false;
+    const backlog = [];
     const timeout = setTimeout(() => ws.close(), 10000);
     ws.on('error', () => bridge?.close('twilio_connection_failed'));
-    ws.on('close', () => { clearTimeout(timeout); bridge?.close(); });
-    // Events are handled one at a time: the start may wait for the caller's live context, and the audio behind it waits too.
-    let queue = Promise.resolve();
-    ws.on('message', raw => { queue = queue.then(() => step(raw)); });
-    const step = async raw => {
+    ws.on('close', () => { clearTimeout(timeout); stopped = true; bridge?.close(); });
+    // A start that waits for the caller's live context holds the events behind it, in order, until it has begun the call (or not);
+    // otherwise an event is handled the moment it arrives.
+    ws.on('message', raw => {
+      if (!waiting) return step(raw);
+      try { if (JSON.parse(raw.toString()).event === 'stop') stopped = true; } catch { /* handled when it is replayed */ }
+      backlog.push(raw);
+    });
+    const step = raw => {
       try {
         const message = JSON.parse(raw.toString());
         if (message.event === 'connected') return;
@@ -263,12 +268,28 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           started = true; clearTimeout(timeout);
           const start = message.start, ticket = tickets.get(start?.customParameters?.ticket);
           const line = ticket && lineConfig(config, ticket.line);
-          if (!ticket || !line || ticket.lineText === undefined || ticket.expires < Date.now() || ticket.callSid !== start.callSid || start.accountSid !== config.accountSid ||
+          if (!ticket || !line || ticket.claimed || ticket.lineText === undefined || ticket.expires < Date.now() || ticket.callSid !== start.callSid || start.accountSid !== config.accountSid ||
               actives.has(start.callSid) || !sid(start.streamSid, 'MZ') || start.mediaFormat?.encoding !== 'audio/x-mulaw' || start.mediaFormat?.sampleRate !== 8000 || start.mediaFormat?.channels !== 1) return ws.close();
+          ticket.claimed = true; // a ticket starts one call, also while its live context is awaited
+          if (!ticket.live) return begin(start, ticket, line);
+          waiting = true;
+          ticket.live.then(live => {
+            waiting = false;
+            try {
+              // the caller may have hung up, or the service stopped, while the answer was pending: then there is no call to begin
+              if (stopped || ws.readyState !== 1 || unavailable || ticket.expires < Date.now()) { tickets.delete(start.customParameters.ticket); ws.close(); }
+              else begin(start, ticket, line, live);
+            } catch { ws.close(); bridge?.close('invalid_twilio_event'); }
+            for (const queued of backlog.splice(0)) step(queued);
+          });
+        } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
+        else if (message.event === 'mark') bridge?.mark(message.mark?.name);
+        else if (message.event === 'stop') bridge?.close();
+      } catch { ws.close(); bridge?.close('invalid_twilio_event'); }
+    };
+    const begin = (start, ticket, line, live) => {
           // The live answer replaces the prepared table's: `no_match` is the records' own word that nothing is known of this caller,
           // while a late, failed or invalid answer leaves the table's text (if any).
-          const live = ticket.live ? await ticket.live : undefined;
-          if (ws.readyState !== 1) { tickets.delete(start.customParameters.ticket); return; }
           if (live?.status === 'available') ticket.context = live.text; else if (live?.status === 'no_match') ticket.context = undefined;
           tickets.delete(start.customParameters.ticket); admitted++;
           // Caller contexts apply once a set was prepared (an empty or never-replaced store changes nothing) or a live one was asked.
@@ -288,10 +309,6 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           if (live) bridge.stats.callerContextLive = {status: live.status, milliseconds: live.ms}; // never the text
           bridge.stats.instructionsSha256 = ticket.instructionsSha256; // which instructions this call ran with (never their text)
           recording = startRecording(provider, start.callSid);
-        } else if (message.event === 'media' && bridge) bridge.input(message.media?.payload);
-        else if (message.event === 'mark') bridge?.mark(message.mark?.name);
-        else if (message.event === 'stop') bridge?.close();
-      } catch { ws.close(); bridge?.close('invalid_twilio_event'); }
     };
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000;
