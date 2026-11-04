@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.46
+
+- `contextBinding` is `{url, token, deadlineMs}`: an inbound call asks the operator's backend over HTTP (one POST of `{call}` with a bearer token, answering `{call_id, status, context?}`), not an installed command through Ez, which starts a container for every command (more than a second on a live host). The answer's handling is unchanged.
+- Remove the prepared caller contexts and `find_case`: `phone context replace` and `phone context status`, the `contexts.sqlite` store and the tool that read it. A table is a copy that goes stale; the live answer is the only context. An existing `contexts.sqlite` is no longer read.
+
 ## 0.1.0-beta.11.rc.45
 
 - Raise the instruction budgets to what providers were verified to accept: a line's instruction files (and a per-call brief) may hold 13,500 characters, and a session starts with at most 16,000 characters (was 12,000 and 15,000). A persona, the shared guidance and the call conduct together had outgrown 12,000, which refused every call on that line at its start.

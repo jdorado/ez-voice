@@ -218,52 +218,6 @@ ez voice phone hangup --request-id owner-call-001
 ez voice phone receipt
 ```
 
-## Prepared caller contexts
-
-An operator can prepare, for the numbers that may call back, what the line should know before it answers (the call
-centre's "screen pop"). The set is replaced whole, atomically, on stdin:
-
-```sh
-ez voice phone context replace < contexts.json   # [{"number":"+15551230002","text":"...","claim":"...","find":"1450 East 102nd Street","at":"2026-10-29T12:00:00Z"}]
-ez voice phone context status                    # {"count":1,"latest":"..."}
-```
-
-At most 500 entries; `text` 1..6000 characters, `claim` 1..600, `find` a property address (searchable). An inbound call
-from a number in the set is answered with its `text` added to the line's instructions, as background that is never read out (an inbound call on a line with contexts is
-also told it is incoming, with no brief, and whether its number matched); the lookup is local (no network call) and the receipt records `callerContext`. A call
-from any other number gets the line's instructions alone, plus the `find_case` tool (inbound calls only): the model passes
-the property address the caller names, and the tool answers with the `claim` of each context whose address matches (the
-house number said first must be the address's own, a hyphenated one such as 88-10 included, and every word of the
-address's street name must have been said, a numbered street's number included; a direction, the street type, a unit, a
-city or a ZIP never decide it; several properties of a caller are separated by ';' in `find`), at most three tries a call.
-The set is the install's, for every line. `at` is an ISO time with its offset (kept in UTC). A claim is
-the little a stranger who names the property may be told; what `text` and `claim` hold is the operator's policy. A set that
-is never replaced, or is empty, leaves the behavior unchanged (no incoming note, no `find_case`), and the plugin decides
-nothing about what may be said. An incoming call's instructions with its context are cut to 16,000 characters, the
-context's end first; an outbound brief that would take the call past that is refused before dialing.
-
-### Live caller context
-
-A prepared table is only as fresh as its last replace. An operator can instead (or as well) give the install one installed
-command to ask as each inbound call arrives: `contextBinding: {alias, invoke, deadlineMs}`, for example
-`{"alias": "quarre", "invoke": ["call", "context", "-"], "deadlineMs": 3000}` (500..10000). Voice holds no records of its own: the
-command is given `{call: {id, remote, line, direction, started_at}}` on stdin, with the identity from the call ticket (never a
-model's words), and answers `{call_id, status, context?}` where status is `available` (`context.text`, 1..6000 characters, the
-same background as a prepared `text`), `no_match` (the backend knows nothing of this caller) or `unavailable`.
-
-The question goes out in parallel with the answer to Twilio, so the webhook never waits for it; the media stream's start waits
-for the answer up to `deadlineMs`, and the audio behind it waits in order. An `available` answer replaces the prepared table's
-text for this call; `no_match` is the backend's own word that nothing is known, so it drops a stale table entry too; a late, failed,
-mismatched or invalid answer leaves the table's text, if any. A caller who hangs up while the answer is pending gets no speech
-session. With a context binding every inbound call is told it is incoming and whether the number matched; the receipt records
-`callerContext` and `callerContextLive` {status, milliseconds}, never the text. The call begins, and its ringback and greeting with
-it, only once the answer is in or the deadline has passed, so a caller can hear silence for up to `deadlineMs` after answering:
-keep it short (a few seconds at most). The ask is made only for a call that has been accepted (a call refused for unreadable
-instructions asks nothing), and a ticket starts one call, also while its answer is pending.
-
-`no_match` drops the text of *this caller's own number* only. `find_case`, which answers a caller from another number who names a
-property, keeps reading the prepared table, so a stale entry there can still be named until the table is retired.
-
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
 instructions. `--instructions -` reads a per-call brief (1..13500 characters) on
@@ -292,6 +246,29 @@ the existing private volume. Ringing, answered and inbound calls share the same
 shutdown attempts to finalize audio and terminate every outstanding outbound call (each is tried, and the ones that could
 not be settled are reported together).
 No service restart or transport loss automatically redials an uncertain attempt.
+
+## Caller context
+
+An operator can give the install the backend that knows its callers (the call centre's "screen pop"):
+`contextBinding: {url, token, deadlineMs}` in the private configuration, where `url` is an HTTP(S) endpoint, `token` its bearer
+token and `deadlineMs` how long a call waits for the answer (500..10000). As each inbound call is accepted, Voice POSTs
+`{"call": {"id", "remote", "line", "direction", "started_at"}}` to it, the identity coming from the call ticket (never a
+model's words), and takes `{call_id, status, context?}` as JSON: `available` with `context.text` (1..6000 characters, background
+for the model, never read out; where it differs from the line's instructions it wins), `no_match` (the backend knows nothing of
+this caller) or `unavailable`. Voice holds no records of its own and decides nothing about what may be said.
+
+The question goes out in parallel with the answer to Twilio, so the webhook never waits for it; the media stream's start waits
+for the answer up to `deadlineMs`, and the audio behind it waits in order. `no_match`, and a late, failed, mismatched or invalid
+answer, leave the call with the line's instructions alone. A caller who hangs up while the answer is pending gets no speech
+session. With a binding every inbound call is told it is incoming, and whether the backend knew the number; the receipt records
+`callerContext` and `callerContextLive` {status, milliseconds}, never the text. The call begins, and its ringback and greeting
+with it, only once the answer is in or the deadline has passed, so a caller can hear silence for up to `deadlineMs` after
+answering: keep the backend fast. The ask is made only for a call that has been accepted (a call refused for unreadable
+instructions asks nothing), and a ticket starts one call, also while its answer is pending.
+
+Caller ID is whatever Twilio reports and can be spoofed: the backend decides what a number may be told. An incoming call's
+instructions with its context are cut to 16,000 characters, the context's end first; an outbound brief that would take the call
+past that is refused before dialing.
 
 ## Updating a live listener
 
@@ -348,14 +325,14 @@ that apply to recording; the phone `instructions` can state the notice.
 
 Phone callers are external callers, not authenticated Ez owners. This channel has
 no native-agent delegation, owner history, workspace access or external-action
-tools. Its tools are `end_call` and, on an inbound call with prepared caller contexts, `find_case` (see Tools); a legacy
+tools. Its only tool is `end_call` (see Tools); a legacy
 client delegation (`tools: false`) receives a fixed capability-unavailable result. This plugin stores no audio; Twilio
 holds the call recording. What it keeps, all in its private volume (mode 0600, readable by the operator only): each call's
 receipt (call and provider IDs, the digest of the line instructions, input/output byte counts, provider error code, final usage, the recording outcome, the
 ring and the call's transcript, up to 100,000 characters), kept until the operator removes it; outbound requests with
-their briefs (`calls.sqlite`); and the prepared caller contexts (`contexts.sqlite`), replaced as a whole by the operator.
-A caller context is chosen by the caller ID Twilio reports, which a caller can spoof: anyone presenting a known number is
-answered with that number's context, so prepare only what the line may hear from that number.
+their briefs (`calls.sqlite`). A caller context is chosen by the caller ID Twilio reports, which a caller can spoof:
+anyone presenting a known number may be answered with that number's context, so the backend should supply only what the line
+may hear from that number.
 These counts prove transport activity, not audible quality or semantic accuracy.
 No automatic dialing, redial, replacement provider or model fallback exists.
 

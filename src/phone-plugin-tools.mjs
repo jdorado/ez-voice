@@ -22,7 +22,7 @@ export async function installedTools(binding, core) {
   if (!Array.isArray(tools) || tools.length > 12 || !tools.length
       || new Set(tools.map(t => t.name)).size !== tools.length
       || tools.some(t => t.type !== 'function' || !/^[a-z][a-z0-9_]{0,63}$/.test(t.name)
-        || ['end_call','find_case'].includes(t.name) || typeof t.description !== 'string'
+        || t.name === 'end_call' || typeof t.description !== 'string'
         || t.description.length > 2000 || t.parameters?.type !== 'object')) throw Error('Invalid phone tool schemas');
   return {tools, async run(call, turn, name, args, signal) {
     if (!tools.some(t => t.name === name)) return {status: 'unavailable', error: 'unknown_tool'};
@@ -61,23 +61,29 @@ export function installedAdvice(binding, core) {
   }};
 }
 
-// The caller context's installed capability: one literal command, asked as an inbound call arrives with the call's identity (never
-// a model's words), for what the operator's backend knows of this caller now. It never fails or holds up a call: a slow, failed or
-// invalid answer is `timeout` or `unavailable`, and the prepared table (if any) answers instead.
+// The caller context: the operator's backend is asked over HTTP as an inbound call arrives, with the call's identity (never a
+// model's words), for what it knows of this caller now. One POST of {call} with a bearer token answers {call_id, status,
+// context?: {text}}. It never fails or holds up a call: a slow, failed or invalid answer is `timeout` or `unavailable`, and the
+// call goes on with the line's instructions alone.
 export function validateContextBinding(value) {
-  if (!value || Object.keys(value).sort().join() !== 'alias,deadlineMs,invoke'
-      || !/^[a-z][a-z0-9-]{0,63}$/.test(value.alias) || !Array.isArray(value.invoke) || !value.invoke.length || value.invoke.length > 8
-      || value.invoke.some(a => typeof a !== 'string' || !a || a.length > 100 || a.includes('\0'))
+  if (!value || Object.keys(value).sort().join() !== 'deadlineMs,token,url'
+      || typeof value.token !== 'string' || !/^[\x21-\x7e]{16,512}$/.test(value.token)
       || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 500 || value.deadlineMs > 10000) throw Error('Invalid phone context binding');
+  let url;
+  try { url = new URL(value.url); } catch { throw Error('Invalid phone context binding'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) throw Error('Invalid phone context binding');
   return value;
 }
 
-export function installedContext(binding, core) {
+export function httpContext(binding, fetchImpl = fetch) {
   validateContextBinding(binding);
   return {deadlineMs: binding.deadlineMs, async run(call, signal) {
-    const result = await core.request('tools.invoke', {alias: binding.alias, args: binding.invoke, stdin: JSON.stringify({call})}, signal);
-    if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 40000) throw Error('Context unavailable');
-    const out = JSON.parse(result.stdout);
+    const response = await fetchImpl(binding.url, {method: 'POST', redirect: 'error', signal,
+      headers: {authorization: 'Bearer ' + binding.token, 'content-type': 'application/json'}, body: JSON.stringify({call})});
+    if (!response.ok) throw Error('Context unavailable');
+    const raw = await response.text();
+    if (raw.length > 40000) throw Error('Context unavailable');
+    const out = JSON.parse(raw);
     if (out.call_id !== call.id || !['available', 'no_match', 'unavailable'].includes(out.status)) throw Error('Context result binding mismatch');
     if (out.status !== 'available') return {status: out.status};
     const text = out.context?.text;
@@ -95,12 +101,12 @@ export function liveContext(provider, call) {
   return Promise.race([attempt, timeout]).then(answer => ({...answer, ms: Date.now() - began})).finally(() => clearTimeout(timer));
 }
 
-export async function phonePlugins(binding, adviceBinding, contextBinding) {
-  if (!binding && !adviceBinding && !contextBinding) return {};
+export async function phonePlugins(binding, adviceBinding, contextBinding, fetchImpl = fetch) {
+  const contextProvider = contextBinding ? httpContext(contextBinding, fetchImpl) : undefined; // no Ez connection: it asks the backend directly
+  if (!binding && !adviceBinding) return {contextProvider};
   const core = new CoreTools(process.stdout);
   frames(process.stdin, frame => core.receive(frame), () => core.close());
   process.stdin.on('end', () => core.close());
   return {information: binding ? await installedTools(binding, core) : undefined,
-    advisor: adviceBinding ? installedAdvice(adviceBinding, core) : undefined,
-    contextProvider: contextBinding ? installedContext(contextBinding, core) : undefined};
+    advisor: adviceBinding ? installedAdvice(adviceBinding, core) : undefined, contextProvider};
 }
