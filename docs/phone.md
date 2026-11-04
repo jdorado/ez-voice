@@ -242,6 +242,28 @@ is never replaced, or is empty, leaves the behavior unchanged (no incoming note,
 nothing about what may be said. An incoming call's instructions with its context are cut to 15,000 characters, the
 context's end first; an outbound brief that would take the call past that is refused before dialing.
 
+### Live caller context
+
+A prepared table is only as fresh as its last replace. An operator can instead (or as well) give the install one installed
+command to ask as each inbound call arrives: `contextBinding: {alias, invoke, deadlineMs}`, for example
+`{"alias": "quarre", "invoke": ["call", "context", "-"], "deadlineMs": 3000}` (500..10000). Voice holds no records of its own: the
+command is given `{call: {id, remote, line, direction, started_at}}` on stdin, with the identity from the call ticket (never a
+model's words), and answers `{call_id, status, context?}` where status is `available` (`context.text`, 1..6000 characters, the
+same background as a prepared `text`), `no_match` (the backend knows nothing of this caller) or `unavailable`.
+
+The question goes out in parallel with the answer to Twilio, so the webhook never waits for it; the media stream's start waits
+for the answer up to `deadlineMs`, and the audio behind it waits in order. An `available` answer replaces the prepared table's
+text for this call; `no_match` is the backend's own word that nothing is known, so it drops a stale table entry too; a late, failed,
+mismatched or invalid answer leaves the table's text, if any. A caller who hangs up while the answer is pending gets no speech
+session. With a context binding every inbound call is told it is incoming and whether the number matched; the receipt records
+`callerContext` and `callerContextLive` {status, milliseconds}, never the text. The call begins, and its ringback and greeting with
+it, only once the answer is in or the deadline has passed, so a caller can hear silence for up to `deadlineMs` after answering:
+keep it short (a few seconds at most). The ask is made only for a call that has been accepted (a call refused for unreadable
+instructions asks nothing), and a ticket starts one call, also while its answer is pending.
+
+`no_match` drops the text of *this caller's own number* only. `find_case`, which answers a caller from another number who names a
+property, keeps reading the prepared table, so a stale entry there can still be named until the table is retired.
+
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
 instructions. `--instructions -` reads a per-call brief (1..12000 characters) on

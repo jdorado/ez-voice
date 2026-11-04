@@ -61,11 +61,46 @@ export function installedAdvice(binding, core) {
   }};
 }
 
-export async function phonePlugins(binding, adviceBinding) {
-  if (!binding && !adviceBinding) return {};
+// The caller context's installed capability: one literal command, asked as an inbound call arrives with the call's identity (never
+// a model's words), for what the operator's backend knows of this caller now. It never fails or holds up a call: a slow, failed or
+// invalid answer is `timeout` or `unavailable`, and the prepared table (if any) answers instead.
+export function validateContextBinding(value) {
+  if (!value || Object.keys(value).sort().join() !== 'alias,deadlineMs,invoke'
+      || !/^[a-z][a-z0-9-]{0,63}$/.test(value.alias) || !Array.isArray(value.invoke) || !value.invoke.length || value.invoke.length > 8
+      || value.invoke.some(a => typeof a !== 'string' || !a || a.length > 100 || a.includes('\0'))
+      || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 500 || value.deadlineMs > 10000) throw Error('Invalid phone context binding');
+  return value;
+}
+
+export function installedContext(binding, core) {
+  validateContextBinding(binding);
+  return {deadlineMs: binding.deadlineMs, async run(call, signal) {
+    const result = await core.request('tools.invoke', {alias: binding.alias, args: binding.invoke, stdin: JSON.stringify({call})}, signal);
+    if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 40000) throw Error('Context unavailable');
+    const out = JSON.parse(result.stdout);
+    if (out.call_id !== call.id || !['available', 'no_match', 'unavailable'].includes(out.status)) throw Error('Context result binding mismatch');
+    if (out.status !== 'available') return {status: out.status};
+    const text = out.context?.text;
+    if (typeof text !== 'string' || !text.trim() || text.length > 6000) throw Error('Invalid context result');
+    return {status: 'available', text};
+  }};
+}
+
+// Ask now, answer later: the promise never rejects and is settled by the provider's deadline at the latest.
+export function liveContext(provider, call) {
+  const abort = new AbortController(), began = Date.now();
+  let timer;
+  const timeout = new Promise(resolve => { timer = setTimeout(() => { abort.abort(); resolve({status: 'timeout'}); }, provider.deadlineMs); });
+  const attempt = Promise.resolve().then(() => provider.run(call, abort.signal)).catch(() => ({status: 'unavailable'}));
+  return Promise.race([attempt, timeout]).then(answer => ({...answer, ms: Date.now() - began})).finally(() => clearTimeout(timer));
+}
+
+export async function phonePlugins(binding, adviceBinding, contextBinding) {
+  if (!binding && !adviceBinding && !contextBinding) return {};
   const core = new CoreTools(process.stdout);
   frames(process.stdin, frame => core.receive(frame), () => core.close());
   process.stdin.on('end', () => core.close());
   return {information: binding ? await installedTools(binding, core) : undefined,
-    advisor: adviceBinding ? installedAdvice(adviceBinding, core) : undefined};
+    advisor: adviceBinding ? installedAdvice(adviceBinding, core) : undefined,
+    contextProvider: contextBinding ? installedContext(contextBinding, core) : undefined};
 }
