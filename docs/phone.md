@@ -111,12 +111,12 @@ every line that uses files). Configuration checks the shape only; the files need
 At the start of every call (an inbound call's ticket; an outbound call when it is dialed, to stop a call that could not
 start, and again when it is answered) each file is read again as UTF-8 (a leading byte order mark is dropped) and the
 files are joined in the order listed with one blank line between them. The result is used exactly where a line's
-`instructions` string is: a per-call brief or a caller context is added to it, and the 15,000-character session limit
+`instructions` string is: a per-call brief or a caller context is added to it, and the 16,000-character session limit
 applies as before. Nothing is cached between calls, so an edited file reaches the next call and a call already in progress
 keeps the text it started with. The text goes only to the speech provider, as `instructions` do.
 
 Every file must be a regular file inside the real path of `instructionsRoot` (a link that leaves it is refused), non-empty
-after trimming, valid UTF-8 and at most 12,000 characters, which is also the limit of all the files joined. A path is
+after trimming, valid UTF-8 and at most 13,500 characters, which is also the limit of all the files joined. A path is
 refused at configuration if it is absolute or has a `..`, a `.`, a backslash or an empty segment. The failure is closed: a
 file that is missing, unreadable, empty, not a regular file, outside the root, not UTF-8 or too large refuses the call, and
 nothing falls back to the default instructions or to an earlier read. An outbound `phone call` fails with an error that names the
@@ -239,7 +239,7 @@ city or a ZIP never decide it; several properties of a caller are separated by '
 The set is the install's, for every line. `at` is an ISO time with its offset (kept in UTC). A claim is
 the little a stranger who names the property may be told; what `text` and `claim` hold is the operator's policy. A set that
 is never replaced, or is empty, leaves the behavior unchanged (no incoming note, no `find_case`), and the plugin decides
-nothing about what may be said. An incoming call's instructions with its context are cut to 15,000 characters, the
+nothing about what may be said. An incoming call's instructions with its context are cut to 16,000 characters, the
 context's end first; an outbound brief that would take the call past that is refused before dialing.
 
 ### Live caller context
@@ -266,7 +266,7 @@ property, keeps reading the prepared table, so a stale entry there can still be 
 
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
-instructions. `--instructions -` reads a per-call brief (1..12000 characters) on
+instructions. `--instructions -` reads a per-call brief (1..13500 characters) on
 stdin; it is saved with the request before dialing and added after the configured
 instructions for that call only, under a heading that says the brief wins where
 the two differ (the configuration stays the line's identity and conduct; inbound

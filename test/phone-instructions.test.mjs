@@ -160,7 +160,7 @@ test('the line instructions and a brief together stay within the session budget,
 
 test('files are read only from inside their root: links, directories, pipes, bad bytes, empty and oversized files refuse', async t => {
   const outside = await folder(t, {'secret.md': 'SECRET'});
-  const root = await folder(t, {'ok.md': 'fine', 'real/inner.md': 'inner', 'empty.md': '', 'blank.md': ' \n\t', 'a.md': 'a'.repeat(6000), 'b.md': 'b'.repeat(6001), 'big.md': 'z'.repeat(MAX_CALL_INSTRUCTIONS + 1), 'full.md': 'f'.repeat(MAX_CALL_INSTRUCTIONS)});
+  const root = await folder(t, {'ok.md': 'fine', 'real/inner.md': 'inner', 'empty.md': '', 'blank.md': ' \n\t', 'a.md': 'a'.repeat(7000), 'b.md': 'b'.repeat(6501), 'big.md': 'z'.repeat(MAX_CALL_INSTRUCTIONS + 1), 'full.md': 'f'.repeat(MAX_CALL_INSTRUCTIONS)});
   await writeFile(join(root, 'bad.md'), Buffer.from([0x41, 0xff, 0xfe]));
   await symlink(join(outside, 'secret.md'), join(root, 'link.md'));
   await symlink(outside, join(root, 'dir-link'));
@@ -182,9 +182,9 @@ test('files are read only from inside their root: links, directories, pipes, bad
   await refuses(['empty.md'], 'empty.md', 'empty');
   await refuses(['blank.md'], 'blank.md', 'empty');
   await refuses(['big.md'], 'big.md', 'too_large');
-  await refuses(['a.md', 'b.md'], 'b.md', 'too_large'); // 6000 + 2 + 6001 characters together
+  await refuses(['a.md', 'b.md'], 'b.md', 'too_large'); // 7000 + 2 + 6501 characters together
   await refuses(['ok.md'], 'ok.md', 'root_unavailable', join(root, 'gone'));
-  assert.equal((await read(['a.md'])).length, 6000);
+  assert.equal((await read(['a.md'])).length, 7000);
 });
 
 test('configuration takes instructionsFiles or instructions, never both, and only plain relative paths under an absolute root', () => {

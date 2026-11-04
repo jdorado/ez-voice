@@ -98,8 +98,8 @@ test('a per-call brief is added to the configured instructions for that outbound
   const {directory,provider,calls}=await fixture(t);let audio,receipt,ws;
   const web=await servePhone(config,{port:0,host:'127.0.0.1',calls,provider:recorder().provider,socketFactory:()=>audio=new AudioProvider(),record:async value=>{receipt=value;}});
   try {
-    await assert.rejects(()=>calls.call({requestId:id,to,instructions:' '},web.busy),/1\.\.12000/);
-    await assert.rejects(()=>calls.call({requestId:id,to,instructions:'x'.repeat(12001)},web.busy),/1\.\.12000/);
+    await assert.rejects(()=>calls.call({requestId:id,to,instructions:' '},web.busy),/1\.\.13500/);
+    await assert.rejects(()=>calls.call({requestId:id,to,instructions:'x'.repeat(13501)},web.busy),/1\.\.13500/);
     const created=await calls.call({requestId:id,to,instructions:'Call brief: Sharon calls back about 12 Main Street.'},web.busy);
     assert.equal(created.brief,true);
     const path='/incoming?outbound='+id;
