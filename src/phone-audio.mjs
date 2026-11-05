@@ -235,7 +235,7 @@ export class PhoneAudio {
     this.callerSpeaking = false;
     abort.tool = item;
     this.pendingTools.set(item.id, abort);
-    const timer = setTimeout(() => abort.abort(), 15000);
+    const timer = setTimeout(() => abort.abort(), this.config.information.deadlineMs); // the operator's toolBinding deadline
     Promise.resolve().then(() => this.config.information.run(this.config.call, turn, item.name, parseArgs(item.args), abort.signal))
       .catch(() => ({status: 'unavailable', error: 'information_unavailable'}))
       .then(output => {
