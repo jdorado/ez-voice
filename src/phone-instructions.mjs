@@ -10,7 +10,8 @@ import {isAbsolute, join, relative} from 'node:path';
 export const MAX_INSTRUCTIONS_FILES = 8;
 const MAX_PATH = 256;
 const segments = path => path.split('/').every(segment => segment && segment !== '.' && segment !== '..');
-const relativePath = path => typeof path === 'string' && path.length <= MAX_PATH && !/[\\\0]/.test(path) && segments(path);
+export const MAX_GREETING = 300; // characters of a fixed inbound greeting
+export const relativePath = path => typeof path === 'string' && path.length <= MAX_PATH && !/[\\\0]/.test(path) && segments(path);
 const rootPath = path => typeof path === 'string' && path.length <= 1024 && path.startsWith('/') && path !== '/' && !/[\\\0]/.test(path) && segments(path.slice(1));
 
 export class InstructionsError extends Error {
@@ -72,6 +73,16 @@ export async function instructionsFromFiles(line, limit) {
   const failed = entries.find(entry => entry.text === undefined);
   if (failed) throw new InstructionsError(failed.path, failed.reason);
   return text;
+}
+// The line's fixed inbound greeting: one workspace file (`greetingFile`), read fresh at the start of every call like the
+// instructions, up to `limit` characters. An unreadable file refuses the call, as an unreadable instructions file does.
+export async function greetingFromFile(line, limit) {
+  if (process.platform !== 'linux') throw new InstructionsError('instructionsRoot', 'requires_linux_container');
+  let root;
+  try { root = await realpath(line.instructionsRoot); } catch { throw new InstructionsError(line.greetingFile, 'root_unavailable'); }
+  const entry = await readOne(root, line.greetingFile, limit);
+  if (entry.text === undefined) throw new InstructionsError(entry.path, entry.reason);
+  return entry.text.trim();
 }
 // For `phone doctor`: whether each file is readable now, and the digest of the text a call would start with.
 export async function inspectInstructions(line, limit) {

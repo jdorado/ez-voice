@@ -407,6 +407,12 @@ An unset speed retains the provider default. `phone doctor` shows the configured
 receipt has `ttsSpeed` and `tts: {speed, contexts}` for contexts sent to synthesis. This records the request, not provider acceptance or audible pace. `phone probe` verifies
 provider readiness only and reports `speedVerified: false`; it does not synthesize speech.
 
+`greetingFile: "agent/personas/sharon-greeting.md"` (deepgram, with `instructionsFiles`) names a workspace file with the line's fixed
+inbound greeting (at most 300 characters, read fresh at each call's start like the instructions; unreadable means the call is
+refused and the path recorded). Deepgram speaks it at once without a language-model request, so the caller hears it in under a
+second instead of waiting 3 to 5 s for the model to write it. The wording stays the operator's, in the workspace, not in Voice.
+Outbound calls get none (the callee speaks first), and a line without the file has its model write the greeting.
+
 `pronunciations: {"Quarre": "Kwahr-ee"}` (deepgram) makes the same relay replace each listed word (whole word, any case, also when the
 model's text splits it between two frames) in the text it speaks, so the model writes a brand or street name in its ordinary
 spelling and the voice says it the operator's way. Only a trailing fragment that could begin a listed word is held, until the
