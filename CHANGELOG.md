@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.48
+
+- `toolBinding` is `{url, token, deadlineMs}`, like `contextBinding`: the information tools ask the operator's backend over HTTP (`GET url` for the schemas as the listener starts, one `POST` of `{call, turn, name, arguments}` with a bearer token per read), not an installed command through Ez, which starts a container for each one (about 2.5 s on a live host; a speech provider gives up on a turn that waits for a few). A read waits `deadlineMs` (500..15000), was a fixed 15 s. The Ez connection is now only the side coach's.
+- An old `toolBinding` with `alias`/`invoke`/`schemas` is refused at start with a message that names the new form.
+
 ## 0.1.0-beta.11.rc.47
 
 - The backend's answer is read up to 120,000 bytes and no further (the connection is closed once it is over), so a backend that streams forever cannot exhaust the listener's memory; the body of a non-2xx answer is cancelled too.

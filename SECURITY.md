@@ -18,7 +18,8 @@ removes it: treat the volume as holding call content. Voice keeps no caller cont
 inbound call's identity, including the caller ID Twilio reports (which can be spoofed), to the operator's backend in one POST per
 call with a bearer token kept in the private mode-0600 configuration, and never follows a redirect. The backend decides what a
 number may be told, so what it returns is disclosed to whoever presents that number; the deployment's network binding must allow
-the backend's host, as it must the provider hosts.
+the backend's host, as it must the provider hosts. A `toolBinding` sends the same identity, the turn and the model's
+arguments in one POST per read, under the same rules.
 
 Paired owner only. Report vulnerabilities privately through GitHub Security.
 Never include credentials or transcripts in reports, logs or source.

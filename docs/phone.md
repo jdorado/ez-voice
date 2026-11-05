@@ -368,20 +368,20 @@ References: [OpenAI WebSocket audio](https://developers.openai.com/api/docs/guid
 
 Outbound API reference: [Twilio Call resource](https://www.twilio.com/docs/voice/api/call-resource).
 
-## Installed information tools
+## Information tools
 
-An operator can bind one installed plugin with `toolBinding` in the phone profile:
-`{"alias":"records","schemas":["call","tools"],"invoke":["call","read","-"]}`.
-The schema command returns `{tools: [Responses function definitions]}`. The invocation command
-receives `{call: {id, remote, line, direction, started_at}, turn, name, arguments}` on stdin.
-Its result must echo `call_id` and `turn`. The domain plugin owns validation, read permissions
-and data; Voice never supplies arbitrary CLI or shell access to the model. The runtime uses
-Ez `tools.invoke` through its existing `tools serve` connection and the installed plugin revision.
-Call metadata comes from the authenticated Twilio admission ticket, outside model arguments.
+An operator can give the install the backend that answers its information tools: `toolBinding: {url, token, deadlineMs}` in
+the private configuration, where `url` is an HTTP(S) endpoint, `token` its bearer token and `deadlineMs` how long a read may
+take (500..15000). As the listener starts, `GET url` must answer `{tools: [Responses function definitions]}` (up to 12, never
+`end_call`), or the listener does not start. Each read is one `POST` of `{call: {id, remote, line, direction, started_at}, turn,
+name, arguments}`; its JSON answer must echo `call_id` and `turn`. Call metadata comes from the authenticated Twilio admission
+ticket, outside model arguments. The backend owns validation, read permissions and data; Voice never supplies arbitrary CLI or
+shell access to the model, follows no redirect and reads an answer up to 120,000 bytes. There is no Ez command in the path: one
+starts a container (about 2.5 s on a live host), and a speech provider gives up on a turn that waits for a few.
 
 GPT-Live exposes these tools through Responses delegation and ElevenLabs Max calls them natively.
 Each bridge cancels pending work on a superseding request, interruption or close, refuses duplicate
-call IDs, and discards late results. A read has a 15-second deadline; failure is explicitly
+call IDs, and discards late results. A read past `deadlineMs`, or a failed one, is explicitly
 unavailable. ElevenLabs supplies speech-start boundaries; GPT-Live supplies delegation IDs,
 which bind its backend request generations and scope cancellation. Transcript fragments cannot
 reliably identify complete GPT-Live turns. Receipts keep tool names, status, duration and

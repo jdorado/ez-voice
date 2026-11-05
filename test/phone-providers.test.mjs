@@ -535,7 +535,7 @@ test('both speaking providers receive information tools and GPT-Live delegates m
 
 test('overlapping calls keep their own result and a late old turn is discarded', async () => {
   const pending = [];
-  const information = {tools: [{name: 'read_record'}], run: (call, turn, name, args, signal) => new Promise(resolve => pending.push({call, turn, args, signal, resolve}))};
+  const information = {tools: [{name: 'read_record'}], deadlineMs: 15000, run: (call, turn, name, args, signal) => new Promise(resolve => pending.push({call, turn, args, signal, resolve}))};
   const a = await call('openai', {information, call: {id: 'call-a'}});
   const b = await call('openai', {information, call: {id: 'call-b'}});
   await wait(() => a.socket() && b.socket());
@@ -562,7 +562,7 @@ test('overlapping calls keep their own result and a late old turn is discarded',
 
 test('a failed information read is explicit and cannot invoke another command', async () => {
   let called = 0;
-  const information = {tools: [{name: 'read_record'}], run: async () => {called++; throw Error('private failure');}};
+  const information = {tools: [{name: 'read_record'}], deadlineMs: 15000, run: async () => {called++; throw Error('private failure');}};
   const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', information}, {fetch: mintOk().fetch});
   await wait(() => c.socket());
   c.audio.tool({id: 'one', name: 'read_record', args: '{}'});
@@ -599,7 +599,7 @@ test('GPT-Live uses delegation identity, not fragment timing, to bind cancellati
 
 test('a bounded pending read is active work, then the ordinary idle timer resumes', async () => {
   let resolve;
-  const information = {tools: [{name: 'read_record'}], run: () => new Promise(r => {resolve = r;})};
+  const information = {tools: [{name: 'read_record'}], deadlineMs: 15000, run: () => new Promise(r => {resolve = r;})};
   const c = await call('openai', {idleSeconds: 0.08, information});
   await wait(() => c.socket());
   c.audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Read'});
@@ -617,7 +617,7 @@ test('a bounded pending read is active work, then the ordinary idle timer resume
 
 test('an old GPT-Live delegation cancellation cannot cancel the current read', async () => {
   let finish;
-  const information = {tools: [{name: 'read_record'}], run: () => new Promise(r => {finish = r;})};
+  const information = {tools: [{name: 'read_record'}], deadlineMs: 15000, run: () => new Promise(r => {finish = r;})};
   const c = await call('openai', {information}); await wait(() => c.socket());
   c.audio.handle({type: 'turn', request: 'current'});
   c.audio.tool({id: 'bound', name: 'read_record', args: {}, request: 'current'});
@@ -771,7 +771,7 @@ test('Deepgram waits for Welcome and SettingsApplied, sends binary audio and ret
 
 test('Deepgram overlapping calls isolate Gemini signatures and discard cancelled or late turns', async () => {
   const pending = [];
-  const information = {tools: [{name: 'read_record'}], run: (call, turn, name, args, signal) => new Promise(resolve => pending.push({call, signal, resolve}))};
+  const information = {tools: [{name: 'read_record'}], deadlineMs: 15000, run: (call, turn, name, args, signal) => new Promise(resolve => pending.push({call, signal, resolve}))};
   const a = await call('deepgram', {...deepgramKeys, information, call: {id: 'a'}});
   const b = await call('deepgram', {...deepgramKeys, information, call: {id: 'b'}});
   const outputs = c => c.socket().events.filter(e => e.type === 'FunctionCallResponse');
@@ -801,7 +801,7 @@ test('Deepgram overlapping calls isolate Gemini signatures and discard cancelled
 
 test('Deepgram failure stays explicit, unknown tools cannot run, and provider details are not logged', async () => {
   let ran = 0;
-  const information = {tools: [{name: 'read_record'}], run: async () => {ran++; throw Error('private backend details');}};
+  const information = {tools: [{name: 'read_record'}], deadlineMs: 15000, run: async () => {ran++; throw Error('private backend details');}};
   const c = await call('deepgram', {...deepgramKeys, information});
   try {
     c.socket().receive(dgCall('read'));

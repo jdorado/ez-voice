@@ -1,33 +1,48 @@
-// Generic phone -> installed plugin transport through the existing Ez connection.
-// A model supplies only arguments. The operator binds literal commands; the call ticket supplies identity.
+// The information tools: the operator's backend over HTTP, the model supplying only arguments and the call ticket the identity.
+// GET url answers {tools: [Responses function definitions]} once, as the listener starts; each read is one POST of
+// {call, turn, name, arguments} with a bearer token, answering JSON that echoes call_id and turn. No installed command: Ez starts a
+// container for each one (about 2.5 s on a live host), and a speech provider gives up on a turn that waits for a few.
 import {CoreTools} from './plugin-tools.mjs';
 import {frames} from './protocol.mjs';
 
-export function validateBinding(value) {
-  if (!value || typeof value !== 'object' || Object.keys(value).sort().join() !== 'alias,invoke,schemas'
-      || !/^[a-z][a-z0-9-]{0,63}$/.test(value.alias)
-      || ['schemas','invoke'].some(k => !Array.isArray(value[k]) || !value[k].length || value[k].length > 8
-        || value[k].some(a => typeof a !== 'string' || a.length > 100 || a.includes('\0')))) throw Error('Invalid phone tool binding');
+function validateHttpBinding(value, name, maxMs) { // name: contextBinding or toolBinding
+  const invalid = `Invalid phone ${name.replace('Binding', '')} binding`;
+  if (value && typeof value === 'object' && ('alias' in value || 'invoke' in value)) {
+    throw Error(`${name} is now {url, token, deadlineMs}: the alias/invoke form was removed`);
+  }
+  if (!value || Object.keys(value).sort().join() !== 'deadlineMs,token,url' || typeof value.url !== 'string'
+      || typeof value.token !== 'string' || !/^[\x21-\x7e]{16,512}$/.test(value.token)
+      || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 500 || value.deadlineMs > maxMs) throw Error(invalid);
+  let url;
+  try { url = new URL(value.url); } catch { throw Error(invalid); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) throw Error(invalid);
   return value;
 }
 
-export async function installedTools(binding, core) {
+export const validateBinding = value => validateHttpBinding(value, 'toolBinding', 15000);
+
+// One bounded JSON exchange with the backend: a non-2xx answer, a redirect or more than the cap is a failure.
+async function exchange(binding, fetchImpl, init, signal) {
+  const response = await fetchImpl(binding.url, {...init, redirect: 'error', signal,
+    headers: {authorization: 'Bearer ' + binding.token, ...(init.body && {'content-type': 'application/json'})}});
+  if (!response.ok) { await response.body?.cancel(); throw Error('Backend unavailable'); }
+  const raw = await boundedText(response);
+  if (raw.length > 40000) throw Error('Backend unavailable');
+  return JSON.parse(raw);
+}
+
+export async function httpTools(binding, fetchImpl = fetch) {
   validateBinding(binding);
-  const invoke = async (args, stdin, signal) => {
-    const result = await core.request('tools.invoke', {alias: binding.alias, args, ...(stdin && {stdin})}, signal);
-    if (result.code !== 0) throw Error('Information read unavailable');
-    return JSON.parse(result.stdout);
-  };
-  const {tools} = await invoke(binding.schemas);
+  const {tools} = await exchange(binding, fetchImpl, {method: 'GET'}, AbortSignal.timeout(binding.deadlineMs));
   if (!Array.isArray(tools) || tools.length > 12 || !tools.length
       || new Set(tools.map(t => t.name)).size !== tools.length
       || tools.some(t => t.type !== 'function' || !/^[a-z][a-z0-9_]{0,63}$/.test(t.name)
         || t.name === 'end_call' || typeof t.description !== 'string'
         || t.description.length > 2000 || t.parameters?.type !== 'object')) throw Error('Invalid phone tool schemas');
-  return {tools, async run(call, turn, name, args, signal) {
+  return {tools, deadlineMs: binding.deadlineMs, async run(call, turn, name, args, signal) {
     if (!tools.some(t => t.name === name)) return {status: 'unavailable', error: 'unknown_tool'};
-    const out = await invoke(binding.invoke, JSON.stringify({call, turn, name, arguments: args}), signal);
-    if (out.call_id !== call.id || out.turn !== turn) throw Error('Information result binding mismatch');
+    const out = await exchange(binding, fetchImpl, {method: 'POST', body: JSON.stringify({call, turn, name, arguments: args})}, signal);
+    if (out?.call_id !== call.id || out.turn !== turn) throw Error('Information result binding mismatch');
     return out;
   }};
 }
@@ -65,30 +80,19 @@ export function installedAdvice(binding, core) {
 // model's words), for what it knows of this caller now. One POST of {call} with a bearer token answers {call_id, status,
 // context?: {text}}. It never fails or holds up a call: a slow, failed or invalid answer is `timeout` or `unavailable`, and the
 // call goes on with the line's instructions alone.
-export function validateContextBinding(value) {
-  if (value && typeof value === 'object' && ('alias' in value || 'invoke' in value)) {
-    throw Error('contextBinding is now {url, token, deadlineMs}: the alias/invoke form was removed');
-  }
-  if (!value || Object.keys(value).sort().join() !== 'deadlineMs,token,url' || typeof value.url !== 'string'
-      || typeof value.token !== 'string' || !/^[\x21-\x7e]{16,512}$/.test(value.token)
-      || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 500 || value.deadlineMs > 10000) throw Error('Invalid phone context binding');
-  let url;
-  try { url = new URL(value.url); } catch { throw Error('Invalid phone context binding'); }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) throw Error('Invalid phone context binding');
-  return value;
-}
+export const validateContextBinding = value => validateHttpBinding(value, 'contextBinding', 10000);
 
 // The answer is read up to a cap and no further: a backend that streams forever costs the cap, not the listener's memory (the
 // service has 256 MiB for every live call). 40,000 characters can be 120,000 bytes of UTF-8.
 const MAX_ANSWER_BYTES = 120000;
 async function boundedText(response) {
-  if (Number(response.headers?.get('content-length')) > MAX_ANSWER_BYTES) { await response.body?.cancel(); throw Error('Context unavailable'); }
+  if (Number(response.headers?.get('content-length')) > MAX_ANSWER_BYTES) { await response.body?.cancel(); throw Error('Backend unavailable'); }
   if (!response.body) return response.text();
   const chunks = [];
   let size = 0;
   for await (const chunk of response.body) { // leaving the loop cancels the stream and closes the connection
     size += chunk.length;
-    if (size > MAX_ANSWER_BYTES) throw Error('Context unavailable');
+    if (size > MAX_ANSWER_BYTES) throw Error('Backend unavailable');
     chunks.push(chunk);
   }
   return new TextDecoder().decode(Buffer.concat(chunks)); // like response.text(): a UTF-8 BOM is dropped
@@ -97,12 +101,7 @@ async function boundedText(response) {
 export function httpContext(binding, fetchImpl = fetch) {
   validateContextBinding(binding);
   return {deadlineMs: binding.deadlineMs, async run(call, signal) {
-    const response = await fetchImpl(binding.url, {method: 'POST', redirect: 'error', signal,
-      headers: {authorization: 'Bearer ' + binding.token, 'content-type': 'application/json'}, body: JSON.stringify({call})});
-    if (!response.ok) { await response.body?.cancel(); throw Error('Context unavailable'); }
-    const raw = await boundedText(response);
-    if (raw.length > 40000) throw Error('Context unavailable');
-    const out = JSON.parse(raw);
+    const out = await exchange(binding, fetchImpl, {method: 'POST', body: JSON.stringify({call})}, signal);
     if (out.call_id !== call.id || !['available', 'no_match', 'unavailable'].includes(out.status)) throw Error('Context result binding mismatch');
     if (out.status !== 'available') return {status: out.status};
     const text = out.context?.text;
@@ -121,11 +120,12 @@ export function liveContext(provider, call) {
 }
 
 export async function phonePlugins(binding, adviceBinding, contextBinding, fetchImpl = fetch) {
-  const contextProvider = contextBinding ? httpContext(contextBinding, fetchImpl) : undefined; // no Ez connection: it asks the backend directly
-  if (!binding && !adviceBinding) return {contextProvider};
+  // the context and the information tools ask the backend directly; only the side coach goes through the Ez connection
+  const contextProvider = contextBinding ? httpContext(contextBinding, fetchImpl) : undefined;
+  const information = binding ? await httpTools(binding, fetchImpl) : undefined;
+  if (!adviceBinding) return {information, contextProvider};
   const core = new CoreTools(process.stdout);
   frames(process.stdin, frame => core.receive(frame), () => core.close());
   process.stdin.on('end', () => core.close());
-  return {information: binding ? await installedTools(binding, core) : undefined,
-    advisor: adviceBinding ? installedAdvice(adviceBinding, core) : undefined, contextProvider};
+  return {information, advisor: installedAdvice(adviceBinding, core), contextProvider};
 }
