@@ -66,7 +66,10 @@ export function installedAdvice(binding, core) {
 // context?: {text}}. It never fails or holds up a call: a slow, failed or invalid answer is `timeout` or `unavailable`, and the
 // call goes on with the line's instructions alone.
 export function validateContextBinding(value) {
-  if (!value || Object.keys(value).sort().join() !== 'deadlineMs,token,url'
+  if (value && typeof value === 'object' && ('alias' in value || 'invoke' in value)) {
+    throw Error('contextBinding is now {url, token, deadlineMs}: the alias/invoke form was removed in 0.1.0-beta.11.rc.47');
+  }
+  if (!value || Object.keys(value).sort().join() !== 'deadlineMs,token,url' || typeof value.url !== 'string'
       || typeof value.token !== 'string' || !/^[\x21-\x7e]{16,512}$/.test(value.token)
       || !Number.isInteger(value.deadlineMs) || value.deadlineMs < 500 || value.deadlineMs > 10000) throw Error('Invalid phone context binding');
   let url;
@@ -75,13 +78,29 @@ export function validateContextBinding(value) {
   return value;
 }
 
+// The answer is read up to a cap and no further: a backend that streams forever costs the cap, not the listener's memory (the
+// service has 256 MiB for every live call). 40,000 characters can be 120,000 bytes of UTF-8.
+const MAX_ANSWER_BYTES = 120000;
+async function boundedText(response) {
+  if (Number(response.headers?.get('content-length')) > MAX_ANSWER_BYTES) { await response.body?.cancel(); throw Error('Context unavailable'); }
+  if (!response.body) return response.text();
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) { // leaving the loop cancels the stream and closes the connection
+    size += chunk.length;
+    if (size > MAX_ANSWER_BYTES) throw Error('Context unavailable');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export function httpContext(binding, fetchImpl = fetch) {
   validateContextBinding(binding);
   return {deadlineMs: binding.deadlineMs, async run(call, signal) {
     const response = await fetchImpl(binding.url, {method: 'POST', redirect: 'error', signal,
       headers: {authorization: 'Bearer ' + binding.token, 'content-type': 'application/json'}, body: JSON.stringify({call})});
-    if (!response.ok) throw Error('Context unavailable');
-    const raw = await response.text();
+    if (!response.ok) { await response.body?.cancel(); throw Error('Context unavailable'); }
+    const raw = await boundedText(response);
     if (raw.length > 40000) throw Error('Context unavailable');
     const out = JSON.parse(raw);
     if (out.call_id !== call.id || !['available', 'no_match', 'unavailable'].includes(out.status)) throw Error('Context result binding mismatch');

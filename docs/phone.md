@@ -260,11 +260,16 @@ this caller) or `unavailable`. Voice holds no records of its own and decides not
 The question goes out in parallel with the answer to Twilio, so the webhook never waits for it; the media stream's start waits
 for the answer up to `deadlineMs`, and the audio behind it waits in order. `no_match`, and a late, failed, mismatched or invalid
 answer, leave the call with the line's instructions alone. A caller who hangs up while the answer is pending gets no speech
-session. With a binding every inbound call is told it is incoming, and whether the backend knew the number; the receipt records
+session. Every inbound call is told it is incoming, with or without a binding, and a call with no context is told its number matches nothing on record; the receipt records
 `callerContext` and `callerContextLive` {status, milliseconds}, never the text. The call begins, and its ringback and greeting
 with it, only once the answer is in or the deadline has passed, so a caller can hear silence for up to `deadlineMs` after
 answering: keep the backend fast. The ask is made only for a call that has been accepted (a call refused for unreadable
 instructions asks nothing), and a ticket starts one call, also while its answer is pending.
+
+The ask is one POST with no retry. A refused connection, a redirect (never followed, so the token cannot leave the host named in
+`url`), a status other than 2xx, an answer over 120,000 bytes (read up to that and no further, so a backend that never stops
+sending costs the cap, not memory) or one that is invalid leaves the call with the line's instructions alone. `http:` sends the
+token and the caller's number in clear: use `https:` unless the network is private. The token is 16..512 printable ASCII characters.
 
 Caller ID is whatever Twilio reports and can be spoofed: the backend decides what a number may be told. An incoming call's
 instructions with its context are cut to 16,000 characters, the context's end first; an outbound brief that would take the call
@@ -381,7 +386,7 @@ unavailable. ElevenLabs supplies speech-start boundaries; GPT-Live supplies dele
 which bind its backend request generations and scope cancellation. Transcript fragments cannot
 reliably identify complete GPT-Live turns. Receipts keep tool names, status, duration and
 cancellation counts, not retrieved private bodies.
-Prepared context remains immediate and is labelled as historical evidence before a new greeting.
+The caller context the backend returns is labelled as historical evidence before a new greeting.
 The bound plugin is trusted operator configuration; its domain read-only enforcement is required
 for speech sessions that must not write. No native-agent delegation is granted to phone callers.
 

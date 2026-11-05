@@ -6,7 +6,9 @@ import {join} from 'node:path';
 import WebSocket from 'ws';
 import {servePhone, twilioSignature, validatePhoneConfig} from '../src/phone.mjs';
 import {PhoneNumber} from '../src/phone-provider.mjs';
-import {httpContext, liveContext, validateContextBinding} from '../src/phone-plugin-tools.mjs';
+import {httpContext, liveContext, phonePlugins, validateContextBinding} from '../src/phone-plugin-tools.mjs';
+import {createServer} from 'node:http';
+import {once} from 'node:events';
 
 const config = {apiKey: 'sk-synthetic123456789', accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com', instructions: 'Synthetic line'};
 const streamSid = 'MZ' + '4'.repeat(32), caller = '+15551230002';
@@ -137,7 +139,7 @@ test('a context binding is an HTTP(S) endpoint with a token and a deadline, and 
   assert.deepEqual(validateContextBinding({...binding, url: 'https://backend.example.com/context'}).url, 'https://backend.example.com/context');
   for (const bad of [undefined, {...binding, deadlineMs: 100}, {...binding, deadlineMs: 20000}, {...binding, token: 'short'}, {...binding, token: 'has space ' + 'a'.repeat(20)},
     {...binding, url: 'ftp://x/y'}, {...binding, url: 'not a url'}, {...binding, url: 'https://user:pw@host/x'}, {...binding, extra: 1}, {url: binding.url, token: binding.token},
-    {alias: 'quarre', invoke: ['call', 'context', '-'], deadlineMs: 3000}]) {
+    {...binding, url: ['http://172.17.0.1:18182/agent/call/context']}]) {
     assert.throws(() => validateContextBinding(bad), /Invalid phone context binding/);
   }
   const base = {apiKey: 'sk-synthetic123456789', accountSid: config.accountSid, authToken: config.authToken, number: config.number, origin: config.origin};
@@ -171,4 +173,90 @@ test('a live ask settles by its deadline whatever the backend does, and never re
   assert.equal(hung.status, 'timeout'); assert.ok(Date.now() - began < 1000);
   assert.equal((await liveContext({deadlineMs: 100, run: async () => {throw Error('x');}}, {})).status, 'unavailable');
   assert.equal((await liveContext({deadlineMs: 100, run: async () => ({status: 'available', text: 'ok'})}, {})).status, 'available');
+});
+
+// The ask against real servers: what a mock that ignores the abort signal cannot show.
+const serve = async (t, handler) => {
+  const server = createServer(handler);
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  return `http://127.0.0.1:${server.address().port}/context`;
+};
+const realCall = {id: 'CA' + '6'.repeat(32), remote: caller, line: config.number, direction: 'in', started_at: '2026-11-04T12:00:00.000Z'};
+const TOKEN = 'tok-' + 'z'.repeat(28);
+const bound = (url, deadlineMs = 3000) => ({url, token: TOKEN, deadlineMs});
+const ask = (url, deadlineMs) => liveContext(httpContext(bound(url, deadlineMs)), realCall);
+
+test('a real backend is posted the call with the bearer token and its answer is used', async t => {
+  let seen;
+  const url = await serve(t, (request, response) => { let body = ''; request.on('data', c => body += c).on('end', () => {
+    seen = {method: request.method, authorization: request.headers.authorization, body: JSON.parse(body)};
+    response.writeHead(200, {'content-type': 'application/json'}); response.end(JSON.stringify({call_id: realCall.id, status: 'available', context: {text: 'known'}}));
+  }); });
+  const answer = await ask(url);
+  assert.equal(answer.status, 'available'); assert.equal(answer.text, 'known');
+  assert.deepEqual(seen, {method: 'POST', authorization: 'Bearer ' + TOKEN, body: {call: realCall}});
+});
+
+test('a refused connection leaves the call without context at once', async () => {
+  const probe = createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
+  const url = `http://127.0.0.1:${probe.address().port}/context`; probe.close(); await once(probe, 'close');
+  const answer = await ask(url, 5000);
+  assert.equal(answer.status, 'unavailable'); assert.ok(answer.ms < 1500, String(answer.ms));
+});
+
+test('a redirect is not followed: the other host sees no request and no token', async t => {
+  const hits = [];
+  const other = await serve(t, (request, response) => { hits.push(request.headers); response.end('{}'); });
+  const url = await serve(t, (request, response) => { response.writeHead(302, {location: other}); response.end(); });
+  const answer = await ask(url);
+  assert.equal(answer.status, 'unavailable'); assert.deepEqual(hits, []);
+});
+
+test('a backend that never stops sending costs the cap, not memory, and the connection is closed early', async t => {
+  let written = 0, closed;
+  const closedPromise = new Promise(resolve => { closed = resolve; });
+  const url = await serve(t, async (request, response) => {
+    request.resume(); response.writeHead(200, {'content-type': 'application/json'});
+    response.on('close', closed);
+    const chunk = Buffer.alloc(65536, 0x20);
+    while (!response.destroyed) { written += chunk.length; if (!response.write(chunk)) await Promise.race([once(response, 'drain'), closedPromise]); }
+  });
+  const answer = await ask(url, 5000);
+  assert.equal(answer.status, 'unavailable'); assert.ok(answer.ms < 2500, `settled at ${answer.ms} ms, not by the 5000 ms deadline`);
+  await Promise.race([closedPromise, new Promise((_, reject) => setTimeout(() => reject(Error('connection left open')), 2000))]);
+  assert.ok(written < 16 * 1024 * 1024, `the backend sent ${written} bytes before the connection closed`);
+});
+
+test('an answer that declares more than the cap is refused before it is read', async t => {
+  const url = await serve(t, (request, response) => { request.resume(); response.writeHead(200, {'content-length': 500000}); response.write('{'); });
+  const answer = await ask(url, 5000);
+  assert.equal(answer.status, 'unavailable'); assert.ok(answer.ms < 1500, String(answer.ms));
+});
+
+test('a body that stalls is cut at the deadline', async t => {
+  const url = await serve(t, (request, response) => { request.resume(); response.writeHead(200, {'content-type': 'application/json'}); response.write('{"call_id":'); });
+  const answer = await ask(url, 500);
+  assert.equal(answer.status, 'timeout'); assert.ok(answer.ms >= 450 && answer.ms < 1500, String(answer.ms));
+});
+
+test('the token is in no answer and no error', async t => {
+  for (const respond of [r => { r.writeHead(500); r.end(TOKEN); }, r => { r.writeHead(200); r.end('not json ' + TOKEN); }]) {
+    const url = await serve(t, (request, response) => { request.resume(); respond(response); });
+    assert.ok(!JSON.stringify(await ask(url)).includes(TOKEN));
+  }
+  for (const bad of [{...bound('http://x/y'), deadlineMs: 1}, {...bound('ftp://x/y')}, {alias: 'a', invoke: ['b'], token: TOKEN, deadlineMs: 3000}]) {
+    try { validateContextBinding(bad); assert.fail('accepted'); } catch (error) { assert.ok(!String(error.message).includes(TOKEN)); }
+  }
+});
+
+test('an old alias/invoke binding is refused with a message that names the new form', () => {
+  assert.throws(() => validateContextBinding({alias: 'quarre', invoke: ['call', 'context', '-'], deadlineMs: 3000}), /contextBinding is now \{url, token, deadlineMs\}.*alias\/invoke/);
+  assert.throws(() => validatePhoneConfig({apiKey: 'sk-synthetic123456789', accountSid: config.accountSid, authToken: config.authToken, number: config.number, origin: config.origin,
+    contextBinding: {alias: 'quarre', invoke: ['call', 'context', '-'], deadlineMs: 3000}}), /contextBinding is now/);
+});
+
+test('a context binding alone builds the provider without attaching to the Ez connection', async () => {
+  const out = await phonePlugins(null, null, bound('http://127.0.0.1:9/context'));
+  assert.equal(out.contextProvider.deadlineMs, 3000); assert.equal(out.information, undefined); assert.equal(out.advisor, undefined);
 });
