@@ -107,7 +107,12 @@ export class DeepgramAdapter {
           {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`, headers: {'xi-api-key': c.ttsApiKey}}},
     }};
   }
-  greet() { this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}]; }
+  // A line with a fixed greeting has Deepgram speak it at once (InjectAgentMessage: no language-model request, so the caller hears it
+  // in about half a second, not the 3 to 5 s a model-written one takes); otherwise the model is told the call connected and writes it.
+  greet() {
+    if (this.config.greeting) return [{type: 'InjectAgentMessage', message: this.config.greeting}];
+    this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}];
+  }
   audioIn(payload) { return [Buffer.from(payload, 'base64')]; }
   parse(event) {
     if (Buffer.isBuffer(event)) return event.length ? [{type: 'audio', audio: event.toString('base64')}] : [];

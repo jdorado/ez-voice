@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.50
+
+- `greetingFile` on a Deepgram line: a workspace file under `instructionsRoot` (at most 300 characters, read fresh at the start of every inbound call like the instruction files) holding the line's fixed greeting. Deepgram speaks it at once (`InjectAgentMessage`: no language-model request), so a caller hears it in about 0.3 to 0.7 s instead of the 3 to 5 s a model-written greeting takes (a live Sharon call: 5.0 s). Without the file the model writes the greeting as before; an unreadable file refuses the call and records its path, like an instruction file. Outbound calls are not greeted: the callee speaks first. The greeting goes through the TTS relay, so `pronunciations` apply to it. A receipt carries `greetingFixed: true`.
+
 ## 0.1.0-beta.11.rc.49
 
 - `thinking` on a Deepgram line (`low`, `medium` or `high` for `gemini-3.8-flash`): every language-model request of the line carries it, through the listener's think relay (a line with `thinking` takes the relay whether or not it has a coach). The 3.8 model thinks by default: measured on the live API it spent over a thousand thought tokens a turn and took 5 to 17 s to a first token (callers waited 4 to 17 s for a reply, and a voicemail message began 10 s after the tone), and it has no minimal level. At `low` a model request takes about 2.5 s (p90 3.5 s) with the same triage quality in a 10-scenario simulated-owner comparison with a judge model (7 of 10 passed against 7 of 10 at the default; `gemini-3.5-flash-lite`, about 1 s a request, passed 3 of 10 and often ended a call without proposing the next step).
