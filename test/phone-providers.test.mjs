@@ -724,6 +724,10 @@ test('Deepgram requires separate private credentials and admits only the support
   for (const bad of [{llmApiKey: undefined}, {ttsApiKey: 'bad'}, {language: 'es'}, {model: 'gemini-3.8-live'},
     {thinking: 'minimal'}, {ttsModel: 'eleven_v4_turbo'}, {endpoint: 'https://example.com'}]) assert.throws(() => validatePhoneConfig({...config, ...bad}));
   assert.throws(() => validatePhoneConfig({...base, apiKey: keys.openai, ...deepgramKeys}), /deepgram only/);
+  // A thinking level is admitted per model: gemini-3.8-flash has no minimal level.
+  assert.equal(validatePhoneConfig({...config, thinking: 'low'}).thinking, 'low');
+  assert.throws(() => validatePhoneConfig({...config, thinking: 'minimal'}), /thinking must be low, medium, high for model gemini-3.8-flash/);
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.openai, thinking: 'low'}), /thinking must be unset/);
   const directory = await mkdtemp(join(tmpdir(), 'ez-deepgram-config-'));
   try {
     await mkdir(join(directory, 'phone'));

@@ -100,8 +100,8 @@ async function boundedText(response) {
 
 export function httpContext(binding, fetchImpl = fetch) {
   validateContextBinding(binding);
-  return {deadlineMs: binding.deadlineMs, async run(call, signal) {
-    const out = await exchange(binding, fetchImpl, {method: 'POST', body: JSON.stringify({call})}, signal);
+  return {deadlineMs: binding.deadlineMs, async run(call, signal, maxChars) {
+    const out = await exchange(binding, fetchImpl, {method: 'POST', body: JSON.stringify({call, ...(maxChars && {max_chars: maxChars})})}, signal);
     if (out.call_id !== call.id || !['available', 'no_match', 'unavailable'].includes(out.status)) throw Error('Context result binding mismatch');
     if (out.status !== 'available') return {status: out.status};
     const text = out.context?.text;
@@ -111,11 +111,13 @@ export function httpContext(binding, fetchImpl = fetch) {
 }
 
 // Ask now, answer later: the promise never rejects and is settled by the provider's deadline at the latest.
-export function liveContext(provider, call) {
+// `maxChars` is the room the session has left for the answer's text (contextRoom in phone.mjs), told to the backend so it
+// answers with the fullest text that fits instead of one the session cuts off in the middle.
+export function liveContext(provider, call, maxChars) {
   const abort = new AbortController(), began = Date.now();
   let timer;
   const timeout = new Promise(resolve => { timer = setTimeout(() => { abort.abort(); resolve({status: 'timeout'}); }, provider.deadlineMs); });
-  const attempt = Promise.resolve().then(() => provider.run(call, abort.signal)).catch(() => ({status: 'unavailable'}));
+  const attempt = Promise.resolve().then(() => provider.run(call, abort.signal, maxChars)).catch(() => ({status: 'unavailable'}));
   return Promise.race([attempt, timeout]).then(answer => ({...answer, ms: Date.now() - began})).finally(() => clearTimeout(timer));
 }
 

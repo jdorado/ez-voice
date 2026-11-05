@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.49
+
+- `thinking` on a Deepgram line (`low`, `medium` or `high` for `gemini-3.8-flash`): every language-model request of the line carries it, through the listener's think relay (a line with `thinking` takes the relay whether or not it has a coach). The 3.8 model thinks by default: measured on the live API it spent over a thousand thought tokens a turn and took 5 to 17 s to a first token (callers waited 4 to 17 s for a reply, and a voicemail message began 10 s after the tone), and it has no minimal level. At `low` a model request takes about 2.5 s (p90 3.5 s) with the same triage quality in a 10-scenario simulated-owner comparison with a judge model (7 of 10 passed against 7 of 10 at the default; `gemini-3.5-flash-lite`, about 1 s a request, passed 3 of 10 and often ended a call without proposing the next step).
+- `pronunciations: {word: text}` on a Deepgram line: the TTS relay replaces each listed word (whole word, any case, also split between two frames of one context) in the text it speaks, so the model writes a brand or street name in its ordinary spelling and the voice says it the operator's way. ElevenLabs Flash v2.5 read plain `Quarre` as "Core" in 24 of 24 samples and `Kwahr-ee` right in 24 of 24. Works without `ttsSpeed`; a receipt's `tts.pronunciations` counts the words.
+- The context ask carries `max_chars`: the room the call's session has left for the caller context after the line's instructions (400..6000; omitted when there is none). The session shares 16,000 characters with them, so a line with long instructions kept only the first 1,600 characters of a context the backend wrote for 5,500, cut in the middle. A backend that does not know the field refuses it; update the backend first.
+
 ## 0.1.0-beta.11.rc.48
 
 - `toolBinding` is `{url, token, deadlineMs}`, like `contextBinding`: the information tools ask the operator's backend over HTTP (`GET url` for the schemas as the listener starts, one `POST` of `{call, turn, name, arguments}` with a bearer token per read), not an installed command through Ez, which starts a container for each one (about 2.5 s on a live host; a speech provider gives up on a turn that waits for a few). A read waits `deadlineMs` (500..15000), was a fixed 15 s. The Ez connection is now only the side coach's.
