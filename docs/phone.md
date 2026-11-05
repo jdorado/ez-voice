@@ -253,7 +253,9 @@ An operator can give the install the backend that knows its callers (the call ce
 `contextBinding: {url, token, deadlineMs}` in the private configuration, where `url` is an HTTP(S) endpoint, `token` its bearer
 token and `deadlineMs` how long a call waits for the answer (500..10000). As each inbound call is accepted, Voice POSTs
 `{"call": {"id", "remote", "line", "direction", "started_at"}}` to it, the identity coming from the call ticket (never a
-model's words), and takes `{call_id, status, context?}` as JSON: `available` with `context.text` (1..6000 characters, background
+model's words) and, when the line's instructions leave room for one, `"max_chars"` (400..6000: the characters of context the session
+can still hold, since it shares 16,000 with those instructions, so a backend answers with the fullest text that fits and not one
+cut off in the middle), and takes `{call_id, status, context?}` as JSON: `available` with `context.text` (1..6000 characters, background
 for the model, never read out; where it differs from the line's instructions it wins), `no_match` (the backend knows nothing of
 this caller) or `unavailable`. Voice holds no records of its own and decides nothing about what may be said.
 
@@ -405,9 +407,18 @@ An unset speed retains the provider default. `phone doctor` shows the configured
 receipt has `ttsSpeed` and `tts: {speed, contexts}` for contexts sent to synthesis. This records the request, not provider acceptance or audible pace. `phone probe` verifies
 provider readiness only and reports `speedVerified: false`; it does not synthesize speech.
 
+`pronunciations: {"Quarre": "Kwahr-ee"}` (deepgram) makes the same relay replace each listed word (whole word, any case, also when the
+model's text splits it between two frames) in the text it speaks, so the model writes a brand or street name in its ordinary
+spelling and the voice says it the operator's way. Only a trailing fragment that could begin a listed word is held, until the
+next frame, a flush, a close or the end of the stream. Values are plain text (1..80 characters, no markup); an ElevenLabs
+alias dictionary was tried first and rendered the word right about 75% of the time, a respelled text 24 of 24. A line with
+`pronunciations` and no `ttsSpeed` leaves the voice settings alone. A receipt's `tts.pronunciations` counts the words; it
+records the request, not what was audibly said.
+
 
 `provider: "deepgram"` uses the managed Voice Agent session with Flux (`flux-general-en`, v2)
-turn detection, Google `gemini-3.8-flash` and ElevenLabs `eleven_flash_v2_5`. It is English-only
+turn detection, Google `gemini-3.8-flash` and ElevenLabs `eleven_flash_v2_5`. The model thinks by default, which on a phone line is a 5 to 17 s wait
+for a first token; set `thinking: "low"` (about 2.5 s a request). It is English-only
 for now. `apiKey` is the Deepgram key; `llmApiKey` is the Google AI Studio key and `ttsApiKey`
 is the ElevenLabs key. `voice` is an ElevenLabs voice ID. Supply all three through private
 configuration stdin. Deepgram receives the two BYO keys to connect to those providers.

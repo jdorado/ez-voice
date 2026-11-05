@@ -63,6 +63,46 @@ test('a coached Deepgram line relays its model requests and the latest note ride
   } finally { await audio.close(); }
 });
 
+test('a Deepgram line with a thinking level sets it on every model request, through the relay, with or without a coach note', async () => {
+  const twilio = {readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {this.readyState = WebSocket.CLOSED;}};
+  const think = {url: 'https://phone.example.com/think/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse', token: 't'.repeat(43)};
+  const audio = new PhoneAudio(twilio, {...base, thinking: 'low', think, streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '9'.repeat(32)}}, async () => {}, {socketFactory: () => new FakeSocket()});
+  try {
+    const sent = audio.think({...request('Hello?'), generationConfig: {temperature: 0.3, thinkingConfig: {includeThoughts: false}}});
+    assert.deepEqual(sent.generationConfig, {temperature: 0.3, thinkingConfig: {includeThoughts: false, thinkingLevel: 'low'}});
+    assert.deepEqual(sent.contents, request('Hello?').contents);
+    assert.deepEqual(audio.think(request('Hello?')).generationConfig, {thinkingConfig: {thinkingLevel: 'low'}});
+  } finally { await audio.close(); }
+  const plain = new PhoneAudio(twilio, {...base, think, streamSid: 'MZ' + '4'.repeat(32), call: {id: 'CA' + '8'.repeat(32)}}, async () => {}, {socketFactory: () => new FakeSocket()});
+  try { assert.deepEqual(plain.think(request('Hello?')), request('Hello?')); } finally { await plain.close(); }
+});
+
+test('an uncoached Deepgram line with a thinking level still takes the relay, and Google gets the level', async () => {
+  const config = validatePhoneConfig({...base, thinking: 'low', ttsSpeed: 0.95});
+  const upstream = []; let socket;
+  const server = await servePhone(config, {port: 0, host: '127.0.0.1',
+    provider: new PhoneNumber(config, async () => new Response(JSON.stringify({sid: 'RE' + '8'.repeat(32)}), {status: 201})),
+    socketFactory: () => socket = new FakeSocket(),
+    fetch: async (url, options) => { upstream.push({url, body: JSON.parse(options.body)}); return new Response('data: {}\n\n', {headers: {'Content-Type': 'text/event-stream'}}); }});
+  try {
+    const id = 'CA' + '6'.repeat(32), params = new URLSearchParams({AccountSid: config.accountSid, To: config.number, CallSid: id, From: '+15551230009'});
+    const ticket = (await (await fetch(`http://127.0.0.1:${server.port}/incoming`, {method: 'POST', body: params,
+      headers: {'x-twilio-signature': twilioSignature(config.authToken, config.origin + '/incoming', params)}})).text()).match(/value="([a-f0-9]+)"/)[1];
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/media`, {headers: {'x-twilio-signature': twilioSignature(config.authToken, config.origin + '/media')}});
+    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    ws.send(JSON.stringify({event: 'start', start: {accountSid: config.accountSid, callSid: id, streamSid: 'MZ' + '4'.repeat(32), customParameters: {ticket},
+      mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
+    await wait(() => socket); await tick(); socket.receive({type: 'Welcome'});
+    const endpoint = socket.events.find(e => e.type === 'Settings').agent.think.endpoint;
+    assert.equal(endpoint.url, `${config.origin}/think/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse`);
+    const answered = await fetch(`http://127.0.0.1:${server.port}/think/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse`,
+      {method: 'POST', headers: {authorization: endpoint.headers.authorization}, body: JSON.stringify(request('hi'))});
+    assert.equal(answered.status, 200);
+    assert.deepEqual(upstream[0].body.generationConfig, {thinkingConfig: {thinkingLevel: 'low'}});
+    ws.close(); await wait(() => server.capacity().calls === 0);
+  } finally { await server.close(); }
+});
+
 test('GPT-Live: the note joins the session once the reply has played, never while either side speaks or work is in flight', async () => {
   let socket; const finished = [], requests = [];
   const sleep = ms => new Promise(r => setTimeout(r, ms));

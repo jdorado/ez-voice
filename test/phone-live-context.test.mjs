@@ -4,7 +4,7 @@ import {EventEmitter} from 'node:events';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import WebSocket from 'ws';
-import {servePhone, twilioSignature, validatePhoneConfig} from '../src/phone.mjs';
+import {servePhone, twilioSignature, validatePhoneConfig, withCaller, contextRoom} from '../src/phone.mjs';
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {httpContext, liveContext, phonePlugins, validateContextBinding} from '../src/phone-plugin-tools.mjs';
 import {createServer} from 'node:http';
@@ -156,6 +156,9 @@ test('the backend is posted the call and its answer is bound to it', async () =>
   assert.deepEqual(await ok.run(call), {status: 'available', text: 'known'});
   assert.equal(seen[0].url, binding.url); assert.equal(seen[0].init.method, 'POST'); assert.equal(seen[0].init.redirect, 'error');
   assert.equal(seen[0].init.headers.authorization, 'Bearer ' + binding.token); assert.deepEqual(JSON.parse(seen[0].init.body), {call});
+  // The ask tells the backend how much room the session has left, so it answers with the fullest text that fits.
+  assert.deepEqual(await ok.run(call, undefined, 1600), {status: 'available', text: 'known'});
+  assert.deepEqual(JSON.parse(seen.at(-1).init.body), {call, max_chars: 1600});
   assert.deepEqual(await backend(200, '\uFEFF' + JSON.stringify({call_id: call.id, status: 'available', context: {text: 'bom'}})).run(call), {status: 'available', text: 'bom'});
   assert.deepEqual(await backend(200, {call_id: call.id, status: 'no_match'}).run(call), {status: 'no_match'});
   assert.deepEqual(await backend(200, {call_id: call.id, status: 'unavailable', error: 'unknown_call_line'}).run(call), {status: 'unavailable'});
@@ -166,6 +169,17 @@ test('the backend is posted the call and its answer is bound to it', async () =>
     [200, {call_id: call.id, status: 'maybe'}], [200, 'not json'], [200, 'x'.repeat(40001)]]) {
     await assert.rejects(backend(status, body).run(call), String(status) + JSON.stringify(body).slice(0, 40));
   }
+});
+
+test('the room a call leaves for the caller context is what its line\'s instructions do not take of the session', () => {
+  const text = 'x'.repeat(13000);
+  const room = contextRoom(text);
+  assert(room >= 400 && room < 3000);
+  // a context of exactly that size reaches the model whole; one more character is cut
+  assert(withCaller(text, 'c'.repeat(room)).includes('c'.repeat(room)));
+  assert(withCaller(text, 'c'.repeat(room)).length <= 16000);
+  assert.equal(contextRoom('x'.repeat(15900)), undefined); // no room worth asking for
+  assert.equal(contextRoom('short'), 6000); // never more than the backend takes
 });
 
 test('a live ask settles by its deadline whatever the backend does, and never rejects', async () => {

@@ -8,7 +8,7 @@ import WebSocket, {WebSocketServer} from 'ws';
 import {validatePhoneConfig, phoneCommand, servePhone, twilioSignature} from '../src/phone.mjs';
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {createAdapter} from '../src/phone-providers/index.mjs';
-import {speechMessage, relaySpeech} from '../src/phone-speech.mjs';
+import {speechMessage, relaySpeech, Pronouncer} from '../src/phone-speech.mjs';
 
 const base = {accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com',
   instructions: 'Synthetic call', provider: 'deepgram', apiKey: 'd'.repeat(40), llmApiKey: 'AIza' + 'b'.repeat(35), ttsApiKey: 'sk_' + 'a'.repeat(24)};
@@ -49,6 +49,32 @@ test('each speech context gets its own rate at initialization, without rewriting
   speechMessage(Buffer.from('{"close_context":"same-id"}'), 0.95, a);
   assert.equal(JSON.parse(speechMessage(Buffer.from(later), 0.95, a)).voice_settings.speed, 0.95);
   for (const raw of ['[]', 'null', '{"text":"hello"}', '{"context_id":"x","text":"hi","voice_settings":[]}']) assert.throws(() => speechMessage(Buffer.from(raw), 0.95, new Set()));
+});
+
+test('pronunciations are a per-line Deepgram setting, validated, and listed on doctor', () => {
+  const pronunciations = {Quarre: 'Kwahr-ee', "O'Brien": 'oh BRY-en'};
+  assert.deepEqual(validatePhoneConfig({...base, ttsSpeed: 0.95, pronunciations}).lines[0].pronunciations, pronunciations);
+  for (const bad of [{}, [], 'x', {'': 'x'}, {'9ab': 'x'}, {Quarre: ''}, {Quarre: 1}, {Quarre: '<phoneme>'}, {Quarre: 'x'.repeat(81)}, Object.fromEntries(Array.from({length: 65}, (_, i) => ['Word' + 'a'.repeat(i % 10) + String.fromCharCode(65 + i % 26) + 'b'.repeat(Math.floor(i / 26)), 'x']))])
+    assert.throws(() => validatePhoneConfig({...base, pronunciations: bad}), /pronunciations/, JSON.stringify(bad).slice(0, 40));
+  assert.throws(() => validatePhoneConfig({...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined, pronunciations}), /deepgram only/);
+  assert.throws(() => createAdapter({...validatePhoneConfig({...base, pronunciations}), speech: undefined}).settings(), /call-bound speech relay/);
+});
+
+test('a listed word is replaced whole, in any case, even split across frames, and held text is released in order', () => {
+  const frames = (...list) => { const p = new Pronouncer({Quarre: 'Kwahr-ee', 'Kwar-ee': 'Kwahr-ee'}); return list.flatMap(f => p.apply(Buffer.from(JSON.stringify(f)))).map(f => JSON.parse(f.toString())); };
+  const texts = out => out.map(f => f.text ?? f);
+  assert.deepEqual(texts(frames({context_id: 'a', text: 'Hi, Sharon with Quarre. '}, {context_id: 'a', text: "QUARRE's team, quarre and Quarrels. "})),
+    ['Hi, Sharon with Kwahr-ee. ', "Kwahr-ee's team, Kwahr-ee and Quarrels. "]);
+  // a split word is held until the next frame, and nothing else is ever held
+  assert.deepEqual(texts(frames({context_id: 'a', text: 'with Qua'}, {context_id: 'a', text: 'rre now. Thank'}, {context_id: 'a', text: ' you'})), ['with ', 'Kwahr-ee now. Thank', ' you']);
+  assert.deepEqual(texts(frames({context_id: 'a', text: 'Kwar-'}, {context_id: 'a', text: 'ee, hello '})), ['Kwahr-ee, hello ']);
+  // a fragment that is still held at a flush, a close or the end is released first; contexts do not mix
+  assert.deepEqual(frames({context_id: 'a', text: 'about Qu'}, {context_id: 'a', flush: true}).map(f => f.text ?? 'flush'), ['about ', 'Qu', 'flush']);
+  assert.deepEqual(frames({context_id: 'a', text: 'Qu'}, {context_id: 'b', text: 'Qua'}, {close_context: 'a'}).map(f => f.text ?? f.close_context), ['Qu', 'a']);
+  assert.deepEqual(frames({context_id: 'a', text: 'Qua'}, {context_id: 'a', text: ''}).map(f => f.text), ['Qua']);
+  // the init frame keeps its settings; frames that are not JSON objects go on to the relay's own validation
+  assert.deepEqual(frames({context_id: 'a', text: ' ', voice_settings: {stability: 0.5}})[0], {context_id: 'a', text: ' ', voice_settings: {stability: 0.5}});
+  assert.deepEqual(new Pronouncer({Quarre: 'x'}).apply(Buffer.from('[]')).map(String), ['[]']);
 });
 
 test('the TTS relay applies the rate over WebSockets and passes audio back without retaining it', async t => {

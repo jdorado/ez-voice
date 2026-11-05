@@ -292,10 +292,11 @@ export class PhoneAudio {
     const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }
-  // One language-model request relayed through the listener (src/phone-think.mjs): the latest coach note rides on it.
+  // One language-model request relayed through the listener (src/phone-think.mjs): the line's thinking level is set on it and the latest coach note rides on it.
   think(body) {
-    const note = this.advice?.note(), out = note ? this.adapter.withAdvice(body, note.text) : body;
-    if (out !== body) this.advice.attached(note);
+    const thinking = this.config.thinking !== undefined && this.adapter.withThinking ? this.adapter.withThinking(body, this.config.thinking) : body;
+    const note = this.advice?.note(), out = note ? this.adapter.withAdvice(thinking, note.text) : thinking;
+    if (out !== thinking) this.advice.attached(note);
     return out;
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }

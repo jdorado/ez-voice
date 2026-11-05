@@ -31,6 +31,10 @@ export class DeepgramAdapter {
   static label = 'Deepgram';
   static models = ['gemini-3.8-flash'];
   static defaultModel = 'gemini-3.8-flash';
+  // How long the model may think before it answers, which is delay on a phone line: gemini-3.8-flash thinks by default (over a
+  // thousand thought tokens a turn, 5 to 17 s to a first token) and has no minimal level, but `low` answers in about 2.5 s with
+  // the same triage quality (measured). Google rejects a level a model does not take, so levels are admitted per model.
+  static thinkingLevels = {'gemini-3.8-flash': ['low', 'medium', 'high']};
   static defaultVoice = 'JBFqnCBsd6RMkjVDRZzb';
   static ttsModels = ['eleven_flash_v2_5'];
   static defaultTtsModel = 'eleven_flash_v2_5';
@@ -53,6 +57,10 @@ export class DeepgramAdapter {
     const last = Array.isArray(body?.contents) ? body.contents.at(-1) : undefined;
     if (!note || last?.role !== 'user' || !Array.isArray(last.parts) || !last.parts.length || !last.parts.every(p => typeof p?.text === 'string')) return body;
     return {...body, contents: [...body.contents.slice(0, -1), {...last, parts: [...last.parts, {text: note}]}]};
+  }
+  // A line with a `thinking` level sets it on every language-model request (the relay, src/phone-think.mjs, applies it).
+  withThinking(body, level) {
+    return {...body, generationConfig: {...body?.generationConfig, thinkingConfig: {...body?.generationConfig?.thinkingConfig, thinkingLevel: level}}};
   }
   speechTarget(query = new URLSearchParams()) {
     const model = this.config.ttsModel ?? DeepgramAdapter.defaultTtsModel;
@@ -81,7 +89,7 @@ export class DeepgramAdapter {
   start() { return []; } // Welcome precedes Settings; SettingsApplied precedes audio.
   settings() {
     const c = this.config;
-    if (c.ttsSpeed !== undefined && !c.speech) throw Error('ttsSpeed requires the call-bound speech relay');
+    if ((c.ttsSpeed !== undefined || c.pronunciations !== undefined) && !c.speech) throw Error('ttsSpeed and pronunciations require the call-bound speech relay');
     return {type: 'Settings', audio: {
       input: {encoding: 'mulaw', sample_rate: 8000},
       output: {encoding: 'mulaw', sample_rate: 8000, container: 'none'},
