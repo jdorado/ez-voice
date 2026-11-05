@@ -67,7 +67,7 @@ export function installedAdvice(binding, core) {
 // call goes on with the line's instructions alone.
 export function validateContextBinding(value) {
   if (value && typeof value === 'object' && ('alias' in value || 'invoke' in value)) {
-    throw Error('contextBinding is now {url, token, deadlineMs}: the alias/invoke form was removed in 0.1.0-beta.11.rc.47');
+    throw Error('contextBinding is now {url, token, deadlineMs}: the alias/invoke form was removed');
   }
   if (!value || Object.keys(value).sort().join() !== 'deadlineMs,token,url' || typeof value.url !== 'string'
       || typeof value.token !== 'string' || !/^[\x21-\x7e]{16,512}$/.test(value.token)
@@ -91,7 +91,7 @@ async function boundedText(response) {
     if (size > MAX_ANSWER_BYTES) throw Error('Context unavailable');
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return new TextDecoder().decode(Buffer.concat(chunks)); // like response.text(): a UTF-8 BOM is dropped
 }
 
 export function httpContext(binding, fetchImpl = fetch) {

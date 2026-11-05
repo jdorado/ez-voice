@@ -156,6 +156,7 @@ test('the backend is posted the call and its answer is bound to it', async () =>
   assert.deepEqual(await ok.run(call), {status: 'available', text: 'known'});
   assert.equal(seen[0].url, binding.url); assert.equal(seen[0].init.method, 'POST'); assert.equal(seen[0].init.redirect, 'error');
   assert.equal(seen[0].init.headers.authorization, 'Bearer ' + binding.token); assert.deepEqual(JSON.parse(seen[0].init.body), {call});
+  assert.deepEqual(await backend(200, '\uFEFF' + JSON.stringify({call_id: call.id, status: 'available', context: {text: 'bom'}})).run(call), {status: 'available', text: 'bom'});
   assert.deepEqual(await backend(200, {call_id: call.id, status: 'no_match'}).run(call), {status: 'no_match'});
   assert.deepEqual(await backend(200, {call_id: call.id, status: 'unavailable', error: 'unknown_call_line'}).run(call), {status: 'unavailable'});
   const accents = 'é'.repeat(2500);
@@ -246,7 +247,7 @@ test('the token is in no answer and no error', async t => {
     assert.ok(!JSON.stringify(await ask(url)).includes(TOKEN));
   }
   for (const bad of [{...bound('http://x/y'), deadlineMs: 1}, {...bound('ftp://x/y')}, {alias: 'a', invoke: ['b'], token: TOKEN, deadlineMs: 3000}]) {
-    try { validateContextBinding(bad); assert.fail('accepted'); } catch (error) { assert.ok(!String(error.message).includes(TOKEN)); }
+    assert.throws(() => validateContextBinding(bad), error => !String(error.message).includes(TOKEN));
   }
 });
 
@@ -257,6 +258,8 @@ test('an old alias/invoke binding is refused with a message that names the new f
 });
 
 test('a context binding alone builds the provider without attaching to the Ez connection', async () => {
+  const before = ['data', 'end', 'readable'].map(event => process.stdin.listenerCount(event));
   const out = await phonePlugins(null, null, bound('http://127.0.0.1:9/context'));
+  assert.deepEqual(['data', 'end', 'readable'].map(event => process.stdin.listenerCount(event)), before);
   assert.equal(out.contextProvider.deadlineMs, 3000); assert.equal(out.information, undefined); assert.equal(out.advisor, undefined);
 });

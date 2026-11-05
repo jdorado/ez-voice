@@ -3,7 +3,7 @@
 ## 0.1.0-beta.11.rc.47
 
 - The backend's answer is read up to 120,000 bytes and no further (the connection is closed once it is over), so a backend that streams forever cannot exhaust the listener's memory; the body of a non-2xx answer is cancelled too.
-- An old `contextBinding` with `alias`/`invoke` is refused at start (`phone serve`, `status`, `probe`) with a message that names the new form; replace the binding to upgrade. A `url` that is not a string is refused.
+- An old `contextBinding` with `alias`/`invoke` is refused at start (any phone command that loads the configuration) with a message that names the new form; replace the binding to upgrade. A `url` that is not a string is refused.
 - Docs: Voice keeps no prepared caller contexts (SECURITY.md, `phone --help`); the ask has no retry, follows no redirect, and `http:` sends the token in clear.
 
 ## 0.1.0-beta.11.rc.46
