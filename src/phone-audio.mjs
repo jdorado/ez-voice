@@ -1,6 +1,5 @@
 import WebSocket from 'ws';
 import {PHONE_TOOLS} from './phone-tools.mjs';
-import {MAX_LOOKUPS} from './phone-contexts.mjs';
 
 // A tool call's arguments arrive as a JSON string (ElevenLabs, GPT-Live) or an object (Gemini).
 const parseArgs = value => { try { const args = typeof value === 'string' ? JSON.parse(value) : value; return args && typeof args === 'object' && !Array.isArray(args) ? args : {}; } catch { return {}; } };
@@ -222,7 +221,7 @@ export class PhoneAudio {
         || this.seenTools.has(item.id) || this.seenTools.size >= 64) return;
     this.seenTools.add(item.id);
     if (item.request && this.request && item.request !== this.request) return;
-    const tool = Object.hasOwn(PHONE_TOOLS, item.name) && (!PHONE_TOOLS[item.name].lookup || this.config.lookup) ? PHONE_TOOLS[item.name] : null;
+    const tool = Object.hasOwn(PHONE_TOOLS, item.name) ? PHONE_TOOLS[item.name] : null;
     const external = !tool && this.config.information?.tools.some(t => t.name === item.name);
     (this.stats.tools ??= []).length < 64 && this.stats.tools.push(tool || external ? item.name : 'unknown');
     if (!external) {
@@ -300,14 +299,6 @@ export class PhoneAudio {
     return out;
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
-  // find_case: what the prepared contexts say to a stranger who names a property, a few tries a call (an address cannot be
-  // guessed one after another).
-  lookup(query) {
-    if ((this.lookups = (this.lookups ?? 0) + 1) > MAX_LOOKUPS) return {error: 'too_many_lookups'};
-    const claims = this.config.lookup(query);
-    this.stats.lookups = this.lookups;
-    return claims.length ? {found: true, matches: claims} : {found: false};
-  }
   // Audio a provider sent faster than realtime is still queued at Twilio, and closing the stream drops it (a voicemail message
   // was cut after one sentence). A mark queued behind that audio comes back from Twilio once everything before it has played.
   drain() {

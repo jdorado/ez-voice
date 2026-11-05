@@ -44,8 +44,7 @@ One browser call can be active per Voice runtime. End it before another begins.
 
 `ez voice phone --help` describes the separate inbound/outbound Twilio audio channel. It
 connects directly to a speech provider (GPT-Live by default; ElevenLabs Realtime, Gemini Live or Deepgram Voice Agent by `provider` in its private configuration) and has no native-agent delegation, owner history,
-workspace access or action tools: its tools are `end_call` and, on an inbound call when caller contexts are prepared,
-`find_case`. Its private configuration needs the provider key, Twilio Account SID and account Auth Token, voice-capable
+workspace access or action tools: its only tool is `end_call`. Its private configuration needs the provider key, Twilio Account SID and account Auth Token, voice-capable
 number(s) and HTTPS origin; `lines` serves several numbers from one install, `maxCalls` calls at once. A line's persona is
 `instructions` (a string) or `instructionsFiles` (1..8 relative paths) with `instructionsRoot` (an absolute folder, top level or per
 line), never both: the files are read fresh at the start of every call, and a missing, empty, oversized or out-of-root file
@@ -60,8 +59,8 @@ Every phone call is recorded at Twilio (dual-channel, retrievable by Call SID th
 account); the plugin stores no audio. The private call receipt (`phone receipt --call-sid CA...`, also shown by
 `call-status` for its Call SID) reports `recording` as `started` with the Recording SID or `failed` with a code, and
 keeps the call's transcript as the provider heard it. The operator is responsible for any recording notice to callers.
-`phone context replace < contexts.json` (at most 500 `{number, text, claim, find, at?}`) replaces the prepared caller
-contexts; `phone context status` reads their count. A context is chosen by the caller ID, which can be spoofed.
+`contextBinding {url, token, deadlineMs}` asks the operator's backend what it knows of an inbound caller as the call arrives
+(see docs/phone.md, "Caller context"). The caller ID it is asked about can be spoofed.
 
 
 For an explicitly authorized recipient, `ez voice phone call --to E.164 --request-id ID [--from LINE]
