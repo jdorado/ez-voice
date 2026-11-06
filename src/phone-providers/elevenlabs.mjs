@@ -9,6 +9,12 @@ const SOCKET_URL = 'wss://api.elevenlabs.io/v1/convai/realtime';
 
 export class ElevenLabsAdapter {
   static id = 'elevenlabs';
+  // Characters a session takes: `instructions` for a line's instruction files joined or a call's brief, `session` for the whole starting
+  // text (the instructions with a brief or a caller context). A property of this provider's model, never of a persona.
+  // ElevenLabs documents no limit for Realtime instructions. Measured on the phone path (2026-11-06, `eleven_realtime_v1_max`, scripted
+  // calls at 12K, 20K, 40K, 80K and 150K characters of instructions): every session started and ended normally and the reply gap did not
+  // move (median 0.6 to 0.9 s at each size); credits per call grow with size. 100,000 and 120,000 stay well inside what was measured.
+  static limits = {instructions: 100000, session: 120000};
   static label = 'ElevenLabs';
   static models = ['eleven_realtime_v1_mini', 'eleven_realtime_v1_max'];
   static defaultModel = 'eleven_realtime_v1_mini';

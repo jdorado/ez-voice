@@ -6,7 +6,7 @@ import {DeepgramAdapter} from './deepgram.mjs';
 // A phone provider is one speech-to-speech (or cascaded speech) service behind a WebSocket. PhoneAudio owns the Twilio bridge,
 // the timers, the tool registry and the receipt; an adapter owns one provider's wire protocol and nothing else. Each call gets a
 // fresh adapter (they hold stream state). The adapter has static `id`, `label`, `models`, `defaultModel`, `defaultVoice`,
-// `keyPattern`, `confirmsClose` (true when the provider reports a final session.closed with usage), `audioMeansSpeech` (true when
+// `keyPattern`, `limits` ({instructions, session}: the characters its session takes), `confirmsClose` (true when the provider reports a final session.closed with usage), `audioMeansSpeech` (true when
 // its output audio only flows while the model speaks) and `supportsTools(model)`;
 // its constructor keeps the validated `config` (model and voice resolved) as `this.config`; and:
 //   connection()                 -> {url, headers}, or a promise of it (ElevenLabs mints a client secret first)
@@ -48,3 +48,6 @@ export function createAdapter(config, options) {
   const Adapter = providerClass(config);
   return new Adapter({...config, provider: Adapter.id, model: config.model ?? Adapter.defaultModel, voice: config.voice ?? Adapter.defaultVoice}, options);
 }
+// What a provider's session takes (see `limits` on each adapter): a limit of the model, so a persona's or a guidance file's size is
+// never trimmed to fit another provider's. `provider` is an id; an unset one is the default provider.
+export const limitsFor = provider => providerClass({provider}).limits;

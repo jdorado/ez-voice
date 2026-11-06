@@ -735,6 +735,7 @@ test('Deepgram requires separate private credentials and admits only the support
     const output = JSON.stringify(await phoneCommand(directory, ['doctor']));
     for (const secret of [keys.deepgram, ...Object.values(deepgramKeys)]) assert(!output.includes(secret));
     assert(output.includes('gemini-3.8-flash'));
+    assert.deepEqual(JSON.parse(output).lines[0].limits, {instructions: 13500, session: 16000}); // doctor shows the line's provider limits
   } finally {await rm(directory, {recursive: true, force: true});}
 });
 

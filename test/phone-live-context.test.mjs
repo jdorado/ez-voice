@@ -173,13 +173,13 @@ test('the backend is posted the call and its answer is bound to it', async () =>
 
 test('the room a call leaves for the caller context is what its line\'s instructions do not take of the session', () => {
   const text = 'x'.repeat(13000);
-  const room = contextRoom(text);
+  const room = contextRoom(text, 16000);
   assert(room >= 400 && room < 3000);
   // a context of exactly that size reaches the model whole; one more character is cut
-  assert(withCaller(text, 'c'.repeat(room)).includes('c'.repeat(room)));
-  assert(withCaller(text, 'c'.repeat(room)).length <= 16000);
-  assert.equal(contextRoom('x'.repeat(15900)), undefined); // no room worth asking for
-  assert.equal(contextRoom('short'), 6000); // never more than the backend takes
+  assert(withCaller(text, 'c'.repeat(room), 16000).includes('c'.repeat(room)));
+  assert(withCaller(text, 'c'.repeat(room), 16000).length <= 16000);
+  assert.equal(contextRoom('x'.repeat(15900), 16000), undefined); // no room worth asking for
+  assert.equal(contextRoom('short', 16000), 6000); // never more than the backend takes
 });
 
 test('a live ask settles by its deadline whatever the backend does, and never rejects', async () => {
