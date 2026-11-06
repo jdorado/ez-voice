@@ -116,7 +116,7 @@ files are joined in the order listed with one blank line between them. The resul
 keeps the text it started with. The text goes only to the speech provider, as `instructions` do.
 
 Every file must be a regular file inside the real path of `instructionsRoot` (a link that leaves it is refused), non-empty
-after trimming, valid UTF-8 and at most the provider's instruction limit (13,500 characters today), which is also the limit of all the files joined. A path is
+after trimming, valid UTF-8 and at most the provider's instruction limit, which is also the limit of all the files joined. A path is
 refused at configuration if it is absolute or has a `..`, a `.`, a backslash or an empty segment. The failure is closed: a
 file that is missing, unreadable, empty, not a regular file, outside the root, not UTF-8 or too large refuses the call, and
 nothing falls back to the default instructions or to an earlier read. An outbound `phone call` fails with an error that names the
@@ -170,12 +170,13 @@ whoever reads the receipt (`phone receipt --call-sid CA...`) has the call's word
 
 The limits belong to the provider's model, not to a persona or to the context a line injects, so each adapter declares its own
 (`static limits = {instructions, session}`; `phone doctor` shows each line's). `instructions` bounds a line's instruction files joined
-and a call's brief; `session` bounds what a session starts with: the instructions plus a brief or a caller context. Today every
-provider declares the same verified values, 13,500 and 16,000 characters, and they come from OpenAI (`gpt-realtime` caps instructions
+and a call's brief; `session` bounds what a session starts with: the instructions plus a brief or a caller context. Every
+provider except ElevenLabs declares the same verified values, 13,500 and 16,000 characters, and they come from OpenAI (`gpt-realtime` caps instructions
 plus tools at 16,384 tokens and GPT-Live adds its delegation policy on top): `openai` 13,500 / 16,000, `gemini` 13,500 / 16,000,
-`deepgram` 13,500 / 16,000, `elevenlabs` 13,500 / 16,000. ElevenLabs documents no limit for Realtime instructions, and Deepgram's
-managed agent hands the prompt to a Gemini model that takes far more, so those two can be raised once a larger size is measured on
-the phone path (reply gap and instruction following), by changing the one line in the adapter. A persona or guidance file is never
+`deepgram` 13,500 / 16,000, `elevenlabs` 100,000 / 120,000. ElevenLabs documents no limit for Realtime instructions; scripted calls on
+`eleven_realtime_v1_max` at 12K, 20K, 40K, 80K and 150K characters all started and ended normally with no change in reply gap (the
+credits per call grow with size; instruction following at size was not measured). Deepgram's managed agent hands the prompt to a Gemini
+model that takes far more, so it can be raised once a larger size is measured on the phone path, by changing the one line in the adapter. A persona or guidance file is never
 trimmed to fit another provider's limit.
 
 ## Call length and idle hang-up
