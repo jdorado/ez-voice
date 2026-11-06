@@ -34,7 +34,8 @@ export class DeepgramAdapter {
   // verified and stays until a larger size is measured on the phone path.
   static limits = {instructions: 13500, session: 16000};
   static label = 'Deepgram';
-  static models = ['gemini-3.8-flash'];
+  // gemini-3.5-flash-lite answers in about 0.9 s a request and has no thinking to configure (a `thinking` level is refused for it).
+  static models = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
   static defaultModel = 'gemini-3.8-flash';
   // How long the model may think before it answers, which is delay on a phone line: gemini-3.8-flash thinks by default (over a
   // thousand thought tokens a turn, 5 to 17 s to a first token) and has no minimal level, but `low` answers in about 2.5 s with
