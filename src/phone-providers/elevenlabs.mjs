@@ -9,6 +9,11 @@ const SOCKET_URL = 'wss://api.elevenlabs.io/v1/convai/realtime';
 
 export class ElevenLabsAdapter {
   static id = 'elevenlabs';
+  // Characters a session takes: `instructions` for a line's instruction files joined or a call's brief, `session` for the whole starting
+  // text (the instructions with a brief or a caller context). A property of this provider's model, never of a persona.
+  // ElevenLabs documents no limit for Realtime instructions; 16,000 characters at session start was verified, and stays until a larger
+  // size is measured on the phone path.
+  static limits = {instructions: 13500, session: 16000};
   static label = 'ElevenLabs';
   static models = ['eleven_realtime_v1_mini', 'eleven_realtime_v1_max'];
   static defaultModel = 'eleven_realtime_v1_mini';

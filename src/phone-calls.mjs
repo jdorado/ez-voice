@@ -6,6 +6,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {frames, send} from './protocol.mjs';
 import {phone, sid} from './phone-provider.mjs';
 import {instructionsFromFiles} from './phone-instructions.mjs';
+import {limitsFor} from './phone-providers/index.mjs';
 
 export const LAST_CALL = 'last-call.json';
 const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected']);
@@ -13,12 +14,10 @@ const statuses = new Set(['queued','initiated','ringing','in-progress',...termin
 const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
 // A per-call brief is added to the configured instructions (the line's identity and conduct) for that
 // outbound call only; where the two differ, the brief wins. A line's instruction files, joined, are held to the same limit.
-export const MAX_CALL_INSTRUCTIONS = 13500;
-// What a session starts with: a line's instructions with a brief or a caller context. Providers were verified to accept
-// 16000 characters at session start (GPT-Live adds its delegation policy on top), so a call never starts with more.
-export const MAX_SESSION_INSTRUCTIONS = 16000;
+// The limits are the line's provider's (`limitsFor`): `instructions` for the files or the brief, `session` for what a session
+// starts with (the instructions with a brief or a caller context), so a call never starts with more than its provider takes.
 export const withBrief = (instructions, brief) => brief ? `${instructions}\n\nBrief for this call (where it differs from the instructions above, it wins):\n${brief}` : instructions;
-const brief = value => value === undefined || (typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_CALL_INSTRUCTIONS);
+const brief = (value, limit) => value === undefined || (typeof value === 'string' && value.trim().length > 0 && value.length <= limit);
 const rank = value => terminal.has(value) ? 4 : value === 'in-progress' ? 3 : value === 'ringing' ? 2 : value === 'queued' || value === 'initiated' ? 1 : 0;
 
 export function callOptions(action, args) {
@@ -89,17 +88,18 @@ export class PhoneCalls {
     const from = options?.from ?? this.config.number;
     if (!options || Object.keys(options).some(key=>!['to','from','requestId','instructions'].includes(key)) || !phone(options.to) || !requestId(options.requestId) || this.numbers().includes(options.to)) throw Error('Supply a destination other than the configured numbers and a stable request ID');
     if (!this.numbers().includes(from)) throw Error('--from must be one of the configured lines');
-    if (!brief(options.instructions)) throw Error(`Call instructions must contain 1..${MAX_CALL_INSTRUCTIONS} characters`);
+    const line = (this.config.lines ?? [this.config]).find(l => l.number === from);
+    const limits = limitsFor(line?.provider);
+    if (!brief(options.instructions, limits.instructions)) throw Error(`Call instructions must contain 1..${limits.instructions} characters`);
     const prior = this.row(options.requestId);
     if (prior) {
       if (prior.recipient !== options.to || this.from(prior) !== from) throw Error('Request ID was already used for a different destination or line');
       return {...await this.status(prior.id), created: false};
     }
-    const line = (this.config.lines ?? [this.config]).find(l => l.number === from);
     // A line that reads its instructions from files reads them now, so a missing file stops the call before it is dialed
     // (the answered call reads them again, at its start).
-    if (withBrief((line?.instructionsFiles ? await instructionsFromFiles(line, MAX_CALL_INSTRUCTIONS) : line?.instructions) ?? '', options.instructions).length > MAX_SESSION_INSTRUCTIONS)
-      throw Error(`The line's instructions and this brief together exceed ${MAX_SESSION_INSTRUCTIONS} characters; shorten the brief`);
+    if (withBrief((line?.instructionsFiles ? await instructionsFromFiles(line, limits.instructions) : line?.instructions) ?? '', options.instructions).length > limits.session)
+      throw Error(`The line's instructions and this brief together exceed ${limits.session} characters; shorten the brief`);
     this.db.exec('BEGIN IMMEDIATE');
     let existing;
     try {

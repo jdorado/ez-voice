@@ -28,6 +28,11 @@ function diagnostic(event) {
 
 export class DeepgramAdapter {
   static id = 'deepgram';
+  // Characters a session takes: `instructions` for a line's instruction files joined or a call's brief, `session` for the whole starting
+  // text (the instructions with a brief or a caller context). A property of this provider's model, never of a persona.
+  // The managed agent's prompt goes to Google's Gemini through `think`, which takes far more; 16,000 characters at session start was
+  // verified and stays until a larger size is measured on the phone path.
+  static limits = {instructions: 13500, session: 16000};
   static label = 'Deepgram';
   static models = ['gemini-3.8-flash'];
   static defaultModel = 'gemini-3.8-flash';

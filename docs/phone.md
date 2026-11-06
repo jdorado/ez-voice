@@ -111,12 +111,12 @@ every line that uses files). Configuration checks the shape only; the files need
 At the start of every call (an inbound call's ticket; an outbound call when it is dialed, to stop a call that could not
 start, and again when it is answered) each file is read again as UTF-8 (a leading byte order mark is dropped) and the
 files are joined in the order listed with one blank line between them. The result is used exactly where a line's
-`instructions` string is: a per-call brief or a caller context is added to it, and the 16,000-character session limit
-applies as before. Nothing is cached between calls, so an edited file reaches the next call and a call already in progress
+`instructions` string is: a per-call brief or a caller context is added to it, and the line's provider's session limit
+(see Providers, "Instruction and session limits") applies as before. Nothing is cached between calls, so an edited file reaches the next call and a call already in progress
 keeps the text it started with. The text goes only to the speech provider, as `instructions` do.
 
 Every file must be a regular file inside the real path of `instructionsRoot` (a link that leaves it is refused), non-empty
-after trimming, valid UTF-8 and at most 13,500 characters, which is also the limit of all the files joined. A path is
+after trimming, valid UTF-8 and at most the provider's instruction limit (13,500 characters today), which is also the limit of all the files joined. A path is
 refused at configuration if it is absolute or has a `..`, a `.`, a backslash or an empty segment. The failure is closed: a
 file that is missing, unreadable, empty, not a regular file, outside the root, not UTF-8 or too large refuses the call, and
 nothing falls back to the default instructions or to an earlier read. An outbound `phone call` fails with an error that names the
@@ -165,6 +165,18 @@ call ran (`transcript`: turns of `caller` and `model`, each with its `text` and 
 provider's speech-to-text, the model's are its own), at most 100,000 characters a call (`transcriptTruncated` past that):
 whoever reads the receipt (`phone receipt --call-sid CA...`) has the call's words without a second transcription. A provider that reports when the caller starts talking over the model
 (ElevenLabs voice activity, Gemini `interrupted`) makes Voice send Twilio a `clear` so audio queued at Twilio stops.
+
+### Instruction and session limits
+
+The limits belong to the provider's model, not to a persona or to the context a line injects, so each adapter declares its own
+(`static limits = {instructions, session}`; `phone doctor` shows each line's). `instructions` bounds a line's instruction files joined
+and a call's brief; `session` bounds what a session starts with: the instructions plus a brief or a caller context. Today every
+provider declares the same verified values, 13,500 and 16,000 characters, and they come from OpenAI (`gpt-realtime` caps instructions
+plus tools at 16,384 tokens and GPT-Live adds its delegation policy on top): `openai` 13,500 / 16,000, `gemini` 13,500 / 16,000,
+`deepgram` 13,500 / 16,000, `elevenlabs` 13,500 / 16,000. ElevenLabs documents no limit for Realtime instructions, and Deepgram's
+managed agent hands the prompt to a Gemini model that takes far more, so those two can be raised once a larger size is measured on
+the phone path (reply gap and instruction following), by changing the one line in the adapter. A persona or guidance file is never
+trimmed to fit another provider's limit.
 
 ## Call length and idle hang-up
 
@@ -220,7 +232,7 @@ ez voice phone receipt
 
 The recipient must be explicitly authorized. Caller ID is the configured Twilio
 number; answering connects the recipient to the same audio bridge and phone
-instructions. `--instructions -` reads a per-call brief (1..13500 characters) on
+instructions. `--instructions -` reads a per-call brief (1..the line's provider's instruction limit, 13,500 characters today) on
 stdin; it is saved with the request before dialing and added after the configured
 instructions for that call only, under a heading that says the brief wins where
 the two differ (the configuration stays the line's identity and conduct; inbound
@@ -254,7 +266,7 @@ An operator can give the install the backend that knows its callers (the call ce
 token and `deadlineMs` how long a call waits for the answer (500..10000). As each inbound call is accepted, Voice POSTs
 `{"call": {"id", "remote", "line", "direction", "started_at"}}` to it, the identity coming from the call ticket (never a
 model's words) and, when the line's instructions leave room for one, `"max_chars"` (400..6000: the characters of context the session
-can still hold, since it shares 16,000 with those instructions, so a backend answers with the fullest text that fits and not one
+can still hold, since it shares the provider's session limit (16,000 characters today) with those instructions, so a backend answers with the fullest text that fits and not one
 cut off in the middle), and takes `{call_id, status, context?}` as JSON: `available` with `context.text` (1..6000 characters, background
 for the model, never read out; where it differs from the line's instructions it wins), `no_match` (the backend knows nothing of
 this caller) or `unavailable`. Voice holds no records of its own and decides nothing about what may be said.
@@ -274,7 +286,7 @@ sending costs the cap, not memory) or one that is invalid leaves the call with t
 token and the caller's number in clear: use `https:` unless the network is private. The token is 16..512 printable ASCII characters.
 
 Caller ID is whatever Twilio reports and can be spoofed: the backend decides what a number may be told. An incoming call's
-instructions with its context are cut to 16,000 characters, the context's end first; an outbound brief that would take the call
+instructions with its context are cut to the provider's session limit, the context's end first; an outbound brief that would take the call
 past that is refused before dialing.
 
 ## Updating a live listener

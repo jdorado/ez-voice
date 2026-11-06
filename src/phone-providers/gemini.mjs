@@ -18,6 +18,10 @@ const declaration = (tool, model) => {
 
 export class GeminiAdapter {
   static id = 'gemini';
+  // Characters a session takes: `instructions` for a line's instruction files joined or a call's brief, `session` for the whole starting
+  // text (the instructions with a brief or a caller context). A property of this provider's model, never of a persona.
+  // No limit is documented for Gemini Live's system instruction here; 16,000 characters at session start was verified.
+  static limits = {instructions: 13500, session: 16000};
   static label = 'Gemini';
   static models = ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking'];
   static defaultModel = 'gemini-3.8-live';

@@ -5,8 +5,11 @@ import assert from 'node:assert/strict';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {validatePhoneConfig, lineConfig, withCaller} from '../src/phone.mjs';
-import {PhoneCalls, callOptions, MAX_SESSION_INSTRUCTIONS} from '../src/phone-calls.mjs';
+import {validatePhoneConfig, lineConfig, withCaller, contextRoom} from '../src/phone.mjs';
+import {PhoneCalls, callOptions} from '../src/phone-calls.mjs';
+import {PROVIDERS, limitsFor} from '../src/phone-providers/index.mjs';
+
+const SESSION = limitsFor('openai').session; // the default provider's, which the lines below run
 
 const shared = {accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), origin: 'https://phone.example.com'};
 const openai = {number: '+15551230001', apiKey: 'sk-synthetic123456789', provider: 'openai', tools: false, language: 'es', answerTone: 'none', toolEffort: 'high'};
@@ -73,7 +76,32 @@ test('stopping tries every pending call and reports the ones that failed', async
 });
 
 test('an inbound context is cut to what a session takes rather than failing the answered call', () => {
-  const text = withCaller('x'.repeat(12000), 'y'.repeat(6000));
-  assert(text.length <= MAX_SESSION_INSTRUCTIONS, text.length);
-  assert(text.includes(' …')); assert(text.endsWith('do not continue an earlier answer.')); assert.match(withCaller('line', 'short case'), /short case\nEND OF HISTORICAL RECORDS/);
+  const text = withCaller('x'.repeat(12000), 'y'.repeat(6000), SESSION);
+  assert(text.length <= SESSION, text.length);
+  assert(text.includes(' …')); assert(text.endsWith('do not continue an earlier answer.')); assert.match(withCaller('line', 'short case', SESSION), /short case\nEND OF HISTORICAL RECORDS/);
+});
+
+test('the limits are the provider\'s: a provider with a larger one takes a larger prompt, the others still refuse', async t => {
+  for (const [id, Adapter] of Object.entries(PROVIDERS)) assert.deepEqual(limitsFor(id), Adapter.limits, id); // every adapter declares its own
+  assert.deepEqual(limitsFor(), limitsFor('openai')); // an unset provider is the default one
+  const big = 'x'.repeat(20000), line = {...eleven, instructions: big};
+  assert.throws(() => validatePhoneConfig({...shared, lines: [line]}), /1\.\.13500/);
+  const before = PROVIDERS.elevenlabs.limits;
+  PROVIDERS.elevenlabs.limits = {instructions: 40000, session: 42000};
+  try {
+    assert.equal(validatePhoneConfig({...shared, lines: [line]}).lines[0].instructions.length, 20000);
+    assert.throws(() => validatePhoneConfig({...shared, lines: [{...openai, instructions: big}]}), /1\.\.13500/); // another provider still refuses
+    // a call's brief and its session are held to the line's own provider
+    const config = validatePhoneConfig({...shared, maxCalls: 3, lines: [{...openai, instructions: 'x'.repeat(12000)}, {...eleven, instructions: 'x'.repeat(12000)}]});
+    const {provider, calls} = await journal(t, config);
+    await assert.rejects(() => calls.call({to: '+15551230005', requestId: 'o', from: openai.number, instructions: 'y'.repeat(4500)}, () => false), /exceed 16000/);
+    assert.equal(provider.calls, 0, 'refused before dialing');
+    await calls.call({to: '+15551230005', requestId: 'e', from: eleven.number, instructions: 'y'.repeat(4500)}, () => false);
+    assert.equal(provider.calls, 1);
+    // the caller context room follows the session limit
+    const text = 'x'.repeat(13000);
+    assert(contextRoom(text, 16000) < 3000 && contextRoom(text, 42000) === 6000);
+    assert(withCaller(text, 'c'.repeat(20000), 42000).length <= 42000);
+  } finally { PROVIDERS.elevenlabs.limits = before; }
+  assert.deepEqual(limitsFor('elevenlabs'), {instructions: 13500, session: 16000});
 });

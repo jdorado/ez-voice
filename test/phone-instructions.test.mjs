@@ -10,7 +10,9 @@ import {Readable} from 'node:stream';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import WebSocket from 'ws';
-import {PhoneCalls, MAX_CALL_INSTRUCTIONS} from '../src/phone-calls.mjs';
+import {PhoneCalls} from '../src/phone-calls.mjs';
+import {limitsFor} from '../src/phone-providers/index.mjs';
+const MAX_CALL_INSTRUCTIONS = limitsFor('openai').instructions; // these lines run the default provider
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {InstructionsError, instructionsFromFiles} from '../src/phone-instructions.mjs';
 import {phoneCommand, servePhone, twilioSignature, validatePhoneConfig} from '../src/phone.mjs';

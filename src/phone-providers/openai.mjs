@@ -19,6 +19,11 @@ Generate <|SpawnThinking|> before giving an answer that depends on backend work.
 // its Responses backend (delegation), which hands finished calls back to the plugin.
 export class OpenAIAdapter {
   static id = 'openai';
+  // Characters a session takes: `instructions` for a line's instruction files joined or a call's brief, `session` for the whole starting
+  // text (the instructions with a brief or a caller context). A property of this provider's model, never of a persona.
+  // gpt-realtime caps instructions plus tools at 16,384 tokens and GPT-Live adds its delegation policy on top: these are the verified
+  // character counts a session starts with.
+  static limits = {instructions: 13500, session: 16000};
   static label = 'OpenAI';
   static models = ['gpt-live-1'];
   static defaultModel = 'gpt-live-1';
