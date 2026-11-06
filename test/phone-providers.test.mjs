@@ -728,6 +728,9 @@ test('Deepgram requires separate private credentials and admits only the support
   assert.equal(validatePhoneConfig({...config, thinking: 'low'}).thinking, 'low');
   assert.throws(() => validatePhoneConfig({...config, thinking: 'minimal'}), /thinking must be low, medium, high for model gemini-3.8-flash/);
   assert.throws(() => validatePhoneConfig({...base, apiKey: keys.openai, thinking: 'low'}), /thinking must be unset/);
+  // Gemini 3.5 Flash-Lite is admitted on a Deepgram line and takes no thinking level.
+  assert.equal(validatePhoneConfig({...config, model: 'gemini-3.5-flash-lite'}).model, 'gemini-3.5-flash-lite');
+  assert.throws(() => validatePhoneConfig({...config, model: 'gemini-3.5-flash-lite', thinking: 'low'}), /thinking must be unset for model gemini-3.5-flash-lite/);
   const directory = await mkdtemp(join(tmpdir(), 'ez-deepgram-config-'));
   try {
     await mkdir(join(directory, 'phone'));

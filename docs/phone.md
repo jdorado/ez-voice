@@ -145,7 +145,7 @@ checked against its key shape. `model` must be one the adapter lists; the defaul
 | `openai` | `gpt-live-1` | `marin` | mu-law 8 kHz both ways | Responses backend (`toolModel`, `toolEffort`), see Tools | `session.close` / `session.closed`, with final usage |
 | `elevenlabs` | `eleven_realtime_v1_mini` or `eleven_realtime_v1_max` | `brian`, or an ElevenLabs voice id | mu-law 8 kHz both ways | native function calls on `eleven_realtime_v1_max` only | socket close; no usage |
 | `gemini` | `gemini-3.8-live` or `gemini-3.8-live-extended-thinking` (`thinking` low, medium or high, default low) | `Kore` | PCM 16 kHz in, PCM out (24 kHz), converted | native, `BLOCKING` (not on the thinking variant) | socket close; the last reported usage |
-| `deepgram` | `gemini-3.8-flash` | ElevenLabs Brian voice id | mu-law 8 kHz both ways | native functions, deferred until end of turn | socket close; no usage |
+| `deepgram` | `gemini-3.8-flash` or `gemini-3.5-flash-lite` (no thinking level) | ElevenLabs Brian voice id | mu-law 8 kHz both ways | native functions, deferred until end of turn | socket close; no usage |
 
 ElevenLabs Realtime is the OpenAI Realtime protocol over WebSocket. Its socket refuses the account key, so each call first mints
 a short-lived client secret (`POST /v1/convai/realtime/client_secrets`, needing an ElevenLabs key with ElevenAgents write
