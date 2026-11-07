@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.11.rc.51
+
+- Instruction and session limits belong to the provider (PR #46): each adapter declares `static limits = {instructions, session}` and `limitsFor(provider)` reads it, replacing the global 13,500 and 16,000 character constants that came from GPT-Live. `openai`, `gemini` and `deepgram` keep 13,500 / 16,000; `elevenlabs` takes instructions up to 100,000 and a session up to 120,000 characters (measured on the phone path). `phone doctor` reports each line's limits.
+- A Deepgram line admits `gemini-3.5-flash-lite` besides `gemini-3.8-flash` (PR #47). It has no thinking level, so a `thinking` setting is refused for it. The default model is unchanged.
+
 ## 0.1.0-beta.11.rc.50
 
 - `greetingFile` on a Deepgram line: a workspace file under `instructionsRoot` (at most 300 characters, read fresh at the start of every inbound call like the instruction files) holding the line's fixed greeting. Deepgram speaks it at once (`InjectAgentMessage`: no language-model request), so a caller hears it in about 0.3 to 0.7 s instead of the 3 to 5 s a model-written greeting takes (a live Sharon call: 5.0 s). Without the file the model writes the greeting as before; an unreadable file refuses the call and records its path, like an instruction file. Outbound calls are not greeted: the callee speaks first. The greeting goes through the TTS relay, so `pronunciations` apply to it. A receipt carries `greetingFixed: true`.
