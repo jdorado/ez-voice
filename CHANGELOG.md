@@ -2,8 +2,8 @@
 
 ## 0.1.0-beta.11
 
-GitHub release only (no npm), as beta.10. It rolls up the QA candidates rc.1 to rc.51 below (the code tree of rc.51; this release
-changes only the version). Gate: 206 tests (190 passed, 16 skipped on macOS), required CI, an independent final-diff review, and
+GitHub release only (no npm), as beta.10. It rolls up the QA candidates rc.1 to rc.51 (entries below; a skipped number has none) and is the code tree of rc.51; this release
+changes only the version. Gate: 206 tests (190 passed, 16 skipped on macOS), required CI, an independent final-diff review, and
 a synthetic scripted-call gate of the exact rc.51 tree on two installed instances. No real-call QA of this tree was performed.
 
 - Several lines in one install (`lines`), each with its own provider, voice, key and instructions; an inbound call takes the called
@@ -14,12 +14,13 @@ a synthetic scripted-call gate of the exact rc.51 tree on two installed instance
   characters; `elevenlabs` takes instructions up to 100,000 and a session up to 120,000. `phone doctor` reports them.
 - New Deepgram Voice Agent adapter (Flux, `gemini-3.8-flash`, `gemini-3.5-flash-lite`, ElevenLabs Flash v2.5 speech) with `thinking`,
   `pronunciations`, `ttsSpeed` for managed ElevenLabs speech, `greetingFile` (a fixed greeting spoken at once), and an opt-in side
-  coach (also on GPT-Live lines) whose note never joins the standing prompt.
+  coach (also on GPT-Live lines) whose note never joins the standing prompt. `thinking` is refused on `gemini-3.5-flash-lite`. The
+  coach is enabled with `advice: true` on a line and the installed `adviceBinding {alias, invoke, deadlineMs}`, which keeps that form.
 - An inbound caller's context and the information tools are asked of the operator's backend over HTTP: `contextBinding` and
-  `toolBinding` are `{url, token, deadlineMs}` and the old `alias`/`invoke` forms are refused at start with a message naming the new
-  one. The prepared caller contexts and `find_case` of the early candidates are removed and were never released.
-- An inbound call is answered with the line's greeting, a ringback (`answerTone`) plays while the speech session starts, and caller
-  audio spoken before the provider is ready is kept. A receipt keeps each side's transcript as the provider heard it, per call
+  `toolBinding` are `{url, token, deadlineMs}` and their old `alias`/`invoke` forms are refused at start with a message naming the new
+  one (the side coach's `adviceBinding` is not one of them). The prepared caller contexts and `find_case` of the early candidates are removed and were never released.
+- An inbound call is now answered with the line's greeting (beta.10 answered in silence) and rings on until the model's first words
+  (`answerTone`: `ringback` by default, `none` for a silent start), and caller audio spoken before the provider is ready is kept. A receipt keeps each side's transcript as the provider heard it, per call
   (`phone receipt --call-sid`); no audio is kept.
 - GPT-Live keeps its explicit hang-up delegation and binds reads and cancellation to delegation IDs; Gemini nested tool schemas,
   ElevenLabs client secrets and endpoint options, and Deepgram final responses and tool calls follow each provider's contract.
