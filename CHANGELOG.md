@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.0-beta.11
+
+GitHub release only (no npm), as beta.10. It rolls up the QA candidates rc.1 to rc.51 below (the code tree of rc.51; this release
+changes only the version). Gate: 206 tests (190 passed, 16 skipped on macOS), required CI, an independent final-diff review, and
+a synthetic scripted-call gate of the exact rc.51 tree on two installed instances. No real-call QA of this tree was performed.
+
+- Several lines in one install (`lines`), each with its own provider, voice, key and instructions; an inbound call takes the called
+  number's line, an outbound call `phone call --from LINE`; `maxCalls` lets calls run at once. `phone call --instructions -` takes a
+  per-call brief. A line's persona may live in files (`instructionsFiles` under `instructionsRoot`), read fresh at the start of every
+  call, so a change needs no restart; each receipt records the instruction digest.
+- Instruction and session limits belong to the provider (`limitsFor`): `openai`, `gemini` and `deepgram` keep 13,500 / 16,000
+  characters; `elevenlabs` takes instructions up to 100,000 and a session up to 120,000. `phone doctor` reports them.
+- New Deepgram Voice Agent adapter (Flux, `gemini-3.8-flash`, `gemini-3.5-flash-lite`, ElevenLabs Flash v2.5 speech) with `thinking`,
+  `pronunciations`, `ttsSpeed` for managed ElevenLabs speech, `greetingFile` (a fixed greeting spoken at once), and an opt-in side
+  coach (also on GPT-Live lines) whose note never joins the standing prompt.
+- An inbound caller's context and the information tools are asked of the operator's backend over HTTP: `contextBinding` and
+  `toolBinding` are `{url, token, deadlineMs}` and the old `alias`/`invoke` forms are refused at start with a message naming the new
+  one. The prepared caller contexts and `find_case` of the early candidates are removed and were never released.
+- An inbound call is answered with the line's greeting, a ringback (`answerTone`) plays while the speech session starts, and caller
+  audio spoken before the provider is ready is kept. A receipt keeps each side's transcript as the provider heard it, per call
+  (`phone receipt --call-sid`); no audio is kept.
+- GPT-Live keeps its explicit hang-up delegation and binds reads and cancellation to delegation IDs; Gemini nested tool schemas,
+  ElevenLabs client secrets and endpoint options, and Deepgram final responses and tool calls follow each provider's contract.
+  Provider failures keep only bounded codes, HTTP statuses and fixed categories, never descriptions, request content or keys.
+- Control-socket drain, resume and capacity read for safe listener replacement, an optional signed public path prefix, and per-call
+  metadata receipts (rc.1).
+
+## 0.1.0-beta.11.rc.51
+
+- Instruction and session limits belong to the provider (PR #46): each adapter declares `static limits = {instructions, session}` and `limitsFor(provider)` reads it, replacing the global 13,500 and 16,000 character constants that came from GPT-Live. `openai`, `gemini` and `deepgram` keep 13,500 / 16,000; `elevenlabs` takes instructions up to 100,000 and a session up to 120,000 characters (measured on the phone path). `phone doctor` reports each line's limits.
+- A Deepgram line admits `gemini-3.5-flash-lite` besides `gemini-3.8-flash` (PR #47). It has no thinking level, so a `thinking` setting is refused for it. The default model is unchanged.
+
 ## 0.1.0-beta.11.rc.50
 
 - `greetingFile` on a Deepgram line: a workspace file under `instructionsRoot` (at most 300 characters, read fresh at the start of every inbound call like the instruction files) holding the line's fixed greeting. Deepgram speaks it at once (`InjectAgentMessage`: no language-model request), so a caller hears it in about 0.3 to 0.7 s instead of the 3 to 5 s a model-written greeting takes (a live Sharon call: 5.0 s). Without the file the model writes the greeting as before; an unreadable file refuses the call and records its path, like an instruction file. Outbound calls are not greeted: the callee speaks first. The greeting goes through the TTS relay, so `pronunciations` apply to it. A receipt carries `greetingFixed: true`.
