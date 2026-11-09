@@ -26,7 +26,7 @@ export class ElevenLabsAdapter {
   static toolModels = ['eleven_realtime_v1_max'];
   static supportsTools(model) { return ElevenLabsAdapter.toolModels.includes(model); }
 
-  constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; }
+  constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; this.cancelled = new Set(); }
 
   async connection() {
     // The mint scopes the authoritative initial session; do not connect with default
@@ -61,11 +61,19 @@ export class ElevenLabsAdapter {
       case 'conversation.created': this.conversationId = event.conversation?.id; return [];
       case 'session.created': return [{type: 'send', message: this.configure()}];
       case 'session.updated': return this.ready ? [] : (this.ready = true, [{type: 'ready', id: this.conversationId}]);
+      case 'response.created': this.response = event.response?.id; return [];
+      case 'response.done': this.cancelled.delete(event.response?.id); if (event.response?.id === this.response) this.response = undefined; return [];
       case 'response.output_audio.delta':
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
+        if (this.cancelled.has(event.response_id)) return []; // the reply the caller already talked over
         return [{type: 'audio', audio: event.delta}];
       // Server-side voice activity says at once when the caller starts talking (a barge-in also stops what is queued at Twilio).
-      case 'input_audio_buffer.speech_started': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
+      // The provider cancels the reply in flight but keeps streaming it, faster than realtime, until `output_audio_buffer.cleared`
+      // (about 0.3 s later: seconds of speech). That audio would reach Twilio after the clear and play over the caller (a voicemail
+      // greeting that paused mid-sentence was talked over for six seconds), so the cancelled reply's audio is dropped from here.
+      case 'input_audio_buffer.speech_started':
+        if (this.response) this.cancelled.add(this.response);
+        return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
       case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller'}];
       // The caller's words arrive whole per utterance, the model's as it speaks.
       case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
