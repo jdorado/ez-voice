@@ -2,11 +2,18 @@
 
 ## Unreleased
 
-- ElevenLabs: a caller talking over a reply no longer hears the reply go on. The provider cancels the reply in flight but keeps
-  streaming it, faster than realtime, until its `output_audio_buffer.cleared` (about 0.3 s: seconds of speech), and that audio
-  reached Twilio after the barge-in `clear` and played. The adapter now drops a reply's audio from the moment the caller starts
-  talking. Seen when a voicemail greeting paused mid-sentence: the model answered the pause and was heard over the rest of the
-  greeting for about six seconds (a replay of that greeting forwarded 2.5 s after the clear before the change, none after).
+- ElevenLabs: an outbound call opens its speech session when it is dialed instead of when the callee answers. The provider takes
+  1.3 to 3.9 s after its socket opens to create a session (median `readyMs` 1.8 s, p90 3.2 s over the box's receipts, against 0.4 s
+  on the Deepgram stack before), so a callee's first "Hello?" waited for it. The session now starts with the dial, waits for the
+  media stream and is closed when the call ends unanswered, fails, is hung up while it rings, or after 60 s; it is used only
+  with the instructions the answer would start with. `readyMs` is then 0 and the receipt's `preopenMs` says how long it was open.
+- ElevenLabs: a caller who speaks as the call connects no longer ends the call. The greeting's `response.create` can meet the
+  provider's own reply to that caller; the provider's `conversation_already_has_active_response` ended the call as a rejected
+  provider (3 of 8 scripted calls), and now ends nothing, and no greeting is requested while a reply is already on its way.
+- The receipt keeps where the time goes: `startup` (`connectionMs`, `openMs`, `firstEventMs`, `readyMs`, from the session's creation),
+  `streamMs` (Twilio's answer webhook to its media stream), `preopenMs`, and per caller turn `turnEndMs` (the caller's last audible
+  frame to the provider ending their turn) and `replyMs` (that to the model's first sound), so a slow start or a slow reply is read
+  from the call's own receipt, live ones included.
 
 ## 0.1.0-beta.11
 

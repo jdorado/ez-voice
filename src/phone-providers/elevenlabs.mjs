@@ -24,6 +24,8 @@ export class ElevenLabsAdapter {
   static audioMeansSpeech = true;
   // Mini does not call tools: given end_call it writes "[end_call]" into its speech instead, while Max issues real function calls.
   static toolModels = ['eleven_realtime_v1_max'];
+  // A session can be opened while an outbound call rings and wait for its media stream (see `warmSeconds` in `configure`).
+  static warm = true;
   static supportsTools(model) { return ElevenLabsAdapter.toolModels.includes(model); }
 
   constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; this.cancelled = new Set(); }
@@ -45,13 +47,14 @@ export class ElevenLabsAdapter {
     const c = this.config;
     // ElevenLabs closes a session after max_duration_seconds (default 600, range 60..7200): follow the call length.
     return {type: 'session.update', session: {type: 'realtime', model: c.model, instructions: c.instructions, output_modalities: ['audio'],
-      max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15)),
+      max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15 + (c.warmSeconds ?? 0))),
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
       audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
   // An empty response request can produce no turn. Supply the actual transport event,
   // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
-  greet() { return [
+  // A caller who speaks as the call connects gets the provider's own reply to their turn: the greeting is not needed then.
+  greet() { return this.response ? [] : [
     {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
     {type: 'response.create'},
   ]; }
@@ -80,7 +83,11 @@ export class ElevenLabsAdapter {
       case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'response.output_item.done':
         return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
-      case 'error': return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];
+      case 'error':
+        // The provider answers a caller who speaks first on its own; a greeting asked for in the same instant meets that reply in flight.
+        // What was asked for is happening, so this ends nothing.
+        if (event.error?.code === 'conversation_already_has_active_response') return [];
+        return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];
       default: return [];
     }
   }

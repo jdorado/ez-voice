@@ -113,10 +113,12 @@ export class PhoneCalls {
     } catch (error) { this.db.exec('ROLLBACK');throw error; }
     if (existing) return {...await this.status(existing.id),created:false};
     const row=this.row(options.requestId);
+    this.hooks?.warm(options.requestId,{from,to:options.to,brief:options.instructions}); // the speech session starts while the phone rings
     try { return {...this.observe(row,await this.provider.createCall(options.to,options.requestId,from)),created:true}; }
     catch (error) {
       const observed=this.row(row.id);
       if (observed.call_sid) return {...this.receipt(observed),created:true};
+      this.hooks?.drop(row.id);
       if (error.status>=400 && error.status<500 && error.status!==408) this.db.prepare('UPDATE requests SET status=? WHERE id=?').run('rejected',row.id);
       throw Error('Outbound call creation unconfirmed or rejected; inspect call-status with the same request ID. Do not redial automatically');
     }
@@ -131,9 +133,11 @@ export class PhoneCalls {
   }
   async hangup(id) {
     const current=await this.status(id);
-    if (terminal.has(current.status)) return current;
+    if (terminal.has(current.status)) { this.hooks?.drop(id); return current; }
     if (!current.callSid) throw Error('Call creation is uncertain; inspect Twilio before another mutation');
-    return this.observe(this.row(id),await this.provider.endCall(current.callSid,['queued','initiated','ringing'].includes(current.status)?'canceled':'completed'));
+    const ended=this.observe(this.row(id),await this.provider.endCall(current.callSid,['queued','initiated','ringing'].includes(current.status)?'canceled':'completed'));
+    this.hooks?.drop(id);
+    return ended;
   }
   async stop() { await this.each(this.pendingAll(), row => this.hangup(row.id)); }
   close() { this.db.close(); }

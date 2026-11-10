@@ -262,3 +262,92 @@ test('one install serves several lines: inbound takes the called line, outbound 
     assert.equal(web.capacity().calls,2);
   } finally {for(const ws of sockets)ws.terminate();await web.close();}
 });
+
+// A fake ElevenLabs Realtime socket: it greets with session.created once open and acknowledges the session update.
+class ElevenSocket extends EventEmitter {
+  readyState=WebSocket.OPEN;bufferedAmount=0;events=[];
+  constructor(url,options){super();this.url=url;this.options=options;setImmediate(()=>{this.emit('open');this.receive({type:'session.created'});});}
+  receive(event){this.emit('message',Buffer.from(JSON.stringify(event)));}
+  send(raw){const event=JSON.parse(raw);this.events.push(event);if(event.type==='session.update')setImmediate(()=>this.receive({type:'session.updated'}));}
+  close(){this.readyState=WebSocket.CLOSED;this.emit('close',1000);}
+  terminate(){this.close();}
+}
+const eleven={...config,provider:'elevenlabs',model:'eleven_realtime_v1_max',voice:'vOZtmBu4RanHWgj2KUOY',apiKey:'sk_'+'a'.repeat(24)};
+async function elevenFixture(t,settings={}){
+  const directory=await mkdtemp(join(tmpdir(),'voice-preopen-')),provider=new TwilioProvider(),sockets=[],mints=[],records=[];
+  const line={...eleven,...settings},calls=new PhoneCalls(directory,line,provider);
+  t.after(async()=>{calls.close();await rm(directory,{recursive:true,force:true});});
+  const web=await servePhone(line,{port:0,host:'127.0.0.1',calls,provider:recorder().provider,socketFactory:(url,options)=>{const socket=new ElevenSocket(url,options);sockets.push(socket);return socket;},
+    fetch:async(url,options)=>{mints.push({url,options});return new Response(JSON.stringify({value:'client_secret_synthetic',expires_at:1}),{status:200});},record:async value=>{records.push(value);}});
+  t.after(()=>web.close());
+  const answer=async()=>{
+    provider.value.status='in-progress';
+    const ticket=(await (await post(web.port,'/incoming?outbound='+id,params())).text()).match(/value="([a-f0-9]+)"/)[1];
+    const ws=new WebSocket(`ws://127.0.0.1:${web.port}/media`,{headers:{'x-twilio-signature':twilioSignature(config.authToken,config.origin+'/media')}});
+    const output=[];ws.on('message',raw=>output.push(JSON.parse(raw.toString())));
+    await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    ws.send(JSON.stringify({event:'start',start:{accountSid:config.accountSid,callSid,streamSid,customParameters:{ticket},mediaFormat:{encoding:'audio/x-mulaw',sampleRate:8000,channels:1}}}));
+    return {ws,output};
+  };
+  return {line,directory,provider,calls,web,sockets,mints,records,answer};
+}
+
+test('an outbound call opens its speech session while the phone rings and the answer takes that very session',async t=>{
+  const {provider,calls,web,sockets,mints,records,answer}=await elevenFixture(t);let ws;
+  try {
+    await calls.call({requestId:id,to,instructions:'Call brief: reconnect about 12 Main Street.'},web.busy);
+    await wait(()=>sockets[0]?.events.some(event=>event.type==='session.update'));
+    assert.equal(mints.length,1,'the client secret was minted at dial time');
+    assert.match(JSON.parse(mints[0].options.body).session.instructions,/Call brief: reconnect about 12 Main Street\./);
+    await new Promise(resolve=>setTimeout(resolve,60)); // it rings: nothing has been said or heard
+    assert.deepEqual(sockets[0].events.map(event=>event.type),['session.update']);
+    const answered=await answer();ws=answered.ws;
+    ws.send(JSON.stringify({event:'media',media:{payload:'//8='}}));
+    await wait(()=>sockets[0].events.some(event=>event.type==='input_audio_buffer.append'));
+    assert.equal(sockets.length,1,'the call used the session opened at dial time, not a second one');assert.equal(mints.length,1);
+    sockets[0].receive({type:'response.created',response:{id:'resp_1'}});
+    sockets[0].receive({type:'response.output_audio.delta',response_id:'resp_1',delta:'//8='});
+    await wait(()=>answered.output.length);
+    assert.deepEqual(answered.output[0],{event:'media',streamSid,media:{payload:'//8='}});
+    ws.close();await wait(()=>records.length);
+    assert.equal(records[0].readyMs,0,'ready before the callee answered');
+    assert(records[0].preopenMs>=60,`open ${records[0].preopenMs} ms before the answer`);
+    assert.equal(records[0].callSid,callSid);assert.equal(records[0].inputBytes,2);
+    assert.equal(records[0].greetingFixed,undefined);
+  } finally {ws?.terminate();}
+});
+
+test('an outbound call that nobody answers closes its pre-opened session and writes no receipt',async t=>{
+  const {provider,calls,web,sockets,records}=await elevenFixture(t);
+  await calls.call({requestId:id,to},web.busy);
+  await wait(()=>sockets[0]?.events.length);
+  provider.value.status='no-answer';
+  assert.equal((await post(web.port,'/incoming?outbound='+id+'&status=1',params('no-answer'))).status,204);
+  await wait(()=>sockets[0].readyState===WebSocket.CLOSED);
+  assert.deepEqual(records,[]);
+  // a call that is hung up while it rings closes it too
+  const second=await elevenFixture(t);
+  await second.calls.call({requestId:id,to},second.web.busy);
+  await wait(()=>second.sockets[0]?.events.length);
+  await second.calls.hangup(id);
+  await wait(()=>second.sockets[0].readyState===WebSocket.CLOSED);
+});
+
+test('a call whose instructions changed while it rang starts a fresh session, and a failed dial closes the early one',async t=>{
+  const {line,calls,web,sockets,mints,records,answer}=await elevenFixture(t,{instructions:'Persona v1'});let ws;
+  try {
+    await calls.call({requestId:id,to},web.busy);
+    await wait(()=>sockets[0]?.events.length);
+    line.instructions='Persona v2'; // not what the early session was started with
+    ws=(await answer()).ws;
+    await wait(()=>sockets[1]?.events.length);
+    assert.equal(sockets[0].readyState,WebSocket.CLOSED,'the early session was dropped');
+    assert.match(JSON.parse(mints[1].options.body).session.instructions,/Persona v2/);
+    ws.close();await wait(()=>records.length);
+  } finally {ws?.terminate();}
+  const failing=await elevenFixture(t);
+  failing.provider.createCall=async()=>{throw Error('synthetic Twilio failure');};
+  await assert.rejects(()=>failing.calls.call({requestId:'failing',to},failing.web.busy),/unconfirmed/);
+  await new Promise(resolve=>setTimeout(resolve,50));
+  assert(failing.sockets.every(socket=>socket.readyState===WebSocket.CLOSED),'no session is left open for a call that was never placed');
+});

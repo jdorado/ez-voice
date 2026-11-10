@@ -12,16 +12,20 @@ import {PhoneAdvice} from './phone-advice.mjs';
 const RING_AFTER_READY_MS = 5000;
 const RING_LEAD_FRAMES = 15; // 300 ms of ring queued ahead at Twilio, so a late timer never leaves a gap
 
+// A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
+// until `adopt` hands it one.
+const DETACHED = {readyState: WebSocket.CONNECTING, bufferedAmount: 0, send() {}, close() {}};
+
 // Twilio carries raw mono G.711 mu-law at 8 kHz. This is the bridge between that stream and one speech provider: the
 // timers, the tool registry, the receipt and the hang-up rules are here, and each provider's wire protocol lives in an
 // adapter (src/phone-providers). The model owns the spoken conversation.
 export class PhoneAudio {
   constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}, adapter, fetch: fetchImpl, ringAfterReadyMs = RING_AFTER_READY_MS} = {}) {
-    this.twilio = twilio; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
+    this.twilio = twilio ?? DETACHED; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
     this.ringAfterReadyMs = ringAfterReadyMs;
     this.adapter = adapter ?? createAdapter(config, fetchImpl && {fetch: fetchImpl});
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
-    this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
+    this.createdAt = this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     if (config.ttsSpeed !== undefined) this.stats.ttsSpeed = config.ttsSpeed;
     if (config.greeting) this.stats.greetingFixed = true;
@@ -48,7 +52,7 @@ export class PhoneAudio {
     // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
     try {
       const connection = this.adapter.connection();
-      if (typeof connection?.then === 'function') connection.then(value => this.attach(value), error => {
+      if (typeof connection?.then === 'function') connection.then(value => { this.startup('connectionMs'); this.attach(value); }, error => {
         this.stats.providerError = Number.isInteger(error?.status) ? `HTTP_${error.status}` : 'connection_failed';
         this.close('provider_connection_failed');
       }); else this.attach(connection);
@@ -57,8 +61,9 @@ export class PhoneAudio {
   attach({url, headers}) {
     if (this.closing || this.completed) return;
     this.provider = this.socketFactory(url, {headers, maxPayload: 1024 * 1024});
-    this.provider.on('open', () => { for (const message of this.adapter.start()) this.send(message); });
+    this.provider.on('open', () => { this.startup('openMs'); for (const message of this.adapter.start()) this.send(message); });
     this.provider.on('message', (raw, binary) => {
+      this.startup('firstEventMs');
       try {
         this.event(binary && this.adapter.constructor.binaryAudio ? Buffer.from(raw) : JSON.parse(raw.toString()));
       } catch { this.close('invalid_provider_event'); }
@@ -78,6 +83,20 @@ export class PhoneAudio {
       this.complete();
     });
   }
+  // Where the time to a ready session goes, in ms from the call's start: the provider request before its socket (connectionMs),
+  // the socket open (openMs), its first message (firstEventMs); readyMs is the session accepting audio.
+  startup(phase) { const startup = this.stats.startup ??= {}; startup[phase] ??= Date.now() - this.createdAt; }
+  // The call's media stream has arrived for a session opened before it: from here it is the call. `readyMs` counts from now (0 when
+  // the session was already ready), `preopenMs` is how long it was open before.
+  adopt(twilio, {streamSid, call, finish}) {
+    const now = Date.now();
+    this.twilio = twilio; this.finish = finish; this.config.streamSid = streamSid; this.config.call = call;
+    this.stats.preopenMs = now - this.startedAt;
+    this.startedAt = this.activeAt = now; this.transcript = new Transcript(now);
+    if (this.ready) this.stats.readyMs = 0;
+    clearTimeout(this.duration); this.duration = setTimeout(() => this.close('duration_limit'), (this.config.maxCallSeconds ?? 180) * 1000);
+  }
+  get usable() { return !this.closing && !this.completed; }
   send(message) {
     if (this.provider?.readyState !== WebSocket.OPEN) return false;
     if (this.provider.bufferedAmount > 256000) { this.close('provider_backpressure'); return false; }
@@ -87,12 +106,14 @@ export class PhoneAudio {
     if (this.closing) return;
     if (typeof payload !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload) || payload.length > 16000) return this.close('invalid_audio');
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
-    if (this.config.greet && !this.conversationStarted && audible(payload)) this.lastInputSoundAt = Date.now();
+    const sound = audible(payload);
+    if (sound) this.soundHeardAt = Date.now();
+    if (this.config.greet && !this.conversationStarted && sound) this.lastInputSoundAt = Date.now();
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready && !this.flushingInput) this.forward(payload);
     else {
-      if (audible(payload)) this.startupSound = true;
+      if (sound) this.startupSound = true;
       this.queuedBytes += payload.length;
       // Twilio streams the caller's line nonstop (about 10,700 base64 characters a second): hold what arrives until the provider is
       // ready, as long as the start timeout (15 s) allows; that timeout, not this, ends a call whose provider never comes up.
@@ -149,7 +170,7 @@ export class PhoneAudio {
       case 'send': this.send(item.message); break;
       case 'ready':
         clearTimeout(this.startTimer); this.ready = true; this.stats.providerSessionId = item.id;
-        this.stats.ready = true; this.stats.readyMs = Date.now() - this.startedAt;
+        this.stats.ready = true; this.stats.readyMs = Date.now() - this.startedAt; this.startup('readyMs');
         this.flushInput();
         if (this.ringing) this.ringCap = setTimeout(() => this.stopRing('timeout'), this.ringAfterReadyMs);
         this.onReady();
@@ -158,6 +179,13 @@ export class PhoneAudio {
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
         const sound = audible(item.audio), now = Date.now();
         if (sound) {this.conversationStarted = true; this.activeAt = now;}
+        // The provider's share of the reply gap: the caller's turn ending (as the provider says it) to the model's first sound.
+        // The Twilio recording adds the network on both sides.
+        if (sound && this.callerStoppedAt !== undefined) {
+          const replies = this.stats.replyMs ??= [];
+          if (replies.length < 64) replies.push(now - this.callerStoppedAt);
+          this.callerStoppedAt = undefined;
+        }
         const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
         this.stats.firstAudioMs ??= now - this.startedAt;
         if (this.ringing) {
@@ -180,6 +208,13 @@ export class PhoneAudio {
         if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
+          const stopped = !item.start && item.text === undefined && item.delta === undefined; // the provider says their turn is over
+          if (item.start) this.callerStoppedAt = undefined;
+          else if (stopped) {
+            this.callerStoppedAt = Date.now();
+            // the provider's share before the model can answer: the caller's last audible frame to the provider ending their turn
+            if (this.soundHeardAt !== undefined && (this.stats.turnEndMs ??= []).length < 64) this.stats.turnEndMs.push(this.callerStoppedAt - this.soundHeardAt);
+          }
           if (item.start) { this.cancelTools(true); this.turn++; }
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else this.callerSpeaking = false;

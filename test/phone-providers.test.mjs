@@ -191,6 +191,39 @@ test('elevenlabs drops the audio a reply keeps streaming after the caller talked
   } finally { audio.close(); await audio.done; }
 });
 
+test('elevenlabs: a greeting that meets the provider\'s own reply to an early caller ends nothing, any other error still does', async () => {
+  const adapter = createAdapter({...base, provider: 'elevenlabs', apiKey: keys.elevenlabs, model: 'eleven_realtime_v1_max'});
+  assert.equal(adapter.greet().length, 2, 'a quiet start is greeted');
+  adapter.parse({type: 'response.created', response: {id: 'resp_1'}});
+  assert.deepEqual(adapter.greet(), [], 'no greeting while a reply is already on its way');
+  assert.deepEqual(adapter.parse({type: 'error', error: {code: 'conversation_already_has_active_response'}}), []);
+  assert.deepEqual(adapter.parse({type: 'error', error: {code: 'invalid_request'}}), [{type: 'error', code: 'invalid_request'}]);
+  const {audio, socket, finished} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  socket().receive({type: 'error', error: {code: 'conversation_already_has_active_response'}});
+  assert(!audio.closing, 'the call goes on');
+  socket().receive({type: 'error', error: {code: 'invalid_request'}});
+  await audio.done; assert.equal(finished[0].reason, 'provider_rejected');
+});
+
+test('the receipt says where the start went, how long the provider took to end the caller\'s turn and to reply', async () => {
+  const {audio, socket, finished} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  const loud = Buffer.from(pcmToUlaw(Int16Array.from({length: 160}, (_, i) => Math.round(12000 * Math.sin(i / 3))))).toString('base64');
+  audio.input(loud); await new Promise(r => setTimeout(r, 40)); // the caller's last sound, 40 ms before the provider ends their turn
+  socket().receive({type: 'input_audio_buffer.speech_started'}); socket().receive({type: 'input_audio_buffer.speech_stopped'});
+  socket().receive({type: 'conversation.item.input_audio_transcription.completed', transcript: 'hello'}); // a transcript is not a turn end
+  await new Promise(r => setTimeout(r, 30));
+  socket().receive({type: 'response.created', response: {id: 'resp_1'}}); socket().receive({type: 'response.output_audio.delta', response_id: 'resp_1', delta: loud});
+  socket().receive({type: 'response.output_audio.delta', response_id: 'resp_1', delta: loud}); // only the first sound after the caller's turn counts
+  audio.close(); await audio.done;
+  const {startup, replyMs, turnEndMs} = finished[0];
+  assert.equal(turnEndMs.length, 1); assert(turnEndMs[0] >= 35 && turnEndMs[0] < 1000, `turn end ${turnEndMs[0]} ms`);
+  assert.deepEqual(Object.keys(startup), ['connectionMs', 'openMs', 'firstEventMs', 'readyMs']);
+  assert(Object.values(startup).every(ms => Number.isInteger(ms) && ms >= 0));
+  assert.equal(replyMs.length, 1); assert(replyMs[0] >= 25 && replyMs[0] < 1000, `provider reply ${replyMs[0]} ms`);
+});
+
 test('tools false declares no tools at elevenlabs and gemini, and elevenlabs Mini never gets tools', async () => {
   const eleven = await call('elevenlabs', {model: 'eleven_realtime_v1_max', tools: false}, {fetch: mintOk().fetch});
   await wait(() => eleven.socket()); eleven.socket().receive({type: 'session.created'});

@@ -154,13 +154,26 @@ not call tools (it writes the tool name into its speech), so Voice declares none
 `end_call` (`phone doctor` shows `tools` as false then). `language` (default `en`) is the transcription language. The thinking variant needs a level at setup and the plain model refuses one, so `thinking` applies to the variant only (thinking adds delay). Gemini Live carries the key in the WebSocket URL: Voice
 never logs it, and no error text or receipt includes it.
 
+An outbound ElevenLabs call opens its session when it is dialed, not when the callee answers: ElevenLabs takes 1.3 to 3.9 s to bring up a
+configured session (the secret and the socket take about 0.2 s; minting the secret without the configuration and sending it with the
+session update only moves the wait), so a session started at the answer is not ready for
+the callee's first "Hello?". The session waits for the media stream with nothing sent to it, is used only if it is still open and was
+started with the very instructions the answer would start with (the line's files are read again at the answer), and is closed when
+the call ends unanswered, fails or is hung up while it rings, or after 60 s (Twilio rings 45 s). `readyMs` is then 0 and
+`preopenMs` says how long the session was open before the answer. Inbound calls and the other providers start at the answer, as
+before. The session's own `max_duration_seconds` includes that wait.
+
 Known limits: `firstAudioMs` is the first audio frame, not a turn latency: GPT-Live streams silence from
 the start, so there it is close to `readyMs`. The provider's own session cap applies too (ElevenLabs follows `maxCallSeconds`
 up to 7200 s; Gemini audio sessions end after about 15 minutes).
 
 A provider with no close handshake cannot confirm finalization: the receipt shows `finalized: false`, and `phone probe` proves
 only that the session started. The receipt names the `provider` and `model`, and records `readyMs` and `firstAudioMs`
-(milliseconds from the start of the bridge). It also keeps what each side said, as the provider transcribed it while the
+(milliseconds from the start of the bridge). `startup` splits the start from the session's creation: `connectionMs` (the request
+before the socket, where there is one), `openMs`, `firstEventMs` (the provider's first message) and `readyMs`; `preopenMs` is how
+long a session opened during the ring was open before the answer; `turnEndMs` and `replyMs` list, per caller turn, the two parts of the
+provider's share of the reply gap: the caller's last audible frame to the provider ending their turn (its turn detection waits for
+silence, and a noisy line is never silent), and that to the model's first sound (Twilio's recording adds the network); `streamMs` is the time from Twilio's answer webhook to its media stream starting. It also keeps what each side said, as the provider transcribed it while the
 call ran (`transcript`: turns of `caller` and `model`, each with its `text` and `atMs`; the caller's words are the
 provider's speech-to-text, the model's are its own), at most 100,000 characters a call (`transcriptTruncated` past that):
 whoever reads the receipt (`phone receipt --call-sid CA...`) has the call's words without a second transcription. A provider that reports when the caller starts talking over the model
