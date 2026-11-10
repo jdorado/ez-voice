@@ -39,7 +39,7 @@ export class PhoneAudio {
     if (config.greet && (config.answerTone ?? 'ringback') === 'ringback') this.ring();
     this.queued = []; this.queuedBytes = 0;
     this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000);
-    this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000);
+    if (twilio) this.duration = setTimeout(() => this.close('duration_limit'), (config.maxCallSeconds ?? 180) * 1000); // a pre-opened session's call has not begun
     this.idle = setInterval(() => {
       const now = Date.now();
       if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up once Twilio has played it
@@ -94,6 +94,7 @@ export class PhoneAudio {
     this.stats.preopenMs = now - this.startedAt;
     this.startedAt = this.activeAt = now; this.transcript = new Transcript(now);
     if (this.ready) this.stats.readyMs = 0;
+    else { clearTimeout(this.startTimer); this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000); } // the call's own start allowance
     clearTimeout(this.duration); this.duration = setTimeout(() => this.close('duration_limit'), (this.config.maxCallSeconds ?? 180) * 1000);
   }
   get usable() { return !this.closing && !this.completed; }
@@ -183,7 +184,7 @@ export class PhoneAudio {
         // The Twilio recording adds the network on both sides.
         if (sound && this.callerStoppedAt !== undefined) {
           const replies = this.stats.replyMs ??= [];
-          if (replies.length < 64) replies.push(now - this.callerStoppedAt);
+          if (replies.length < 64 && now - this.callerStoppedAt < 15000) replies.push(now - this.callerStoppedAt); // a later, unrelated sound is no reply
           this.callerStoppedAt = undefined;
         }
         const bytes = Buffer.from(item.audio, 'base64').length; this.stats.outputBytes += bytes;
@@ -208,9 +209,8 @@ export class PhoneAudio {
         if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
-          const stopped = !item.start && item.text === undefined && item.delta === undefined; // the provider says their turn is over
           if (item.start) this.callerStoppedAt = undefined;
-          else if (stopped) {
+          else if (item.stop) {
             this.callerStoppedAt = Date.now();
             // the provider's share before the model can answer: the caller's last audible frame to the provider ending their turn
             if (this.soundHeardAt !== undefined && (this.stats.turnEndMs ??= []).length < 64) this.stats.turnEndMs.push(this.callerStoppedAt - this.soundHeardAt);

@@ -183,18 +183,24 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
   // Outbound calls on a provider that can (`warm`) open their speech session when the call is dialed, so it is ready by the time the
   // callee answers instead of seconds after: one per request, closed when the call ends unanswered or is refused, taken when it
   // connects with the same instructions, never kept past the ring (Twilio rings 45 s).
-  const WARM_SECONDS = 60, warmups = new Map(); // request ID -> {bridge, timer}
-  const dropWarm = requestId => { const entry = warmups.get(requestId); if (!entry) return; warmups.delete(requestId); clearTimeout(entry.timer); entry.bridge.close('unanswered'); };
+  const WARM_SECONDS = 60, warmups = new Map(), wanted = new Set(); // request ID -> {bridge, timer}; wanted: the dialed requests still waiting for their session
+  const dropWarm = requestId => {
+    wanted.delete(requestId);
+    const entry = warmups.get(requestId); if (!entry) return;
+    warmups.delete(requestId); clearTimeout(entry.timer); entry.bridge.close('unanswered');
+  };
   const warm = async (requestId, {from, to, brief}) => {
     try {
       const settings = lineConfig(config, from ?? config.number);
-      if (unavailable || !settings || !providerClass(settings).warm) return;
+      // a session opened at the dial carries none of the call's relays or fixed greeting: only a line without them can use one
+      if (unavailable || !settings || !providerClass(settings).warm || settings.advice || settings.thinking !== undefined || settings.ttsSpeed !== undefined || settings.pronunciations !== undefined || settings.greetingFile) return;
+      wanted.add(requestId);
       const limits = limitsFor(settings.provider), text = withBrief(settings.instructionsFiles ? await instructionsFromFiles(settings, limits.instructions) : settings.instructions, brief);
-      if (text.length > limits.session || warmups.has(requestId)) return;
+      if (!wanted.delete(requestId) || unavailable || text.length > limits.session || warmups.has(requestId)) return; // the call was dropped, or the service stopped, while the files were read
       const bridge = new PhoneAudio(null, {...settings, instructions: text, greet: false, call: {id: requestId, remote: to, line: settings.number, direction: 'out'},
         information: config.information, warmSeconds: WARM_SECONDS}, () => {}, {socketFactory, fetch: fetchImpl});
       warmups.set(requestId, {bridge, timer: setTimeout(() => dropWarm(requestId), WARM_SECONDS * 1000)});
-    } catch { /* the call is answered without a pre-opened session */ }
+    } catch { wanted.delete(requestId); /* the call is answered without a pre-opened session */ }
   };
   if (calls) calls.hooks = {warm, drop: dropWarm};
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.loaded && ticket.expires<Date.now())tickets.delete(token);};
@@ -332,6 +338,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
             finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); thinkers.delete(thinkToken); speakers.get(speechToken)?.relay?.close(); speakers.delete(speechToken); }
           };
           // a session opened while the call rang is used when it is still open and was started with these very instructions
+          wanted.delete(ticket.requestId);
           const preopened = warmups.get(ticket.requestId); if (preopened) { warmups.delete(ticket.requestId); clearTimeout(preopened.timer); }
           if (preopened?.bridge.usable && preopened.bridge.config.instructions === instructions) { bridge = preopened.bridge; bridge.adopt(ws, {streamSid: start.streamSid, call: ticket.call, finish}); }
           else {

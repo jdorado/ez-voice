@@ -309,7 +309,10 @@ test('an outbound call opens its speech session while the phone rings and the an
     sockets[0].receive({type:'response.output_audio.delta',response_id:'resp_1',delta:'//8='});
     await wait(()=>answered.output.length);
     assert.deepEqual(answered.output[0],{event:'media',streamSid,media:{payload:'//8='}});
-    ws.close();await wait(()=>records.length);
+    await calls.hangup(id);await new Promise(resolve=>setTimeout(resolve,20));
+    assert.equal(sockets[0].readyState,WebSocket.OPEN,'a hang-up after the answer does not touch the session of the live call');
+    ws.close();await wait(()=>records.length);await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(records.length,1,'one receipt for one call');
     assert.equal(records[0].readyMs,0,'ready before the callee answered');
     assert(records[0].preopenMs>=60,`open ${records[0].preopenMs} ms before the answer`);
     assert.equal(records[0].callSid,callSid);assert.equal(records[0].inputBytes,2);
@@ -350,4 +353,45 @@ test('a call whose instructions changed while it rang starts a fresh session, an
   await assert.rejects(()=>failing.calls.call({requestId:'failing',to},failing.web.busy),/unconfirmed/);
   await new Promise(resolve=>setTimeout(resolve,50));
   assert(failing.sockets.every(socket=>socket.readyState===WebSocket.CLOSED),'no session is left open for a call that was never placed');
+});
+
+test('a pre-opened session that the provider closed while the phone rang is replaced by a fresh one at the answer',async t=>{
+  const {calls,web,sockets,mints,records,answer}=await elevenFixture(t);let ws;
+  try {
+    await calls.call({requestId:id,to},web.busy);
+    await wait(()=>sockets[0]?.events.length);
+    sockets[0].close(); // the provider ended the session during the ring
+    ws=(await answer()).ws;
+    await wait(()=>sockets[1]?.events.length);
+    assert.equal(mints.length,2);assert.equal(sockets.length,2);
+    ws.send(JSON.stringify({event:'media',media:{payload:'//8='}}));
+    await wait(()=>sockets[1].events.some(event=>event.type==='input_audio_buffer.append'));
+    ws.close();await wait(()=>records.length);
+    assert(records[0].readyMs>=0&&records[0].preopenMs===undefined,'a cold start, as before');
+  } finally {ws?.terminate();}
+});
+
+test('only a line that can use one opens a session early: not other providers, not an inbound call, not a forged or non-terminal callback, and the service closing ends it',async t=>{
+  // another provider: nothing opens at the dial
+  const other=await fixture(t);let opened=0;
+  const web=await servePhone(config,{port:0,host:'127.0.0.1',calls:other.calls,provider:recorder().provider,socketFactory:()=>{opened++;return new AudioProvider();},record:async()=>{}});
+  try {await other.calls.call({requestId:id,to},web.busy);await new Promise(resolve=>setTimeout(resolve,50));assert.equal(opened,0);} finally {await web.close();}
+  // an inbound ElevenLabs call mints nothing until its media stream starts
+  const inbound=await elevenFixture(t);
+  await post(inbound.web.port,'/incoming',new URLSearchParams({AccountSid:config.accountSid,CallSid:'CA'+'5'.repeat(32),To:config.number,From:'+15551230009'}));
+  await new Promise(resolve=>setTimeout(resolve,50));
+  assert.equal(inbound.mints.length,0);assert.equal(inbound.sockets.length,0);
+  // callbacks that are not the call's terminal status leave the early session alone
+  const {provider,calls,web:service,sockets}=await elevenFixture(t);
+  await calls.call({requestId:id,to},service.busy);
+  await wait(()=>sockets[0]?.events.length);
+  const path='/incoming?outbound='+id+'&status=1';
+  assert.equal((await post(service.port,path,params('in-progress'))).status,403);
+  const wrong=params('completed');wrong.set('CallSid','CA'+'6'.repeat(32));assert.equal((await post(service.port,path,wrong)).status,403);
+  const forged=await fetch(`http://127.0.0.1:${service.port}${path}`,{method:'POST',body:params('completed'),headers:{'x-twilio-signature':'x'.repeat(28)}});assert.equal(forged.status,403);
+  await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(sockets[0].readyState,WebSocket.OPEN,'still waiting for the call');
+  // closing the service ends it
+  await service.close();
+  assert.equal(sockets[0].readyState,WebSocket.CLOSED);
 });
