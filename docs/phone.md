@@ -214,7 +214,7 @@ GPT-Live has no direct function calling; tools run on its backend (Responses del
 the tools natively: the adapter declares them in the session and answers each call (a `function_call_output` at ElevenLabs, a
 `toolResponse` matched by `id` at Gemini), with no backend model. After `end_call` (a final tool) ElevenLabs is not asked to continue and Gemini gets no tool response (it narrated "the call has
 ended" when it did), so the goodbye spoken before the call is the last thing said. With GPT-Live the phone session starts with
-`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6-luna` at reasoning effort `toolEffort`, default `none`; a line that sets only `toolModel` runs it at `none` too, so set `toolEffort` with a model that needs reasoning), instructions that say the backend
+`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6.1-sol` at reasoning effort `toolEffort`, default `low`), instructions that say the backend
 can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
 backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a
 `function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`; every provider declares it.
@@ -426,9 +426,12 @@ for speech sessions that must not write. No native-agent delegation is granted t
 Caller audio is queued until provider readiness and forwarded even while local ringback plays.
 An audible startup gets a single 250 ms acknowledgment window after its queued audio is forwarded before the greeting is
 requested; continuing line noise cannot extend that wait (raw line energy cannot tell speech from noise, and the provider owns
-turn-taking). Words the provider recognized in that window suppress the greeting, and the ElevenLabs adapter also requests none
-once a reply is on its way; the other adapters send the greeting as asked, so a caller who is speaking when the window ends
-can hear it (a provider that refuses a greeting during caller speech, such as Deepgram's injection, is not handled here).
+turn-taking). Once the provider has produced words (the caller's transcript or the model's) or the model has sounded, no
+greeting is requested; a bare speech start does not count. The ElevenLabs adapter also declines it while a reply is on its way
+or the caller's speech (as the provider reports it) is still open, and the bridge asks again one window after the caller stops,
+so a caller who is mid-sentence is not talked over and a voice-activity blip with no words still gets the greeting. The other
+adapters send the greeting as asked. Deepgram refuses an injected message while somebody speaks: the receipt then carries the
+warning `injection_refused` and nothing else is done.
 ElevenLabs receives a call-connected event before its initial response request; an empty
 response request alone is not reliable proof of an audible greeting.
 

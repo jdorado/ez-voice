@@ -138,21 +138,25 @@ export class PhoneAudio {
       else {
         this.flushingInput = false;
         // Earlier caller frames must reach the provider before this transport turn.
-        const greet = () => {
-          if (this.closing || this.completed || !this.config.greet || this.conversationStarted) return;
-          const messages = this.adapter.greet();
-          if (messages.length) this.stats.greetingMs = Date.now() - this.startedAt;
-          for (const message of messages) this.send(message);
-        };
         // Preserve and forward an early hello first, then give the provider one short window to acknowledge it. Raw line energy
-        // cannot tell speech from noise, so it never extends the wait: the provider owns turn-taking. Words the provider recognized
-        // in the window (`conversationStarted`) suppress the greeting, and ElevenLabs also withholds it once a reply is in flight
-        // (its `greet`); the other adapters send it as asked. Quiet starts wait nothing.
-        if (this.startupSound) this.greetingTimer = setTimeout(greet, STARTUP_SPEECH_ACK_MS);
-        else greet();
+        // cannot tell speech from noise, so it never extends the wait: the provider owns turn-taking. Once the provider has produced
+        // words (the caller's transcript or the model's) or the model has sounded, no greeting is asked for (`conversationStarted`;
+        // a bare speech start does not count), and an adapter may decline it (see `greet`). Quiet starts wait nothing.
+        if (this.startupSound) this.greetingTimer = setTimeout(() => this.greet(), STARTUP_SPEECH_ACK_MS);
+        else this.greet();
       }
     };
     pump();
+  }
+  // Ask the model to speak first, once. An adapter that returns nothing declined for now (ElevenLabs: a reply is already on its way,
+  // or the caller's speech is still open): it is asked again one acknowledgment window after the caller stops.
+  greet() {
+    if (this.closing || this.completed || !this.config.greet || this.conversationStarted || this.greeted) return;
+    const messages = this.adapter.greet();
+    this.greetingPending = !messages.length;
+    if (!messages.length) return;
+    this.greeted = true; this.stats.greetingMs = Date.now() - this.startedAt;
+    for (const message of messages) this.send(message);
   }
   event(event) { for (const item of this.adapter.parse(event)) this.handle(item); }
   handle(item) {
@@ -207,6 +211,7 @@ export class PhoneAudio {
           if (item.start) this.callerStoppedAt = undefined;
           else if (item.stop) {
             this.callerStoppedAt = Date.now();
+            if (this.greetingPending) { clearTimeout(this.greetingTimer); this.greetingTimer = setTimeout(() => this.greet(), STARTUP_SPEECH_ACK_MS); }
             // the provider's share before the model can answer: the caller's last audible frame to the provider ending their turn
             if (this.soundHeardAt !== undefined && (this.stats.turnEndMs ??= []).length < 64) this.stats.turnEndMs.push(this.callerStoppedAt - this.soundHeardAt);
           }

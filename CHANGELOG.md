@@ -2,15 +2,15 @@
 
 ## Unreleased
 
-- Inbound greeting: an audible startup (a caller who speaks, or line noise, as the call connects) gets one 250 ms window after its audio
-  is forwarded, then the greeting is requested; continuing line energy no longer defers it by up to 5 s (it was 1.2 s plus re-deferral
-  while the line stayed above the audible level). Early caller audio is still forwarded first, a provider-recognized caller still
-  suppresses the greeting, and ElevenLabs still requests none while a reply is in flight and tolerates the collision error.
+- Inbound greeting: an audible startup (a caller who speaks, or line noise, as the call connects) gets one 250 ms window after its
+  audio is forwarded, then the greeting is requested; continuing line energy no longer defers it (it was 1.2 s, then re-deferred in
+  250 ms steps for up to 5 s while the line stayed above the audible level). Early caller audio is still forwarded first. Once the
+  provider has produced words or the model has sounded, no greeting is requested. ElevenLabs also declines it while a reply is in
+  flight or the caller's speech is still open, and the bridge asks again 250 ms after the caller stops; the collision error stays
+  harmless. Deepgram's `InjectionRefused` (a greeting asked for while somebody speaks) is kept as the receipt warning
+  `injection_refused`.
 - Receipts: `greetingMs` (the greeting request), `firstSpeechMs` (the first audible chunk; `firstAudioMs` may be silence) and
   `delegations` (GPT-Live backend requests, counted even when one calls no function).
-- GPT-Live phone tool backend defaults to `gpt-6-luna` at reasoning effort `none` (was `gpt-6.1-sol`, `low`); `toolModel` and
-  `toolEffort` on a line still win (a line that sets only `toolModel` now runs at `none`, not `low`). Checked only by a session-start configuration probe on the previous live GPT-Live install; no
-  Quarre line uses GPT-Live now.
 - ElevenLabs: an outbound call opens its speech session when it is dialed instead of when the callee answers. The provider takes
   1.3 to 3.9 s after its socket opens to create a session (median `readyMs` 1.8 s, p90 3.2 s over the box's receipts, against 0.4 s
   on the Deepgram stack before), so a callee's first "Hello?" waited for it. The session now starts with the dial, waits for the

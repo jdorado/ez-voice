@@ -116,6 +116,69 @@ test('GPT-Live exposes backend hang-up delegation to the voice model only with t
   assert.deepEqual(disabled.delegation, {type: 'client'});
 });
 
+// An ElevenLabs inbound call whose session becomes ready: queued caller audio is `frames` loud 20 ms frames, so the startup is audible.
+async function eleven(frames) {
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, greet: true}, {fetch: mintOk().fetch});
+  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64');
+  for (let i = 0; i < frames; i++) c.audio.input(frame);
+  await wait(() => c.socket()); c.socket().receive({type: 'session.created'}); c.socket().receive({type: 'session.updated'});
+  return {...c, frame, greetings: () => c.socket().events.filter(e => e.type === 'response.create').length};
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+test('elevenlabs: a quiet start is greeted at once, and line noise that the provider never calls speech is greeted after the 250 ms window', async () => {
+  const quiet = await eleven(0);
+  assert.equal(quiet.greetings(), 1); assert(quiet.audio.stats.greetingMs < 200, `greeted at ${quiet.audio.stats.greetingMs} ms`);
+  quiet.audio.close('test'); quiet.socket().close(); await quiet.audio.done;
+  const noisy = await eleven(3);
+  const input = setInterval(() => noisy.audio.input(noisy.frame), 20);
+  try {
+    assert.equal(noisy.greetings(), 0, 'not before the window');
+    await wait(() => noisy.greetings() === 1);
+    assert(noisy.audio.stats.greetingMs >= 200 && noisy.audio.stats.greetingMs < 800, `greeted at ${noisy.audio.stats.greetingMs} ms, noise still on the line`);
+  } finally { clearInterval(input); noisy.audio.close('test'); noisy.socket().close(); await noisy.audio.done; }
+});
+
+test('elevenlabs: a caller still talking when the window ends is not greeted over; the greeting waits for them to stop', async () => {
+  const {audio, socket, frame, greetings} = await eleven(3);
+  socket().receive({type: 'input_audio_buffer.speech_started'});
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await sleep(450);
+    assert.equal(greetings(), 0, 'no greeting over an open caller turn');
+    socket().receive({type: 'input_audio_buffer.speech_stopped'}); // a speech blip: no words, no reply from the provider
+    await sleep(100);
+    assert.equal(greetings(), 0, 'one window after they stop, not at once');
+    await wait(() => greetings() === 1);
+    assert(audio.stats.greetingMs >= 450);
+    socket().receive({type: 'input_audio_buffer.speech_stopped'});
+    await sleep(350);
+    assert.equal(greetings(), 1, 'the greeting is asked for once');
+  } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
+});
+
+test('elevenlabs: a caller who was answered by the provider itself is never greeted, whether the reply was in flight or already spoken', async () => {
+  const {audio, socket, frame, greetings} = await eleven(3);
+  socket().receive({type: 'input_audio_buffer.speech_started'});
+  socket().receive({type: 'response.created', response: {id: 'resp_1'}});
+  socket().receive({type: 'input_audio_buffer.speech_stopped'});
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await sleep(450);
+    assert.equal(greetings(), 0, 'a reply is on its way');
+    socket().receive({type: 'response.output_audio.delta', response_id: 'resp_1', delta: frame});
+    socket().receive({type: 'response.done', response: {id: 'resp_1'}});
+    await sleep(350);
+    assert.equal(greetings(), 0, 'and once it has spoken');
+    assert.equal(audio.stats.greetingMs, undefined);
+  } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
+});
+
+test('deepgram keeps a refused injection as a receipt warning and nothing else', () => {
+  const adapter = createAdapter({...base, provider: 'deepgram', apiKey: keys.deepgram, llmApiKey: keys.gemini, ttsApiKey: keys.elevenlabs});
+  assert.deepEqual(adapter.parse({type: 'InjectionRefused', message: 'agent is speaking'}), [{type: 'warning', code: 'injection_refused'}]);
+});
+
 test('elevenlabs mints a client secret, configures the session natively and passes mu-law straight through', async () => {
   const mint = mintOk();
   const {audio, twilio, socket, finished, ready} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', voice: 'vOZtmBu4RanHWgj2KUOY', idleSeconds: 0.4, language: 'es'}, {fetch: mint.fetch});
