@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- ElevenLabs: a caller talking over a reply no longer hears the reply go on. The provider cancels the reply in flight but keeps
+  streaming it, faster than realtime, until its `output_audio_buffer.cleared` (about 0.3 s: seconds of speech), and that audio
+  reached Twilio after the barge-in `clear` and played. The adapter now drops a reply's audio from the moment the caller starts
+  talking. Seen when a voicemail greeting paused mid-sentence: the model answered the pause and was heard over the rest of the
+  greeting for about six seconds (a replay of that greeting forwarded 2.5 s after the clear before the change, none after).
+
 ## 0.1.0-beta.11
 
 GitHub release only (no npm), as beta.10. It rolls up the QA candidates rc.1 to rc.51 (entries below; a skipped number has none) and is the code tree of rc.51; this release

@@ -170,6 +170,27 @@ test('elevenlabs runs end_call natively and answers the function call', async ()
   await audio.done;
 });
 
+test('elevenlabs drops the audio a reply keeps streaming after the caller talked over it', async () => {
+  const {audio, twilio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  const media = () => twilio.sent.filter(m => m.event === 'media').length, delta = id => socket().receive({type: 'response.output_audio.delta', response_id: id, delta: '//8='});
+  try {
+    socket().receive({type: 'response.created', response: {id: 'resp_1'}}); delta('resp_1');
+    assert.equal(media(), 1);
+    socket().receive({type: 'input_audio_buffer.speech_started'});
+    assert.deepEqual(twilio.sent.at(-1), {event: 'clear', streamSid});
+    delta('resp_1'); delta('resp_1'); // the provider streams the cancelled reply until it confirms: after the clear, none of it may reach Twilio
+    assert.equal(media(), 1, 'a cancelled reply plays no more');
+    socket().receive({type: 'output_audio_buffer.cleared', response_id: 'resp_1'}); socket().receive({type: 'response.done', response: {id: 'resp_1', status: 'cancelled'}});
+    socket().receive({type: 'response.created', response: {id: 'resp_2'}}); delta('resp_2');
+    assert.equal(media(), 2, 'the next reply plays');
+    socket().receive({type: 'response.done', response: {id: 'resp_2', status: 'completed'}});
+    socket().receive({type: 'input_audio_buffer.speech_started'}); // a sound while the model is silent cancels nothing
+    socket().receive({type: 'response.created', response: {id: 'resp_3'}}); delta('resp_3');
+    assert.equal(media(), 3, 'a reply that follows a sound while the model was silent plays');
+  } finally { audio.close(); await audio.done; }
+});
+
 test('tools false declares no tools at elevenlabs and gemini, and elevenlabs Mini never gets tools', async () => {
   const eleven = await call('elevenlabs', {model: 'eleven_realtime_v1_max', tools: false}, {fetch: mintOk().fetch});
   await wait(() => eleven.socket()); eleven.socket().receive({type: 'session.created'});
