@@ -11,7 +11,8 @@ import {DeepgramAdapter} from './deepgram.mjs';
 // its constructor keeps the validated `config` (model and voice resolved) as `this.config`; and:
 //   connection()                 -> {url, headers}, or a promise of it (ElevenLabs mints a client secret first)
 //   start()                      -> messages sent as soon as the socket opens
-//   greet()                      -> messages that ask the model to speak first on an answered call ([] when unsupported)
+//   greet({bounded})             -> messages that ask the model to speak first on an answered call ([] when unsupported or declined for
+//                                   now; `bounded` is the bridge's last ask, 5 s after the caller's audio was flushed)
 //   audioIn(base64 mu-law 8 kHz) -> messages carrying one chunk of the caller's audio
 //   parse(providerEvent)         -> normalized items (Buffer for a binaryAudio provider):
 //     {type: 'ready', id}        the session accepts audio

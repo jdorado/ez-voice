@@ -13,6 +13,9 @@ const RING_AFTER_READY_MS = 5000;
 const RING_LEAD_FRAMES = 15; // 300 ms of ring queued ahead at Twilio, so a late timer never leaves a gap
 // After an early caller sound has been forwarded, how long the provider has to acknowledge it before the greeting is requested.
 const STARTUP_SPEECH_ACK_MS = 250;
+// The longest an answered call waits for a greeting that an adapter keeps declining because the caller's speech is still open: a turn
+// that never closes (a speech-like background) must not leave the line silent. A reply already in flight is never overridden.
+const GREETING_BOUND_MS = 5000;
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
 // until `adopt` hands it one.
@@ -142,6 +145,7 @@ export class PhoneAudio {
         // cannot tell speech from noise, so it never extends the wait: the provider owns turn-taking. Once the provider has produced
         // words (the caller's transcript or the model's) or the model has sounded, no greeting is asked for (`conversationStarted`;
         // a bare speech start does not count), and an adapter may decline it (see `greet`). Quiet starts wait nothing.
+        if (this.config.greet) this.greetingBound = setTimeout(() => this.greet(true), GREETING_BOUND_MS);
         if (this.startupSound) this.greetingTimer = setTimeout(() => this.greet(), STARTUP_SPEECH_ACK_MS);
         else this.greet();
       }
@@ -149,10 +153,11 @@ export class PhoneAudio {
     pump();
   }
   // Ask the model to speak first, once. An adapter that returns nothing declined for now (ElevenLabs: a reply is already on its way,
-  // or the caller's speech is still open): it is asked again one acknowledgment window after the caller stops.
-  greet() {
+  // or the caller's speech is still open): it is asked again one acknowledgment window after each caller stop, and once more
+  // GREETING_BOUND_MS after the caller's audio was flushed with `bounded`, which overrides an open caller turn but not a reply.
+  greet(bounded = false) {
     if (this.closing || this.completed || !this.config.greet || this.conversationStarted || this.greeted) return;
-    const messages = this.adapter.greet();
+    const messages = this.adapter.greet({bounded});
     this.greetingPending = !messages.length;
     if (!messages.length) return;
     this.greeted = true; this.stats.greetingMs = Date.now() - this.startedAt;
@@ -369,7 +374,7 @@ export class PhoneAudio {
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.closing = true; this.stats.reason = reason;
-    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound);
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     if (this.provider?.readyState === WebSocket.OPEN) {
@@ -385,7 +390,7 @@ export class PhoneAudio {
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
-    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound);
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();

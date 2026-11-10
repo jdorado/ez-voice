@@ -428,9 +428,10 @@ An audible startup gets a single 250 ms acknowledgment window after its queued a
 requested; continuing line noise cannot extend that wait (raw line energy cannot tell speech from noise, and the provider owns
 turn-taking). Once the provider has produced words (the caller's transcript or the model's) or the model has sounded, no
 greeting is requested; a bare speech start does not count. The ElevenLabs adapter also declines it while a reply is on its way
-or the caller's speech (as the provider reports it) is still open, and the bridge asks again one window after the caller stops,
-so a caller who is mid-sentence is not talked over and a voice-activity blip with no words still gets the greeting. The other
-adapters send the greeting as asked. Deepgram refuses an injected message while somebody speaks: the receipt then carries the
+or the caller's speech (as the provider reports it) is still open, and the bridge asks again one window after each caller stop,
+so a caller who is mid-sentence is not talked over and a voice-activity blip with no words still gets the greeting. A caller
+turn that never closes (a speech-like background) cannot leave the call silent: 5 s after the caller's audio was flushed the
+greeting is sent anyway; a reply already in flight is never overridden. The other adapters send the greeting as asked. Deepgram refuses an injected message while somebody speaks: the receipt then carries the
 warning `injection_refused` and nothing else is done.
 ElevenLabs receives a call-connected event before its initial response request; an empty
 response request alone is not reliable proof of an audible greeting.

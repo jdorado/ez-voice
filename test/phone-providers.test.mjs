@@ -157,6 +157,24 @@ test('elevenlabs: a caller still talking when the window ends is not greeted ove
   } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
 });
 
+test('elevenlabs: a caller turn that never closes does not leave the call silent: the greeting is sent 5 s after the flush, a reply in flight never is', async () => {
+  const {audio, socket, frame, greetings} = await eleven(3);
+  socket().receive({type: 'input_audio_buffer.speech_started'}); // no speech_stopped follows: a speech-like background
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await sleep(4500);
+    assert.equal(greetings(), 0, 'nothing before the bound');
+    await wait(() => greetings() === 1);
+    assert(audio.stats.greetingMs >= 4900 && audio.stats.greetingMs < 6500, `greeted at ${audio.stats.greetingMs} ms`);
+  } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
+  const adapter = createAdapter({...base, provider: 'elevenlabs', apiKey: keys.elevenlabs, model: 'eleven_realtime_v1_max'});
+  adapter.parse({type: 'input_audio_buffer.speech_started'});
+  assert.deepEqual(adapter.greet(), []); assert.equal(adapter.greet({bounded: true}).length, 2, 'the bound overrides an open caller turn');
+  const busy = createAdapter({...base, provider: 'elevenlabs', apiKey: keys.elevenlabs, model: 'eleven_realtime_v1_max'});
+  busy.parse({type: 'response.created', response: {id: 'resp_1'}});
+  assert.deepEqual(busy.greet({bounded: true}), [], 'but never a reply in flight');
+});
+
 test('elevenlabs: a caller who was answered by the provider itself is never greeted, whether the reply was in flight or already spoken', async () => {
   const {audio, socket, frame, greetings} = await eleven(3);
   socket().receive({type: 'input_audio_buffer.speech_started'});

@@ -6,8 +6,9 @@
   audio is forwarded, then the greeting is requested; continuing line energy no longer defers it (it was 1.2 s, then re-deferred in
   250 ms steps for up to 5 s while the line stayed above the audible level). Early caller audio is still forwarded first. Once the
   provider has produced words or the model has sounded, no greeting is requested. ElevenLabs also declines it while a reply is in
-  flight or the caller's speech is still open, and the bridge asks again 250 ms after the caller stops; the collision error stays
-  harmless. Deepgram's `InjectionRefused` (a greeting asked for while somebody speaks) is kept as the receipt warning
+  flight or the caller's speech is still open, and the bridge asks again 250 ms after each caller stop, and once more 5 s after the
+  caller's audio was flushed whatever the caller's turn (a reply in flight is never overridden), so a turn that never closes cannot
+  leave the call silent; the collision error stays harmless. Deepgram's `InjectionRefused` (a greeting asked for while somebody speaks) is kept as the receipt warning
   `injection_refused`.
 - Receipts: `greetingMs` (the greeting request), `firstSpeechMs` (the first audible chunk; `firstAudioMs` may be silence) and
   `delegations` (GPT-Live backend requests, counted even when one calls no function).

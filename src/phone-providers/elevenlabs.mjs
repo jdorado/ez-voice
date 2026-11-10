@@ -55,8 +55,9 @@ export class ElevenLabsAdapter {
   // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
   // A caller who speaks as the call connects gets the provider's own reply to their turn: the greeting is not needed then, and a
   // greeting asked for while the caller's speech is still open leaves their turn unanswered until they repeat it. The bridge asks
-  // again when the caller stops (nothing is left to answer if the provider has replied by then).
-  greet() { return this.response || this.callerSpeaking ? [] : (this.greetedAt = Date.now(), [
+  // again when the caller stops (nothing is left to answer if the provider has replied by then), and with `bounded` it greets anyway:
+  // a caller turn that never closes (a speech-like background) must not leave the line silent. A reply in flight is never overridden.
+  greet({bounded = false} = {}) { return this.response || (this.callerSpeaking && !bounded) ? [] : (this.greetedAt = Date.now(), [
     {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
     {type: 'response.create'},
   ]); }
