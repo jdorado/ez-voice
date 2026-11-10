@@ -11,6 +11,8 @@ import {PhoneAdvice} from './phone-advice.mjs';
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
 const RING_AFTER_READY_MS = 5000;
 const RING_LEAD_FRAMES = 15; // 300 ms of ring queued ahead at Twilio, so a late timer never leaves a gap
+// After an early caller sound has been forwarded, how long the provider has to acknowledge it before the greeting is requested.
+const STARTUP_SPEECH_ACK_MS = 250;
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
 // until `adopt` hands it one.
@@ -109,7 +111,6 @@ export class PhoneAudio {
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
     const sound = audible(payload);
     if (sound) this.soundHeardAt = Date.now();
-    if (this.config.greet && !this.conversationStarted && sound) this.lastInputSoundAt = Date.now();
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready && !this.flushingInput) this.forward(payload);
@@ -137,23 +138,16 @@ export class PhoneAudio {
       else {
         this.flushingInput = false;
         // Earlier caller frames must reach the provider before this transport turn.
-        const drainedAt = Date.now();
         const greet = () => {
           if (this.closing || this.completed || !this.config.greet || this.conversationStarted) return;
-          // A timeout is not evidence that a caller stopped. Defer until a quiet gap;
-          // a raw VAD event alone (cough/noise) does not permanently cancel the opener.
-          // Without recognized words, energy alone cannot distinguish noise from
-          // speech. After five seconds prefer a greeting to an indefinitely silent
-          // answered call; normal provider barge-in still applies after it starts.
-          if (Date.now() - (this.lastInputSoundAt ?? 0) < 500 && Date.now() - drainedAt < 5000) {
-            this.greetingTimer = setTimeout(greet, 250); return;
-          }
-          for (const message of this.adapter.greet()) this.send(message);
+          const messages = this.adapter.greet();
+          if (messages.length) this.stats.greetingMs = Date.now() - this.startedAt;
+          for (const message of messages) this.send(message);
         };
-        // Sending audio is not an acknowledgement that server VAD processed it. Give
-        // audible startup input a bounded detection window; background noise must not
-        // leave an answered call silent forever. Quiet starts need no extra delay.
-        if (this.startupSound) this.greetingTimer = setTimeout(greet, 1200);
+        // Preserve and forward an early hello first, then give the provider one short window to acknowledge it. Raw line energy
+        // cannot tell speech from noise, so it never extends the wait: the provider owns turn-taking (a caller who really is
+        // speaking is answered by the provider and the greeting is not requested, see each adapter's `greet`). Quiet starts wait nothing.
+        if (this.startupSound) this.greetingTimer = setTimeout(greet, STARTUP_SPEECH_ACK_MS);
         else greet();
       }
     };
@@ -179,7 +173,7 @@ export class PhoneAudio {
       case 'audio':
         if (typeof item.audio !== 'string' || item.audio.length > 1000000) return this.close('invalid_provider_audio');
         const sound = audible(item.audio), now = Date.now();
-        if (sound) {this.conversationStarted = true; this.activeAt = now;}
+        if (sound) {this.conversationStarted = true; this.activeAt = now; this.stats.firstSpeechMs ??= now - this.startedAt;}
         // The provider's share of the reply gap: the caller's turn ending (as the provider says it) to the model's first sound.
         // The Twilio recording adds the network on both sides.
         if (sound && this.callerStoppedAt !== undefined) {
@@ -224,7 +218,7 @@ export class PhoneAudio {
         break;
       case 'advice_ack': this.advice?.acknowledged(); break;
       case 'turn':
-        if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; }
+        if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; this.stats.delegations = (this.stats.delegations ?? 0) + 1; }
         this.delegating = item.request; this.delegatingAt = Date.now();
         break;
       case 'settled': case 'cancelled':

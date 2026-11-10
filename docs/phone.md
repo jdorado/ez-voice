@@ -171,8 +171,10 @@ the start, so there it is close to `readyMs`. The provider's own session cap app
 up to 7200 s; Gemini audio sessions end after about 15 minutes).
 
 A provider with no close handshake cannot confirm finalization: the receipt shows `finalized: false`, and `phone probe` proves
-only that the session started. The receipt names the `provider` and `model`, and records `readyMs` and `firstAudioMs`
-(milliseconds from the start of the bridge). `startup` splits the start from the session's creation: `connectionMs` (the request
+only that the session started. The receipt names the `provider` and `model`, and records `readyMs`, `greetingMs` (the greeting request, inbound calls), `firstAudioMs` (the first output chunk,
+which may be silence) and `firstSpeechMs` (the first audible chunk), and `delegations` (GPT-Live backend requests, counted even when
+a request calls no function, so a slow spoken reply is not mistaken for a tool-free path). The times
+are milliseconds from the start of the bridge. `startup` splits the start from the session's creation: `connectionMs` (the request
 before the socket, where there is one), `openMs`, `firstEventMs` (the provider's first message) and `readyMs`; `preopenMs` is how
 long a session opened during the ring was open before the answer; `turnEndMs` (per caller turn the provider ended) and `replyMs` (per reply that followed) are the two parts of the
 provider's share of the reply gap: the caller's last audible frame to the provider ending their turn (its turn detection waits for
@@ -212,7 +214,7 @@ GPT-Live has no direct function calling; tools run on its backend (Responses del
 the tools natively: the adapter declares them in the session and answers each call (a `function_call_output` at ElevenLabs, a
 `toolResponse` matched by `id` at Gemini), with no backend model. After `end_call` (a final tool) ElevenLabs is not asked to continue and Gemini gets no tool response (it narrated "the call has
 ended" when it did), so the goodbye spoken before the call is the last thing said. With GPT-Live the phone session starts with
-`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6.1-sol` at reasoning effort `toolEffort`, default `low`), instructions that say the backend
+`delegation: {type: 'responses'}`, a backend model (`toolModel`, default `gpt-6-luna` at reasoning effort `toolEffort`, default `none`), instructions that say the backend
 can only end the call, and the tools in `src/phone-tools.mjs`. The live model hands a request to that backend; when the
 backend calls a tool (`response.output_item.done` with a `function_call`) the plugin runs it and returns a
 `function_call_output`, then `response.create` so the backend resumes. Add a tool by adding an entry to `PHONE_TOOLS`; every provider declares it.
@@ -422,6 +424,10 @@ The bound plugin is trusted operator configuration; its domain read-only enforce
 for speech sessions that must not write. No native-agent delegation is granted to phone callers.
 
 Caller audio is queued until provider readiness and forwarded even while local ringback plays.
+An audible startup gets a single 250 ms acknowledgment window after its queued audio is forwarded before the greeting is
+requested; continuing line noise cannot extend that wait (raw line energy cannot tell speech from noise, and the provider owns
+turn-taking). Provider-recognized speech suppresses the greeting, and the ElevenLabs adapter requests none while a reply is already
+on its way.
 ElevenLabs receives a call-connected event before its initial response request; an empty
 response request alone is not reliable proof of an audible greeting.
 
