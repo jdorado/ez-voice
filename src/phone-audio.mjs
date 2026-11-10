@@ -145,8 +145,9 @@ export class PhoneAudio {
           for (const message of messages) this.send(message);
         };
         // Preserve and forward an early hello first, then give the provider one short window to acknowledge it. Raw line energy
-        // cannot tell speech from noise, so it never extends the wait: the provider owns turn-taking (a caller who really is
-        // speaking is answered by the provider and the greeting is not requested, see each adapter's `greet`). Quiet starts wait nothing.
+        // cannot tell speech from noise, so it never extends the wait: the provider owns turn-taking. Words the provider recognized
+        // in the window (`conversationStarted`) suppress the greeting, and ElevenLabs also withholds it once a reply is in flight
+        // (its `greet`); the other adapters send it as asked. Quiet starts wait nothing.
         if (this.startupSound) this.greetingTimer = setTimeout(greet, STARTUP_SPEECH_ACK_MS);
         else greet();
       }

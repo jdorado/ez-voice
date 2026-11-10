@@ -9,7 +9,7 @@
 - Receipts: `greetingMs` (the greeting request), `firstSpeechMs` (the first audible chunk; `firstAudioMs` may be silence) and
   `delegations` (GPT-Live backend requests, counted even when one calls no function).
 - GPT-Live phone tool backend defaults to `gpt-6-luna` at reasoning effort `none` (was `gpt-6.1-sol`, `low`); `toolModel` and
-  `toolEffort` on a line still win. Checked only by a session-start configuration probe on the previous live GPT-Live install; no
+  `toolEffort` on a line still win (a line that sets only `toolModel` now runs at `none`, not `low`). Checked only by a session-start configuration probe on the previous live GPT-Live install; no
   Quarre line uses GPT-Live now.
 - ElevenLabs: an outbound call opens its speech session when it is dialed instead of when the callee answers. The provider takes
   1.3 to 3.9 s after its socket opens to create a session (median `readyMs` 1.8 s, p90 3.2 s over the box's receipts, against 0.4 s
