@@ -24,6 +24,8 @@ export class ElevenLabsAdapter {
   static audioMeansSpeech = true;
   // Mini does not call tools: given end_call it writes "[end_call]" into its speech instead, while Max issues real function calls.
   static toolModels = ['eleven_realtime_v1_max'];
+  // A session can be opened while an outbound call rings and wait for its media stream (see `warmSeconds` in `configure`).
+  static warm = true;
   static supportsTools(model) { return ElevenLabsAdapter.toolModels.includes(model); }
 
   constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; this.cancelled = new Set(); }
@@ -45,16 +47,17 @@ export class ElevenLabsAdapter {
     const c = this.config;
     // ElevenLabs closes a session after max_duration_seconds (default 600, range 60..7200): follow the call length.
     return {type: 'session.update', session: {type: 'realtime', model: c.model, instructions: c.instructions, output_modalities: ['audio'],
-      max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15)),
+      max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15 + (c.warmSeconds ?? 0))),
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
       audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
   // An empty response request can produce no turn. Supply the actual transport event,
   // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
-  greet() { return [
+  // A caller who speaks as the call connects gets the provider's own reply to their turn: the greeting is not needed then.
+  greet() { return this.response ? [] : (this.greetedAt = Date.now(), [
     {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
     {type: 'response.create'},
-  ]; }
+  ]); }
   audioIn(audio) { return [{type: 'input_audio_buffer.append', audio}]; }
   parse(event) {
     switch (event.type) {
@@ -62,7 +65,7 @@ export class ElevenLabsAdapter {
       case 'session.created': return [{type: 'send', message: this.configure()}];
       case 'session.updated': return this.ready ? [] : (this.ready = true, [{type: 'ready', id: this.conversationId}]);
       case 'response.created': this.response = event.response?.id; return [];
-      case 'response.done': this.cancelled.delete(event.response?.id); if (event.response?.id === this.response) this.response = undefined; return [];
+      case 'response.done': if (event.response?.id === this.response) this.response = undefined; return [];
       case 'response.output_audio.delta':
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         if (this.cancelled.has(event.response_id)) return []; // the reply the caller already talked over
@@ -71,20 +74,27 @@ export class ElevenLabsAdapter {
       // The provider cancels the reply in flight but keeps streaming it, faster than realtime, until `output_audio_buffer.cleared`
       // (about 0.3 s later: seconds of speech). That audio would reach Twilio after the clear and play over the caller (a voicemail
       // greeting that paused mid-sentence was talked over for six seconds), so the cancelled reply's audio is dropped from here.
+      // The id stays for the call: the provider may send `response.done` before its last stray audio, and ids are never reused.
       case 'input_audio_buffer.speech_started':
         if (this.response) this.cancelled.add(this.response);
         return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
-      case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller'}];
+      case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller', stop: true}];
       // The caller's words arrive whole per utterance, the model's as it speaks.
       case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
       case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'response.output_item.done':
         return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
-      case 'error': return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];
+      case 'error':
+        // The provider answers a caller who speaks first on its own; a greeting asked for in the same instant meets that reply in flight.
+        // What was asked for is happening, so this ends nothing (the receipt keeps a warning). The same error for anything else, such as
+        // a tool result that asked the model to go on, still ends the call.
+        if (event.error?.code === 'conversation_already_has_active_response' && Date.now() - (this.greetedAt ?? -Infinity) < 5000) return [{type: 'warning', code: 'greeting_met_active_response'}];
+        return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];
       default: return [];
     }
   }
   toolResult(id, name, output, {final = false} = {}) {
+    this.greetedAt = undefined;
     const answer = {type: 'conversation.item.create', item: {type: 'function_call_output', call_id: id, output: JSON.stringify(output)}};
     return final ? [answer] : [answer, {type: 'response.create'}];
   }

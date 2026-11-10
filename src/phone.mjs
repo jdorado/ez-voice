@@ -180,6 +180,29 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
   const prefix = config.pathPrefix || '', mediaPath = prefix + '/media';
   // thinkers: each coached call's relay token -> its bridge
   const tickets = new Map(), actives = new Map(), thinkers = new Map(), speakers = new Map(); let admitted = 0, unavailable = false, draining = startDrained, receiptError = false, closing;
+  // Outbound calls on a provider that can (`warm`) open their speech session when the call is dialed, so it is ready by the time the
+  // callee answers instead of seconds after: one per request, closed when the call ends unanswered or is refused, taken when it
+  // connects with the same instructions, never kept past the ring (Twilio rings 45 s).
+  const WARM_SECONDS = 60, warmups = new Map(), wanted = new Set(); // request ID -> {bridge, timer}; wanted: the dialed requests still waiting for their session
+  const dropWarm = requestId => {
+    wanted.delete(requestId);
+    const entry = warmups.get(requestId); if (!entry) return;
+    warmups.delete(requestId); clearTimeout(entry.timer); entry.bridge.close('unanswered');
+  };
+  const warm = async (requestId, {from, to, brief}) => {
+    try {
+      const settings = lineConfig(config, from ?? config.number);
+      // a session opened at the dial carries none of the call's relays or fixed greeting: only a line without them can use one
+      if (unavailable || !settings || !providerClass(settings).warm || settings.advice || settings.thinking !== undefined || settings.ttsSpeed !== undefined || settings.pronunciations !== undefined || settings.greetingFile) return;
+      wanted.add(requestId);
+      const limits = limitsFor(settings.provider), text = withBrief(settings.instructionsFiles ? await instructionsFromFiles(settings, limits.instructions) : settings.instructions, brief);
+      if (!wanted.delete(requestId) || unavailable || text.length > limits.session || warmups.has(requestId)) return; // the call was dropped, or the service stopped, while the files were read
+      const bridge = new PhoneAudio(null, {...settings, instructions: text, greet: false, call: {id: requestId, remote: to, line: settings.number, direction: 'out'},
+        information: config.information, warmSeconds: WARM_SECONDS}, () => {}, {socketFactory, fetch: fetchImpl});
+      warmups.set(requestId, {bridge, timer: setTimeout(() => dropWarm(requestId), WARM_SECONDS * 1000)});
+    } catch { wanted.delete(requestId); /* the call is answered without a pre-opened session */ }
+  };
+  if (calls) calls.hooks = {warm, drop: dropWarm};
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.loaded && ticket.expires<Date.now())tickets.delete(token);};
   // Calls in progress or reserved, up to maxCalls at once: an outbound request counts from creation to its end
   // (its answer ticket and audio are the same call), an inbound call from its ticket to its end.
@@ -202,7 +225,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
       const outbound=url.searchParams.get('outbound'), isStatus=url.searchParams.get('status')==='1';
       if (outbound) {
         if (!calls || [...url.searchParams.keys()].some(key=>!['outbound','status'].includes(key)) || [...url.searchParams.keys()].length!==(isStatus?2:1) || !calls.accept(outbound,params,isStatus)) { response.writeHead(403); return response.end(); }
-        if (isStatus) { response.writeHead(204);return response.end(); }
+        if (isStatus) { dropWarm(outbound); response.writeHead(204);return response.end(); }
       } else if (url.search || !lineConfig(config, params.get('To'))) { response.writeHead(403);return response.end(); }
       const line = outbound ? calls.sender(outbound) : params.get('To');
       response.setHeader('Content-Type', 'text/xml');
@@ -216,7 +239,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
         return response.end('<Response><Reject reason="busy"/></Response>');
       }
       const token = existing || randomBytes(32).toString('hex');
-      const ticket = existing ? tickets.get(existing) : {callSid: params.get('CallSid'), expires: Date.now() + 60000, line, outbound: Boolean(outbound), instructions: outbound ? calls.instructions(outbound) : undefined,
+      const ticket = existing ? tickets.get(existing) : {callSid: params.get('CallSid'), expires: Date.now() + 60000, line, outbound: Boolean(outbound), requestId: outbound || undefined, instructions: outbound ? calls.instructions(outbound) : undefined,
         call: {id: params.get('CallSid'), remote: params.get(outbound ? 'To' : 'From'), line, direction: outbound ? 'out' : 'in', started_at: new Date().toISOString()}};
       if (!existing) {
         tickets.set(token, ticket); // the place is held while the line's instructions are read
@@ -237,6 +260,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
         } finally {ticket.loaded = true;} return true; })();
       }
       if (!await ticket.loading) {
+        if (outbound) dropWarm(outbound);
         if (prefix && !outbound) response.statusCode=503;
         return response.end('<Response><Reject reason="busy"/></Response>');
       }
@@ -307,17 +331,28 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           const asked = !ticket.outbound && ticket.live !== undefined; // the backend was asked what it knows of the caller
           const thinkToken = (line.advice && config.advisor && providerClass(line).prototype.withAdvice) || (line.thinking !== undefined && providerClass(line).prototype.withThinking) ? randomBytes(32).toString('base64url') : undefined;
           const speechToken = line.ttsSpeed !== undefined || line.pronunciations !== undefined ? randomBytes(32).toString('base64url') : undefined;
-          bridge = new PhoneAudio(ws, {...line, ...(speechToken && {speech: {token: speechToken, url: `${config.origin.replace('https:', 'wss:')}${prefix}/speak/multi-stream-input`}}), ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions: ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context, ticket.limits.session), streamSid: start.streamSid,
-            greet: !ticket.outbound, ...(ticket.greeting && {greeting: ticket.greeting}), call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined}, async stats => {
+          const instructions = ticket.outbound ? withBrief(ticket.lineText, ticket.instructions) : withCaller(ticket.lineText, ticket.context, ticket.limits.session);
+          const finish = async stats => {
             try { await record({callSid: start.callSid, line: ticket.line, ...stats, recording: await recording, at: new Date().toISOString()}); }
             catch (error) { unavailable = true; receiptError = true; throw error; }
             finally { if (actives.get(start.callSid)?.bridge === bridge) actives.delete(start.callSid); thinkers.delete(thinkToken); speakers.get(speechToken)?.relay?.close(); speakers.delete(speechToken); }
-          }, {socketFactory}); actives.set(start.callSid, {bridge, outbound: ticket.outbound});
+          };
+          // a session opened while the call rang is used when it is still open and was started with these very instructions
+          wanted.delete(ticket.requestId);
+          const preopened = warmups.get(ticket.requestId); if (preopened) { warmups.delete(ticket.requestId); clearTimeout(preopened.timer); }
+          if (preopened?.bridge.usable && preopened.bridge.config.instructions === instructions) { bridge = preopened.bridge; bridge.adopt(ws, {streamSid: start.streamSid, call: ticket.call, finish}); }
+          else {
+            preopened?.bridge.close('unused');
+            bridge = new PhoneAudio(ws, {...line, ...(speechToken && {speech: {token: speechToken, url: `${config.origin.replace('https:', 'wss:')}${prefix}/speak/multi-stream-input`}}), ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions, streamSid: start.streamSid,
+              greet: !ticket.outbound, ...(ticket.greeting && {greeting: ticket.greeting}), call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined}, finish, {socketFactory, fetch: fetchImpl});
+          }
+          actives.set(start.callSid, {bridge, outbound: ticket.outbound});
           if (thinkToken) thinkers.set(thinkToken, bridge);
           if (speechToken) speakers.set(speechToken, {bridge});
           if (asked) bridge.stats.callerContext = Boolean(ticket.context);
           if (live) bridge.stats.callerContextLive = {status: live.status, milliseconds: live.ms}; // never the text
           bridge.stats.instructionsSha256 = ticket.instructionsSha256; // which instructions this call ran with (never their text)
+          bridge.stats.streamMs = Date.now() - Date.parse(ticket.call.started_at); // Twilio's answer webhook to its media stream: the time before a session started at the stream could begin
           recording = startRecording(provider, start.callSid);
     };
   });
@@ -327,6 +362,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
     unavailable = true;
     const stopped = new Promise(resolve => server.close(resolve));
     server.closeAllConnections();
+    for (const requestId of [...warmups.keys()]) dropWarm(requestId);
     await Promise.allSettled([...tickets.values()].map(ticket => ticket.loading));
     await Promise.allSettled([...actives.values()].map(a => a.bridge.close('service_stopped')));
     for (const ws of sockets.clients) ws.terminate(); sockets.close();

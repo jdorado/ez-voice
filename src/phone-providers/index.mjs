@@ -16,14 +16,15 @@ import {DeepgramAdapter} from './deepgram.mjs';
 //   parse(providerEvent)         -> normalized items (Buffer for a binaryAudio provider):
 //     {type: 'ready', id}        the session accepts audio
 //     {type: 'audio', audio}     base64 mu-law 8 kHz for the caller (whole 20 ms frames are best)
-//     {type: 'speech', who, delta?, text?, start?}   'caller' or 'model' is speaking (idle hang-up uses it); `delta`
+//     {type: 'speech', who, delta?, text?, start?, stop?}   'caller' or 'model' is speaking (idle hang-up uses it); `delta`
 //                                continues the speaker's words, `text` is a whole utterance, `start` marks the caller
-//                                beginning to speak (the receipt's transcript)
+//                                beginning to speak (the receipt's transcript), `stop` the provider ending their turn (the receipt's turnEndMs)
 //     {type: 'interrupted'}      the caller barged in: drop audio queued at Twilio
 //     {type: 'tool', id, name, args}   the model called a registered tool
 //     {type: 'cancelled', id? / request?}   cancel one function or one delegated request
 //     {type: 'settled', request} a delegated request finished
 //     {type: 'send', message}    a message to send back now
+//     {type: 'warning', code}    something the provider did that ended nothing (kept in the receipt's providerWarnings)
 //     {type: 'closed', usage}    the provider confirmed the end of the session
 //     {type: 'error', code} / {type: 'fatal', reason}   a provider error / end the call
 //   toolResult(id, name, output, {final}) -> messages that hand a tool's output back (`final`: the call ends, no follow-up needed)
