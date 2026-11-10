@@ -116,6 +116,87 @@ test('GPT-Live exposes backend hang-up delegation to the voice model only with t
   assert.deepEqual(disabled.delegation, {type: 'client'});
 });
 
+// An ElevenLabs inbound call whose session becomes ready: queued caller audio is `frames` loud 20 ms frames, so the startup is audible.
+async function eleven(frames) {
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, greet: true}, {fetch: mintOk().fetch});
+  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64');
+  for (let i = 0; i < frames; i++) c.audio.input(frame);
+  await wait(() => c.socket()); c.socket().receive({type: 'session.created'}); c.socket().receive({type: 'session.updated'});
+  return {...c, frame, greetings: () => c.socket().events.filter(e => e.type === 'response.create').length};
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+test('elevenlabs: a quiet start is greeted at once, and line noise that the provider never calls speech is greeted after the 250 ms window', async () => {
+  const quiet = await eleven(0);
+  assert.equal(quiet.greetings(), 1); assert(quiet.audio.stats.greetingMs < 200, `greeted at ${quiet.audio.stats.greetingMs} ms`);
+  quiet.audio.close('test'); quiet.socket().close(); await quiet.audio.done;
+  const noisy = await eleven(3);
+  const input = setInterval(() => noisy.audio.input(noisy.frame), 20);
+  try {
+    assert.equal(noisy.greetings(), 0, 'not before the window');
+    await wait(() => noisy.greetings() === 1);
+    assert(noisy.audio.stats.greetingMs >= 200 && noisy.audio.stats.greetingMs < 800, `greeted at ${noisy.audio.stats.greetingMs} ms, noise still on the line`);
+  } finally { clearInterval(input); noisy.audio.close('test'); noisy.socket().close(); await noisy.audio.done; }
+});
+
+test('elevenlabs: a caller still talking when the window ends is not greeted over; the greeting waits for them to stop', async () => {
+  const {audio, socket, frame, greetings} = await eleven(3);
+  socket().receive({type: 'input_audio_buffer.speech_started'});
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await sleep(450);
+    assert.equal(greetings(), 0, 'no greeting over an open caller turn');
+    socket().receive({type: 'input_audio_buffer.speech_stopped'}); // a speech blip: no words, no reply from the provider
+    await sleep(100);
+    assert.equal(greetings(), 0, 'one window after they stop, not at once');
+    await wait(() => greetings() === 1);
+    assert(audio.stats.greetingMs >= 450);
+    socket().receive({type: 'input_audio_buffer.speech_stopped'});
+    await sleep(350);
+    assert.equal(greetings(), 1, 'the greeting is asked for once');
+  } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
+});
+
+test('elevenlabs: a caller turn that never closes does not leave the call silent: the greeting is sent 5 s after the flush, a reply in flight never is', async () => {
+  const {audio, socket, frame, greetings} = await eleven(3);
+  socket().receive({type: 'input_audio_buffer.speech_started'}); // no speech_stopped follows: a speech-like background
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await sleep(4500);
+    assert.equal(greetings(), 0, 'nothing before the bound');
+    await wait(() => greetings() === 1);
+    assert(audio.stats.greetingMs >= 4900 && audio.stats.greetingMs < 6500, `greeted at ${audio.stats.greetingMs} ms`);
+  } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
+  const adapter = createAdapter({...base, provider: 'elevenlabs', apiKey: keys.elevenlabs, model: 'eleven_realtime_v1_max'});
+  adapter.parse({type: 'input_audio_buffer.speech_started'});
+  assert.deepEqual(adapter.greet(), []); assert.equal(adapter.greet({bounded: true}).length, 2, 'the bound overrides an open caller turn');
+  const busy = createAdapter({...base, provider: 'elevenlabs', apiKey: keys.elevenlabs, model: 'eleven_realtime_v1_max'});
+  busy.parse({type: 'response.created', response: {id: 'resp_1'}});
+  assert.deepEqual(busy.greet({bounded: true}), [], 'but never a reply in flight');
+});
+
+test('elevenlabs: a caller who was answered by the provider itself is never greeted, whether the reply was in flight or already spoken', async () => {
+  const {audio, socket, frame, greetings} = await eleven(3);
+  socket().receive({type: 'input_audio_buffer.speech_started'});
+  socket().receive({type: 'response.created', response: {id: 'resp_1'}});
+  socket().receive({type: 'input_audio_buffer.speech_stopped'});
+  const input = setInterval(() => audio.input(frame), 20);
+  try {
+    await sleep(450);
+    assert.equal(greetings(), 0, 'a reply is on its way');
+    socket().receive({type: 'response.output_audio.delta', response_id: 'resp_1', delta: frame});
+    socket().receive({type: 'response.done', response: {id: 'resp_1'}});
+    await sleep(350);
+    assert.equal(greetings(), 0, 'and once it has spoken');
+    assert.equal(audio.stats.greetingMs, undefined);
+  } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
+});
+
+test('deepgram keeps a refused injection as a receipt warning and nothing else', () => {
+  const adapter = createAdapter({...base, provider: 'deepgram', apiKey: keys.deepgram, llmApiKey: keys.gemini, ttsApiKey: keys.elevenlabs});
+  assert.deepEqual(adapter.parse({type: 'InjectionRefused', message: 'agent is speaking'}), [{type: 'warning', code: 'injection_refused'}]);
+});
+
 test('elevenlabs mints a client secret, configures the session natively and passes mu-law straight through', async () => {
   const mint = mintOk();
   const {audio, twilio, socket, finished, ready} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', voice: 'vOZtmBu4RanHWgj2KUOY', idleSeconds: 0.4, language: 'es'}, {fetch: mint.fetch});
@@ -740,7 +821,7 @@ test('a conversation that starts during startup drain does not get a second forc
 });
 
 
-test('audible startup waits for delayed provider speech detection, but noise cannot suppress the greeting forever', async () => {
+test('audible startup briefly waits for provider speech detection without adding a long greeting delay', async () => {
   for (const detected of [true, false]) {
     const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
     await wait(() => socket());
@@ -750,40 +831,42 @@ test('audible startup waits for delayed provider speech detection, but noise can
     assert.equal(s.events.filter(e => e.clientContent).length, 0, 'sending the queue is not speech acknowledgement');
     await new Promise(r => setTimeout(r, 50));
     if (detected) audio.handle({type: 'speech', who: 'caller', start: true, delta: 'Hello'});
-    await new Promise(r => setTimeout(r, 1250));
+    await new Promise(r => setTimeout(r, 300));
     assert.equal(s.events.filter(e => e.clientContent).length, detected ? 0 : 1);
     audio.close('test'); s.close(); await audio.done;
   }
 });
 
 
-test('startup VAD noise still gets a greeting, and ongoing local speech defers it until quiet', async () => {
+test('unrecognized startup sound cannot extend the greeting wait while caller audio keeps flowing', async () => {
   const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
   await wait(() => socket());
   const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
   audio.input(frame); s.receive({setupComplete: {}});
   audio.handle({type: 'speech', who: 'caller', start: true}); // VAD alone, no recognized words
   const input = setInterval(() => audio.input(frame), 20);
-  await new Promise(r => setTimeout(r, 1400));
-  assert.equal(s.events.filter(e => e.clientContent).length, 0, 'do not greet over active input');
-  clearInterval(input);
-  await new Promise(r => setTimeout(r, 800));
-  assert.equal(s.events.filter(e => e.clientContent).length, 1, 'unconfirmed VAD must not suppress the greeting after quiet');
-  audio.close('test'); s.close(); await audio.done;
+  try {
+    await wait(() => s.events.some(e => e.clientContent));
+    assert.equal(s.events.filter(e => e.clientContent).length, 1);
+    assert(s.events.filter(e => e.realtimeInput?.audio).length > 1, 'ongoing caller audio is still forwarded');
+    assert(audio.stats.greetingMs < 1000, 'line noise must not add seconds before the greeting request');
+  } finally { clearInterval(input); audio.close('test'); s.close(); await audio.done; }
 });
 
 
-test('continuous unrecognized startup noise cannot leave an answered call silent indefinitely', async () => {
-  const {audio, socket} = await call('gemini', {greet: true, idleSeconds: 0});
+test('the receipt distinguishes silent output from first speech and counts backend delegations without tool calls', async () => {
+  const {audio, socket} = await call('openai', {idleSeconds: 0});
   await wait(() => socket());
-  const frame = pcmToUlaw(tone(500, 8000, 20)).toString('base64'), s = socket();
-  audio.input(frame); s.receive({setupComplete: {}});
-  audio.handle({type: 'speech', who: 'caller', start: true});
-  const input = setInterval(() => audio.input(frame), 20);
-  try {
-    await new Promise(r => setTimeout(r, 5400));
-    assert.equal(s.events.filter(e => e.clientContent).length, 1);
-  } finally { clearInterval(input); audio.close('test'); s.close(); await audio.done; }
+  const s = socket(); s.receive({type: 'session.started', session: {id: 's1'}});
+  s.receive({type: 'session.output_audio.delta', delta: Buffer.alloc(160, 0xff).toString('base64')});
+  assert.equal(typeof audio.stats.firstAudioMs, 'number');
+  assert.equal(audio.stats.firstSpeechMs, undefined);
+  s.receive({type: 'session.output_audio.delta', delta: pcmToUlaw(tone(500, 8000, 20)).toString('base64')});
+  assert.equal(typeof audio.stats.firstSpeechMs, 'number');
+  for (const id of ['one', 'one', 'two']) s.receive({type: 'session.delegation.created', delegation: {id, target: 'responses'}});
+  assert.equal(audio.stats.delegations, 2);
+  assert.equal(audio.stats.tools, undefined);
+  audio.close('test'); s.receive({type: 'session.closed'}); await audio.done;
 });
 
 const deepgramKeys = {llmApiKey: keys.gemini, ttsApiKey: keys.elevenlabs};

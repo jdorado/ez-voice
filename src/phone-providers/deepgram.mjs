@@ -158,6 +158,8 @@ export class DeepgramAdapter {
           if (typeof call?.id !== 'string') return [];
           this.signatures.delete(call.id); return [{type: 'cancelled', id: call.id}];
         });
+      // Deepgram does not inject a message while somebody is speaking: the greeting asked for then is refused. Receipt only.
+      case 'InjectionRefused': return [{type: 'warning', code: 'injection_refused'}];
       case 'Warning': return [{type: 'warning', ...diagnostic(event)}];
       case 'Error': return [{type: 'warning', ...diagnostic(event)}, {type: 'error', code: diagnostic(event).code}];
       default: return [];

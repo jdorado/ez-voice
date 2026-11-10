@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Inbound greeting: an audible startup (a caller who speaks, or line noise, as the call connects) gets one 250 ms window after its
+  audio is forwarded, then the greeting is requested; continuing line energy no longer defers it (it was 1.2 s, then re-deferred in
+  250 ms steps for up to 5 s while the line stayed above the audible level). Early caller audio is still forwarded first. Once the
+  provider has produced words or the model has sounded, no greeting is requested. ElevenLabs also declines it while a reply is in
+  flight or the caller's speech is still open, and the bridge asks again 250 ms after each caller stop, and once more 5 s after the
+  caller's audio was flushed whatever the caller's turn (a reply in flight is never overridden), so a turn that never closes cannot
+  leave the call silent; the collision error stays harmless. Deepgram's `InjectionRefused` (a greeting asked for while somebody speaks) is kept as the receipt warning
+  `injection_refused`.
+- Receipts: `greetingMs` (the greeting request), `firstSpeechMs` (the first audible chunk; `firstAudioMs` may be silence) and
+  `delegations` (GPT-Live backend requests, counted even when one calls no function).
 - ElevenLabs: an outbound call opens its speech session when it is dialed instead of when the callee answers. The provider takes
   1.3 to 3.9 s after its socket opens to create a session (median `readyMs` 1.8 s, p90 3.2 s over the box's receipts, against 0.4 s
   on the Deepgram stack before), so a callee's first "Hello?" waited for it. The session now starts with the dial, waits for the

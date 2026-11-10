@@ -53,8 +53,11 @@ export class ElevenLabsAdapter {
   }
   // An empty response request can produce no turn. Supply the actual transport event,
   // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
-  // A caller who speaks as the call connects gets the provider's own reply to their turn: the greeting is not needed then.
-  greet() { return this.response ? [] : (this.greetedAt = Date.now(), [
+  // A caller who speaks as the call connects gets the provider's own reply to their turn: the greeting is not needed then, and a
+  // greeting asked for while the caller's speech is still open leaves their turn unanswered until they repeat it. The bridge asks
+  // again when the caller stops (nothing is left to answer if the provider has replied by then), and with `bounded` it greets anyway:
+  // a caller turn that never closes (a speech-like background) must not leave the line silent. A reply in flight is never overridden.
+  greet({bounded = false} = {}) { return this.response || (this.callerSpeaking && !bounded) ? [] : (this.greetedAt = Date.now(), [
     {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
     {type: 'response.create'},
   ]); }
@@ -77,8 +80,9 @@ export class ElevenLabsAdapter {
       // The id stays for the call: the provider may send `response.done` before its last stray audio, and ids are never reused.
       case 'input_audio_buffer.speech_started':
         if (this.response) this.cancelled.add(this.response);
+        this.callerSpeaking = true;
         return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
-      case 'input_audio_buffer.speech_stopped': return [{type: 'speech', who: 'caller', stop: true}];
+      case 'input_audio_buffer.speech_stopped': this.callerSpeaking = false; return [{type: 'speech', who: 'caller', stop: true}];
       // The caller's words arrive whole per utterance, the model's as it speaks.
       case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
       case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
