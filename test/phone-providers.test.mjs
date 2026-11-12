@@ -23,12 +23,12 @@ class FakeSocket extends EventEmitter {
   close() {this.readyState = WebSocket.CLOSED; this.emit('close', 1000);}
   terminate() {this.close();}
 }
-async function call(provider, settings = {}, {fetch} = {}) {
+async function call(provider, settings = {}, {fetch, ...options} = {}) {
   const sockets = [], finished = [];
   const twilio = Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], send(raw) {this.sent.push(JSON.parse(raw));}, close() {this.readyState = WebSocket.CLOSED;}});
   let ready = 0;
   const audio = new PhoneAudio(twilio, {...base, apiKey: keys[provider], provider, streamSid, ...settings}, async stats => {finished.push(stats);},
-    {socketFactory: (url, options) => {const socket = new FakeSocket(url, options); sockets.push(socket); return socket;}, fetch, onReady: () => ready++});
+    {socketFactory: (url, options) => {const socket = new FakeSocket(url, options); sockets.push(socket); return socket;}, fetch, onReady: () => ready++, ...options});
   return {audio, twilio, sockets, finished, ready: () => ready, socket: () => sockets[0]};
 }
 const tone = (hz, rate, ms) => Int16Array.from({length: rate * ms / 1000}, (_, i) => Math.round(12000 * Math.sin(2 * Math.PI * hz * i / rate)));
@@ -125,6 +125,37 @@ async function eleven(frames) {
   return {...c, frame, greetings: () => c.socket().events.filter(e => e.type === 'response.create').length};
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+test('a placed call answered in silence is greeted after the silent-answer wait; a callee who speaks first is answered, not greeted', async () => {
+  const placed = async () => {
+    const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, call: {id: 'CA1', direction: 'out'}}, {fetch: mintOk().fetch, silentAnswerMs: 100});
+    await wait(() => c.socket()); c.socket().receive({type: 'session.created'}); c.socket().receive({type: 'session.updated'});
+    return {...c, greetings: () => c.socket().events.filter(e => e.type === 'response.create').length};
+  };
+  const silent = await placed();
+  try {
+    assert.equal(silent.greetings(), 0, 'a placed call waits for the hello first');
+    await wait(() => silent.greetings() === 1);
+    assert.equal(silent.audio.stats.silentAnswer, true); assert(silent.audio.stats.greetingMs >= 90, `greeted at ${silent.audio.stats.greetingMs} ms`);
+  } finally { silent.audio.close('test'); silent.socket().close(); await silent.audio.done; }
+  const hello = await placed();
+  try {
+    hello.audio.handle({type: 'speech', who: 'caller', start: true});
+    await sleep(200);
+    assert.equal(hello.greetings(), 0); assert.equal(hello.audio.stats.silentAnswer, undefined);
+  } finally { hello.audio.close('test'); hello.socket().close(); await hello.audio.done; }
+  // a session opened while the phone rang waits from the answer, not from its own start
+  const twilio = Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], send() {}, close() {}});
+  const sockets = [], early = new PhoneAudio(null, {...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', idleSeconds: 0, call: {id: 'r1', direction: 'out'}}, async () => {},
+    {socketFactory: (url, options) => {const s = new FakeSocket(url, options); sockets.push(s); return s;}, fetch: mintOk().fetch, silentAnswerMs: 100});
+  try {
+    await wait(() => sockets[0]); sockets[0].receive({type: 'session.created'}); sockets[0].receive({type: 'session.updated'});
+    await sleep(200);
+    assert.equal(sockets[0].events.filter(e => e.type === 'response.create').length, 0, 'nothing is said while it rings');
+    early.adopt(twilio, {streamSid, call: {id: 'CA2', direction: 'out'}, finish: async () => {}});
+    await wait(() => sockets[0].events.some(e => e.type === 'response.create'));
+  } finally { early.close('test'); sockets[0]?.close(); await early.done; }
+});
 
 test('elevenlabs: a quiet start is greeted at once, and line noise that the provider never calls speech is greeted after the 250 ms window', async () => {
   const quiet = await eleven(0);
