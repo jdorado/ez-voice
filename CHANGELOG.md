@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- ElevenLabs turn-taking is the bridge's (`bridgeTurns`). Five live calls (2026-11-16) showed the provider's own barge-in cancelling
+  replies on non-speech: clicks, breaths and the model's own voice echoed back by the callee's handset (-39 to -45 dBFS), each followed
+  by 6 to 14 s of silence and a restarted greeting. Sessions now take `turn_detection: {type: 'semantic_vad', interrupt_response:
+  false}`; the bridge cuts the model off only after 300 ms of caller sound at about -33 dBFS or louder (`response.cancel`, then
+  `conversation.item.truncate` to what Twilio had played, so the model continues instead of restarting), suppresses echo (while the
+  model's audio plays and 600 ms after, quieter caller sound reaches the provider as silence: fed the echo, the model answered its
+  own words), and closes a short caller turn (at most 1.5 s of sound, such as "Hello?") after 450 ms of quiet
+  (`input_audio_buffer.commit`) instead of the provider's wait of about 2 s. Lab (`voice_lab.sh cases`, echo at -20 dB plus clicks):
+  14 false cut-offs to 0; clean-line reply gaps 0.58 to 1.51 s to 0.43 to 0.79 s. Receipts: `interruptions` ({atMs, playedMs}),
+  `shortTurns`, `speechOverModel` (provider speech starts the bridge did not take for a barge-in), `endCallCancelled`.
+- A person who talks after `end_call` (a callee picking up as the voicemail message ends) is no longer hung up on: the pending hang-up
+  is dropped and the model ends the call again when it is over.
+- The silent-answer greeting of a placed call waits for a quiet moment (at most another `silentAnswerMs`): it had started over a
+  callee's "This is Dave" that the provider had not yet called speech.
+
 - Inbound greeting: an audible startup (a caller who speaks, or line noise, as the call connects) gets one 250 ms window after its
   audio is forwarded, then the greeting is requested; continuing line energy no longer defers it (it was 1.2 s, then re-deferred in
   250 ms steps for up to 5 s while the line stayed above the audible level). Early caller audio is still forwarded first. Once the

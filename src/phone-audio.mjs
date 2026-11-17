@@ -5,7 +5,7 @@ import {PHONE_TOOLS} from './phone-tools.mjs';
 const parseArgs = value => { try { const args = typeof value === 'string' ? JSON.parse(value) : value; return args && typeof args === 'object' && !Array.isArray(args) ? args : {}; } catch { return {}; } };
 import {createAdapter} from './phone-providers/index.mjs';
 import {Transcript} from './phone-providers/transcript.mjs';
-import {RING_CYCLE, audible} from './phone-providers/ringback.mjs';
+import {RING_CYCLE, audible, level} from './phone-providers/ringback.mjs';
 import {PhoneAdvice} from './phone-advice.mjs';
 
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
@@ -19,6 +19,14 @@ const GREETING_BOUND_MS = 5000;
 // A placed call waits for the callee's hello. One answered in silence (a screener, a cautious owner, a silent mailbox) would stay
 // silent on both ends until a hang-up: after this long with no caller speech the model speaks first.
 const SILENT_ANSWER_MS = 3000;
+// Turn-taking the bridge owns for a provider that leaves it to it (`bridgeTurns`). The model is cut off only by caller sound loud enough to
+// be a person talking (RMS about -33 dBFS) for BARGE_MS: a callee's handset echoed the model's own voice back at -39 to -45 dBFS, and a
+// click or a breath lasts a frame or two (live calls, 2026-11-16). A short caller turn (at most SHORT_TURN_MS of sound, a "Hello?" or a
+// "Yes") is closed after TURN_QUIET_MS of quiet instead of the provider's own wait (about 2 s); longer turns keep the provider's
+// end-of-turn judgement. Sound within ECHO_TAIL_MS of the model's last audio is not counted as a turn: it can be the echo's tail.
+const BARGE_RMS = 700, BARGE_MS = 300, SPEECH_RMS = 400, SHORT_TURN_MS = 1500, TURN_QUIET_MS = 450, ECHO_TAIL_MS = 600;
+
+const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
 // until `adopt` hands it one.
@@ -109,10 +117,15 @@ export class PhoneAudio {
   // A placed call, answered and ready, in which nobody has spoken after `silentAnswerMs` is greeted (`silentAnswer` in the receipt).
   armSilentAnswer() {
     if (this.config.greet || this.config.call?.direction !== 'out' || !this.ready || this.twilio === DETACHED || this.silentAnswer) return;
-    this.silentAnswer = setTimeout(() => {
+    const armedAt = Date.now();
+    const check = () => {
       if (this.stats.inputTranscriptEvents || this.conversationStarted) return; // the callee spoke: the provider answers them
+      // Sound on the line may be a callee mid-hello that the provider has not called speech yet (an owner's "This is Dave" met the
+      // greeting at 3 s): wait for a quiet moment, at most another silentAnswerMs, so a noisy line is still greeted.
+      if (Date.now() - (this.soundHeardAt ?? -Infinity) < 800 && Date.now() - armedAt < 2 * this.silentAnswerMs) return void (this.silentAnswer = setTimeout(check, 200));
       this.greetSilent = true; this.stats.silentAnswer = true; this.greet();
-    }, this.silentAnswerMs);
+    };
+    this.silentAnswer = setTimeout(check, this.silentAnswerMs);
   }
   get usable() { return !this.closing && !this.completed; }
   send(message) {
@@ -128,7 +141,13 @@ export class PhoneAudio {
     if (sound) this.soundHeardAt = Date.now();
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
-    if (this.ready && !this.flushingInput) this.forward(payload);
+    if (this.ready && !this.flushingInput) {
+      if (!this.adapter.constructor.bridgeTurns) this.forward(payload);
+      // Echo suppression: while the model's audio plays at the phone and its echo can still come back, only caller sound loud enough
+      // to be a person reaches the provider; quieter sound goes as silence. Fed the echo, the provider took the model's own words for the
+      // caller's ("Is this Juan?" came back as "Yes. This is Juan.") and answered itself (lab, -20 dB echo).
+      else { this.forward(Date.now() - (this.soundUntil ?? 0) < ECHO_TAIL_MS && level(payload) < BARGE_RMS ? silenceLike(payload) : payload); this.listen(payload); }
+    }
     else {
       if (sound) this.startupSound = true;
       this.queuedBytes += payload.length;
@@ -137,6 +156,36 @@ export class PhoneAudio {
       if (this.queuedBytes > 200000) return this.close('startup_audio_limit');
       this.queued.push(payload);
     }
+  }
+  // Caller sound against the bridge's turn rules (see BARGE_RMS): one Twilio frame (20 ms) at a time.
+  listen(payload) {
+    const now = Date.now(), rms = level(payload), modelSounding = now < (this.soundUntil ?? 0);
+    if (rms >= BARGE_RMS) { this.loudMs = (this.loudMs ?? 0) + 20; this.quietMs = 0; }
+    else if ((this.quietMs = (this.quietMs ?? 0) + 20) >= 200) this.loudMs = 0;
+    if (this.loudMs >= BARGE_MS) {
+      this.loudMs = 0;
+      if (modelSounding) this.bargeIn(now);
+      // A person talking after end_call (a callee who picks up as the voicemail message ends) is not hung up on: the model answers
+      // them and ends the call again when it is over.
+      if (this.endingAt && !this.closing) { this.endingAt = this.drainingAt = undefined; this.stats.endCallCancelled = (this.stats.endCallCancelled ?? 0) + 1; }
+    }
+    if (modelSounding || now - (this.soundUntil ?? 0) < ECHO_TAIL_MS) return void (this.utterance = undefined);
+    if (rms >= SPEECH_RMS) { this.utterance ??= {from: now}; this.utterance.last = now; return; }
+    const u = this.utterance;
+    if (!u || now - u.last < TURN_QUIET_MS) return;
+    this.utterance = undefined;
+    if (this.callerTurnOpen && u.last - u.from <= SHORT_TURN_MS) {
+      this.callerTurnOpen = false; this.stats.shortTurns = (this.stats.shortTurns ?? 0) + 1;
+      for (const message of this.adapter.commit()) this.send(message);
+    }
+  }
+  // Stop the model for the caller: the adapter cancels the reply and cuts the model's record of it to what Twilio had played.
+  bargeIn(now) {
+    const playedMs = this.item ? Math.max(0, Math.min(now - this.item.playFrom, this.item.bytes / 8)) : 0;
+    for (const message of this.adapter.interrupt({item: this.item?.id, playedMs})) this.send(message);
+    if ((this.stats.interruptions ??= []).length < 32) this.stats.interruptions.push({atMs: now - this.startedAt, playedMs: Math.round(playedMs)});
+    this.item = undefined;
+    this.handle({type: 'interrupted'});
   }
   forward(payload) { for (const message of this.adapter.audioIn(payload)) this.send(message); }
   flushInput() {
@@ -211,6 +260,8 @@ export class PhoneAudio {
         }
         // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so audio a provider sends faster than
         // that is still playing after it arrived: `playedUntil` is when Twilio's queue runs out, `soundUntil` when its last speech does.
+        if (item.item && item.item !== this.item?.id) this.item = {id: item.item, playFrom: Math.max(this.playedUntil ?? 0, now), bytes: 0};
+        if (this.item && item.item === this.item.id) this.item.bytes += bytes;
         this.playedUntil = Math.max(this.playedUntil ?? 0, now) + bytes / 8;
         if (sound) this.soundUntil = this.playedUntil;
         // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence):
@@ -225,6 +276,8 @@ export class PhoneAudio {
         if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
+          if (item.start) { this.callerTurnOpen = true; if (Date.now() < (this.soundUntil ?? 0)) this.stats.speechOverModel = (this.stats.speechOverModel ?? 0) + 1; }
+          if (item.stop) this.callerTurnOpen = false;
           if (item.start) this.callerStoppedAt = undefined;
           else if (item.stop) {
             this.callerStoppedAt = Date.now();
