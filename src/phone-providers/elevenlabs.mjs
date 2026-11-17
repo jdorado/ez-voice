@@ -25,7 +25,7 @@ export class ElevenLabsAdapter {
   // The provider's own barge-in cancels a reply on any sound it takes for speech: a click, a breath, the model's own voice echoed back by
   // the callee's handset (five live calls on 2026-11-16: three replies cut with no word on the caller's line, then 6 to 14 s of silence).
   // Its sessions take `interrupt_response: false` and keep reporting `speech_started`, so the bridge decides: it cancels only on sustained
-  // caller sound (`interrupt`), and closes a short caller turn itself (`commit`) where semantic VAD waits about 2 s after a one-word hello.
+  // caller sound (`interrupt`).
   static bridgeTurns = true;
   // Mini does not call tools: given end_call it writes "[end_call]" into its speech instead, while Max issues real function calls.
   static toolModels = ['eleven_realtime_v1_max'];
@@ -90,8 +90,8 @@ export class ElevenLabsAdapter {
       case 'response.output_item.done':
         return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
       case 'error':
-        // A cancel or a commit the bridge sent can meet a reply that just ended or an empty buffer: what it asked for is moot, so it ends nothing.
-        if (Date.now() - (this.controlAt ?? -Infinity) < 1500 && /cancel|commit|buffer|response/i.test(String(event.error?.code ?? ''))) return [{type: 'warning', code: String(event.error.code).slice(0, 100)}];
+        // A cancel the bridge sent can meet a reply that just ended: what it asked for is moot, so it ends nothing.
+        if (Date.now() - (this.controlAt ?? -Infinity) < 1500 && /cancel|response/i.test(String(event.error?.code ?? ''))) return [{type: 'warning', code: String(event.error.code).slice(0, 100)}];
         // The provider answers a caller who speaks first on its own; a greeting asked for in the same instant meets that reply in flight.
         // What was asked for is happening, so this ends nothing (the receipt keeps a warning). The same error for anything else, such as
         // a tool result that asked the model to go on, still ends the call.
@@ -111,8 +111,6 @@ export class ElevenLabsAdapter {
     if (item) messages.push({type: 'conversation.item.truncate', item_id: item, content_index: 0, audio_end_ms: Math.max(0, Math.round(playedMs))});
     return messages;
   }
-  // Close the caller's turn now; the provider then answers it as if its own voice activity had ended it.
-  commit() { this.controlAt = Date.now(); return [{type: 'input_audio_buffer.commit'}]; }
   toolResult(id, name, output, {final = false} = {}) {
     this.greetedAt = undefined;
     const answer = {type: 'conversation.item.create', item: {type: 'function_call_output', call_id: id, output: JSON.stringify(output)}};

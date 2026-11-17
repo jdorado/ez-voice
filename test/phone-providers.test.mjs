@@ -337,20 +337,6 @@ test('elevenlabs: echo of the model and a click on the line never cut it off', a
   } finally { audio.close(); await audio.done; }
 });
 
-test('elevenlabs: a short caller turn is closed after 650 ms of quiet; a long one is left to the provider', async () => {
-  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
-  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
-  const commits = () => socket().events.filter(e => e.type === 'input_audio_buffer.commit').length;
-  const speak = async (frames, quiet) => { for (let i = 0; i < frames; i++) { audio.input(loudFrame()); await sleep(20); } for (let i = 0; i < quiet; i++) { audio.input('//8='); await sleep(20); } };
-  try {
-    socket().receive({type: 'input_audio_buffer.speech_started'});
-    await speak(20, 20); assert.equal(commits(), 0, 'not before 650 ms of quiet (a pause between "Mm-hmm" and "Hello?")');
-    await speak(0, 20); assert.equal(commits(), 1, 'a "Hello?" is closed by the bridge'); assert.equal(audio.stats.shortTurns, 1);
-    socket().receive({type: 'input_audio_buffer.speech_stopped'}); socket().receive({type: 'input_audio_buffer.speech_started'});
-    await speak(90, 30); assert.equal(commits(), 1, 'a turn of almost two seconds keeps the provider\'s judgement');
-  } finally { audio.close(); await audio.done; }
-});
-
 test('elevenlabs: a greeting that meets the provider\'s own reply to an early caller ends nothing, any other error still does', async () => {
   const adapter = createAdapter({...base, provider: 'elevenlabs', apiKey: keys.elevenlabs, model: 'eleven_realtime_v1_max'});
   const collision = {type: 'error', error: {code: 'conversation_already_has_active_response'}};

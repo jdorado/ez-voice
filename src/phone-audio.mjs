@@ -21,10 +21,11 @@ const GREETING_BOUND_MS = 5000;
 const SILENT_ANSWER_MS = 3000;
 // Turn-taking the bridge owns for a provider that leaves it to it (`bridgeTurns`). The model is cut off only by caller sound loud enough to
 // be a person talking (RMS about -33 dBFS) for BARGE_MS: a callee's handset echoed the model's own voice back at -39 to -45 dBFS, and a
-// click or a breath lasts a frame or two (live calls, 2026-11-16). A short caller turn (at most SHORT_TURN_MS of sound, a "Hello?" or a
-// "Yes") is closed after TURN_QUIET_MS of quiet (450 ms split a callee's "Mm-hmm. Hello?" in two) instead of the provider's own wait (about 2 s); longer turns keep the provider's
-// end-of-turn judgement. Sound within ECHO_TAIL_MS of the model's last audio is not counted as a turn: it can be the echo's tail.
-const BARGE_RMS = 700, BARGE_MS = 300, SPEECH_RMS = 400, SHORT_TURN_MS = 1500, TURN_QUIET_MS = 650, ECHO_TAIL_MS = 600;
+// click or a breath lasts a frame or two (live calls, 2026-11-16). ECHO_TAIL_MS after the model's last audio its echo can still arrive.
+// The end of the caller's turn stays the provider's: closing short turns from here (input_audio_buffer.commit after a quiet gap) was
+// tried and dropped, because the provider then sometimes committed the same turn again and the model answered it twice (lab calls,
+// 2026-11-17).
+const BARGE_RMS = 700, BARGE_MS = 300, ECHO_TAIL_MS = 600;
 
 const TRACED = new Set(['input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped', 'input_audio_buffer.committed', 'input_audio_buffer.commit',
   'response.created', 'response.done', 'response.cancel', 'response.create', 'response.output_audio.delta', 'output_audio_buffer.cleared',
@@ -170,15 +171,6 @@ export class PhoneAudio {
       this.loudMs = 0;
       if (modelSounding) this.bargeIn(now);
     }
-    if (modelSounding || now - (this.soundUntil ?? 0) < ECHO_TAIL_MS) return void (this.utterance = undefined);
-    if (rms >= SPEECH_RMS) { this.utterance ??= {from: now}; this.utterance.last = now; return; }
-    const u = this.utterance;
-    if (!u || now - u.last < TURN_QUIET_MS) return;
-    this.utterance = undefined;
-    if (this.callerTurnOpen && u.last - u.from <= SHORT_TURN_MS) {
-      this.callerTurnOpen = false; this.stats.shortTurns = (this.stats.shortTurns ?? 0) + 1;
-      for (const message of this.adapter.commit()) this.send(message);
-    }
   }
   // Stop the model for the caller: the adapter cancels the reply and cuts the model's record of it to what Twilio had played.
   bargeIn(now) {
@@ -289,8 +281,7 @@ export class PhoneAudio {
         if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
-          if (item.start) { this.callerTurnOpen = true; if (Date.now() < (this.soundUntil ?? 0)) this.stats.speechOverModel = (this.stats.speechOverModel ?? 0) + 1; }
-          if (item.stop) this.callerTurnOpen = false;
+          if (item.start && Date.now() < (this.soundUntil ?? 0)) this.stats.speechOverModel = (this.stats.speechOverModel ?? 0) + 1;
           if (item.start) this.callerStoppedAt = undefined;
           else if (item.stop) {
             this.callerStoppedAt = Date.now();
