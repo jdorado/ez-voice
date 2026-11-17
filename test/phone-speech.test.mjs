@@ -8,7 +8,7 @@ import WebSocket, {WebSocketServer} from 'ws';
 import {validatePhoneConfig, phoneCommand, servePhone, twilioSignature} from '../src/phone.mjs';
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {createAdapter} from '../src/phone-providers/index.mjs';
-import {speechMessage, relaySpeech, Pronouncer} from '../src/phone-speech.mjs';
+import {speechMessage, relaySpeech, Pronouncer, Dialogue} from '../src/phone-speech.mjs';
 
 const base = {accountSid: 'AC' + '1'.repeat(32), authToken: '2'.repeat(32), number: '+15551230001', origin: 'https://phone.example.com',
   instructions: 'Synthetic call', provider: 'deepgram', apiKey: 'd'.repeat(40), llmApiKey: 'AIza' + 'b'.repeat(35), ttsApiKey: 'sk_' + 'a'.repeat(24)};
@@ -160,5 +160,22 @@ test('the speech relay preserves supported streaming options without accepting t
   assert.equal(url.searchParams.get('enable_logging'), 'false');
   assert.equal(target.headers['xi-api-key'], base.ttsApiKey);
   assert(!target.url.includes('untrusted'));
-  for (const query of ['auto_mode=true&auto_mode=false','model_id=unapproved','output_format=invalid','inactivity_timeout=181']) assert.throws(() => adapter.speechTarget(new URLSearchParams(query)), /streaming option/);
+  assert.equal(new URL(adapter.speechTarget(new URLSearchParams('model_id=unapproved')).url).searchParams.get('model_id'), 'eleven_flash_v2_5', 'the model is the line\'s, never the provider\'s');
+  for (const query of ['auto_mode=true&auto_mode=false','output_format=invalid','inactivity_timeout=181']) assert.throws(() => adapter.speechTarget(new URLSearchParams(query)), /streaming option/);
+});
+
+test('a v4 line speaks the Text-to-Dialogue protocol upstream and the TTS protocol back to Deepgram', () => {
+  const d = new Dialogue('voice-1'), up = frame => d.toUpstream(JSON.stringify(frame));
+  assert.deepEqual(up({context_id: 'a', text: ' ', voice_settings: {speed: 0.85, stability: 0.5}}), [[], []], 'a blank keep-alive registers nothing');
+  assert.deepEqual(up({context_id: 'a', text: 'Hi.', voice_settings: {speed: 0.85, stability: 0.5}}),
+    [[{context_id: 'a', voices: ['voice-1'], voice_settings: {stability: 0.5}, inputs: [{text: 'Hi.', voice_id: 'voice-1'}]}], []]);
+  assert.deepEqual(up({context_id: 'a', text: 'There.', flush: true}), [[{context_id: 'a', inputs: [{text: 'There.', voice_id: 'voice-1'}], flush: true}], []]);
+  assert.deepEqual(up({context_id: 'a', close_context: true}), [[{context_id: 'a', close_context: true}], []]);
+  assert.deepEqual(up({close_context: 'never-spoke'}), [[], [{contextId: 'never-spoke', isFinal: true}]], 'a context that never spoke closes here');
+  assert.deepEqual(up({close_socket: true}), [[{close_socket: true}], []]);
+  assert.deepEqual(d.toClient(JSON.stringify({audio: 'AQID', context_id: 'a'})), {audio: 'AQID', isFinal: null, normalizedAlignment: null, alignment: null, contextId: 'a'});
+  const timed = {chars: ['H', 'i'], char_start_times_ms: [0, 180], char_durations_ms: [180, 60]}, camel = {chars: ['H', 'i'], charStartTimesMs: [0, 180], charDurationsMs: [180, 60]};
+  assert.deepEqual(d.toClient(JSON.stringify({audio: 'AQID', alignment: timed, normalized_alignment: timed, context_id: 'a'})), {audio: 'AQID', isFinal: null, normalizedAlignment: camel, alignment: camel, contextId: 'a'});
+  assert.equal(d.toClient(JSON.stringify({is_final_audio_for_turn: true, context_id: 'a'})), undefined);
+  assert.deepEqual(d.toClient(JSON.stringify({is_final: true, context_id: 'a'})), {contextId: 'a', isFinal: true});
 });

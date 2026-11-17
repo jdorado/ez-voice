@@ -943,8 +943,8 @@ test('Deepgram requires separate private credentials and admits only the support
   const config = {...base, provider: 'deepgram', apiKey: keys.deepgram, ...deepgramKeys};
   const valid = validatePhoneConfig(config);
   assert.equal(valid.model, 'gemini-3.8-flash');
-  for (const bad of [{llmApiKey: undefined}, {ttsApiKey: 'bad'}, {language: 'es'}, {model: 'gemini-3.8-live'},
-    {thinking: 'minimal'}, {ttsModel: 'eleven_v4_turbo'}, {endpoint: 'https://example.com'}]) assert.throws(() => validatePhoneConfig({...config, ...bad}));
+  for (const bad of [{llmApiKey: undefined}, {ttsApiKey: 'bad'}, {language: 'ko'}, {model: 'gemini-3.8-live'},
+    {thinking: 'minimal'}, {ttsModel: 'eleven_v3'}, {endpoint: 'https://example.com'}]) assert.throws(() => validatePhoneConfig({...config, ...bad}));
   assert.throws(() => validatePhoneConfig({...base, apiKey: keys.openai, ...deepgramKeys}), /deepgram only/);
   // A thinking level is admitted per model: gemini-3.8-flash has no minimal level.
   assert.equal(validatePhoneConfig({...config, thinking: 'low'}).thinking, 'low');
@@ -1249,4 +1249,20 @@ test('an opener never touches a call the line answers', async () => {
     assert.equal(c.audio.opener, undefined); assert.equal(c.audio.stats.openerFixed, undefined);
     c.audio.input(loudFrame()); assert.equal(c.audio.queued.at(-1) ?? loudFrame(), loudFrame(), 'the caller is heard as is');
   } finally { c.audio.close(); await c.audio.done; }
+});
+
+test('deepgram: a v4 line tells Deepgram Flash v2.5, needs the speech relay and targets the Text-to-Dialogue socket', () => {
+  const line = {provider: 'deepgram', apiKey: 'd'.repeat(40), llmApiKey: 'AIza' + 'g'.repeat(35), ttsApiKey: 'sk_' + 'e'.repeat(48), voice: 'voice-1', ttsModel: 'eleven_v4_turbo', instructions: 'x'};
+  const bare = createAdapter(line);
+  assert.throws(() => bare.settings(), /speech relay/);
+  const adapter = createAdapter({...line, speech: {url: 'wss://listener/speak/multi-stream-input', token: 't'}});
+  assert.equal(adapter.settings().agent.speak.provider.model_id, 'eleven_flash_v2_5');
+  const url = new URL(adapter.speechTarget(new URLSearchParams('model_id=eleven_flash_v2_5&inactivity_timeout=20')).url);
+  assert.equal(url.pathname, '/v1/text-to-dialogue/multi-stream-input');
+  assert.equal(url.searchParams.get('model_id'), 'eleven_v4_turbo');
+  assert.equal(url.searchParams.get('inactivity_timeout'), null);
+  assert.equal(url.searchParams.get('sync_alignment'), 'true');
+  assert.equal(adapter.settings().agent.listen.provider.model, 'flux-general-en');
+  const spanish = createAdapter({...line, language: 'es', speech: {url: 'wss://listener/speak/multi-stream-input', token: 't'}}).settings().agent.listen.provider;
+  assert.deepEqual([spanish.model, spanish.language_hints], ['flux-general-multi', ['es', 'en']]);
 });

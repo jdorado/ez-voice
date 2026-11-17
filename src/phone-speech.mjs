@@ -56,9 +56,52 @@ export class Pronouncer {
   }
 }
 
+// ElevenLabs v4 speaks only on the Text-to-Dialogue socket. Deepgram speaks the TTS multi-context protocol to this relay; Dialogue
+// turns each of its frames into the dialogue protocol (a context registers the line's voice on its first text, text goes as
+// `inputs`, close_context is a boolean) and each dialogue reply back into the TTS shape Deepgram reads (`contextId`, `isFinal`,
+// camel-case character timings).
+// v4 takes stability only: speed and the other TTS settings are dropped.
+export class Dialogue {
+  constructor(voice) { this.voice = voice; this.open = new Set(); }
+  // One TTS frame in: [frames to send upstream, frames to answer the client with directly].
+  toUpstream(raw) {
+    const m = JSON.parse(raw.toString());
+    if (m.close_socket === true) return [[{close_socket: true}], []];
+    const id = m.context_id ?? (typeof m.close_context === 'string' ? m.close_context : undefined);
+    if (typeof id !== 'string') return [[], []];
+    if (m.close_context !== undefined && m.close_context !== false) {
+      if (!this.open.delete(id)) return [[], [{contextId: id, isFinal: true}]];
+      return [[{context_id: id, close_context: true}], []];
+    }
+    const text = typeof m.text === 'string' && m.text.trim() ? m.text : undefined;
+    const out = {context_id: id};
+    if (text) {
+      if (!this.open.has(id)) {
+        this.open.add(id);
+        Object.assign(out, {voices: [this.voice], ...(typeof m.voice_settings?.stability === 'number' && {voice_settings: {stability: m.voice_settings.stability}})});
+      }
+      out.inputs = [{text, voice_id: this.voice}];
+    }
+    if (m.flush === true && this.open.has(id)) out.flush = true;
+    if (!out.inputs && !out.flush) return [[], []];
+    return [[out], []];
+  }
+  toClient(raw) {
+    const m = JSON.parse(raw.toString());
+    // Deepgram tracks what was said from the character timings, so each chunk carries them in the TTS shape (the dialogue socket
+    // sends them with sync_alignment=true, which the target always sets).
+    const timing = a => a ? {chars: a.chars, charStartTimesMs: a.char_start_times_ms, charDurationsMs: a.char_durations_ms} : null;
+    if (typeof m.audio === 'string') return {audio: m.audio, isFinal: null, normalizedAlignment: timing(m.normalized_alignment ?? m.alignment), alignment: timing(m.alignment), contextId: m.context_id};
+    if (m.is_final === true) { this.open.delete(m.context_id); return {contextId: m.context_id, isFinal: true}; }
+    if (m.error) throw Error('TTS dialogue error');
+    return undefined; // is_final_audio_for_turn: the TTS protocol has no such message
+  }
+}
+
 export function relaySpeech(client, bridge, {socketFactory = (url, options) => new WebSocket(url, options), finished = () => {}, query = new URLSearchParams()} = {}) {
   const contexts = new Set(), queued = [], pronouncer = bridge.config.pronunciations && new Pronouncer(bridge.config.pronunciations); let bytes = 0, stopped = false, upstream;
-  bridge.stats.tts = {speed: bridge.config.ttsSpeed, contexts: 0, ...(pronouncer && {pronunciations: Object.keys(bridge.config.pronunciations).length})};
+  const dialogue = bridge.adapter.constructor.dialogue?.(bridge.config.ttsModel) ? new Dialogue(bridge.config.voice) : undefined;
+  bridge.stats.tts = {...(dialogue ? {model: bridge.config.ttsModel} : {speed: bridge.config.ttsSpeed}), contexts: 0, ...(pronouncer && {pronunciations: Object.keys(bridge.config.pronunciations).length})};
   const close = () => {
     if (stopped) return;
     stopped = true; queued.length = 0; clearTimeout(timeout);
@@ -78,8 +121,14 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
   const timeout = setTimeout(fail, 10000);
   client.on('error', fail); client.on('close', close);
   const forward = raw => {
-    const before = contexts.size, message = speechMessage(raw, bridge.config.ttsSpeed, contexts);
-    const item = {message, context: contexts.size > before};
+    const before = contexts.size, tts = speechMessage(raw, bridge.config.ttsSpeed, contexts), context = contexts.size > before;
+    if (!dialogue) return send({message: tts, context});
+    const [up, back] = dialogue.toUpstream(tts);
+    for (const reply of back) client.send(JSON.stringify(reply));
+    up.forEach((m, i) => send({message: JSON.stringify(m), context: context && i === 0}));
+  };
+  const send = item => {
+    const {message} = item;
     if (upstream?.readyState === WebSocket.OPEN) {
       if (upstream.bufferedAmount + Buffer.byteLength(message) > MAX_BUFFER) throw Error('TTS backpressure');
       upstream.send(message);
@@ -112,7 +161,11 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
     upstream.on('message', (raw, binary) => {
       if (stopped) return;
       if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > MAX_BUFFER) return fail();
-      try { client.send(raw, {binary}); } catch { fail(); }
+      try {
+        if (!dialogue) return client.send(raw, {binary});
+        const reply = dialogue.toClient(raw);
+        if (reply) client.send(JSON.stringify(reply));
+      } catch { fail(); }
     });
     upstream.on('error', fail);
     upstream.on('unexpected-response', (_request, response) => { response.resume(); fail(); });
