@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- ElevenLabs Realtime lines take the same pre-rendered opener on placed calls (`greetingFile` or `greeting`): played when the
+- A placed call's first line is its own setting, `openerFile` (or inline `opener`), on Deepgram and ElevenLabs Realtime lines; `greetingFile` stays
+  the greeting of a call a Deepgram line answers. ElevenLabs Realtime lines take the pre-rendered opener too: played when the
   callee's hello ends, and added to the session as an assistant message (`output_text`), so the model goes on from it. A session
   pre-opened at the dial carries the opener too.
 
@@ -13,12 +14,11 @@
 - Deepgram receipts keep the provider's split of each reply's wait (`replyLatency`: `totalMs`, `thinkMs` to the model's first words,
   `ttsMs` to the voice's first audio), from `AgentStartedSpeaking`.
 
-- Deepgram lines: a placed call's `greetingFile` is a pre-rendered opener. It is rendered once per voice, model, speed and text in
+- Deepgram lines: a placed call's opener (`openerFile`) is pre-rendered. It is rendered once per voice, model, speed and text in
   the line's ElevenLabs voice, played to Twilio as soon as the callee's hello ends (250 ms of voice at speaking level, then 400 ms of quiet; a pickup click is not a hello) or after
   3 s of silence, and the session starts with it in its history (`agent.context.messages`). The provider hears silence until the
   opener and its echo have passed, so it never answers the hello itself. The model-written greeting took 2 to 3 s after the hello.
-  Receipts: `openerOn` (hello or silence), `openerMs`, `openerWaitMs`, `openerError`. A line with inline instructions gives the same
-  line inline as `greeting`.
+  Receipts: `openerOn` (hello or silence), `openerMs`, `openerWaitMs`, `openerError`. A line with inline instructions gives it inline (`opener`).
 
 - Deepgram lines admit `gemini-3.6-flash` (thinking low, medium or high): first words in about 1.5 s against 2.6 to 2.8 s for 3.8
   Flash at low, with the same instruction-following in Quarre's text bench.

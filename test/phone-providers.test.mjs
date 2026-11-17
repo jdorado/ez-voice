@@ -1200,12 +1200,14 @@ test('deepgram: a placed call answered in silence gets the pre-rendered opener a
   } finally { c.audio.close(); await c.audio.done; }
 });
 
-test('an inline greeting is checked like a greeting file, on Deepgram and ElevenLabs lines', () => {
+test('a greeting is a Deepgram line\'s; an opener (a placed call\'s first line) is a Deepgram or ElevenLabs line\'s', () => {
   const line = {...base, apiKey: keys.deepgram, provider: 'deepgram', ...deepgramKeys};
-  assert.equal(validatePhoneConfig({...line, greeting: 'Hi, do you have a second?'}).provider, 'deepgram');
-  assert.throws(() => validatePhoneConfig({...line, greeting: ''}), /greeting/);
-  assert.equal(validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', greeting: 'Hola, ¿tiene un segundo?'}).provider, 'elevenlabs');
-  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.gemini, provider: 'gemini', greeting: 'Hi'}), /deepgram and elevenlabs only/);
+  assert.equal(validatePhoneConfig({...line, greeting: 'Thanks for calling back.', opener: 'Hi, do you have a second?'}).provider, 'deepgram');
+  assert.throws(() => validatePhoneConfig({...line, opener: ''}), /opener/);
+  const eleven = {...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max'};
+  assert.equal(validatePhoneConfig({...eleven, opener: 'Hola, ¿tiene un segundo?'}).provider, 'elevenlabs');
+  assert.throws(() => validatePhoneConfig({...eleven, greeting: 'Hi'}), /deepgram only/);
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.gemini, provider: 'gemini', opener: 'Hi'}), /deepgram and elevenlabs only/);
 });
 
 test('an ambience line plays a quiet office in the pauses and under the voice, and never one at speech level', async () => {

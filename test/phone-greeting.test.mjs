@@ -29,7 +29,7 @@ nodeTest('greetingFile is a Deepgram line setting that needs instruction files',
   assert.equal(validatePhoneConfig({...base, greetingFile: 'agent/greeting.txt'}).lines[0].greetingFile, 'agent/greeting.txt');
   for (const bad of ['/etc/passwd', '../x', 'a//b', '', 7, 'a\\b']) assert.throws(() => validatePhoneConfig({...base, greetingFile: bad}), /greetingFile/);
   assert.throws(() => validatePhoneConfig({...base, instructionsFiles: undefined, instructionsRoot: undefined, instructions: 'x', greetingFile: 'g.txt'}), /greetingFile/);
-  assert.throws(() => validatePhoneConfig({...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined, greetingFile: 'g.txt'}), /deepgram and elevenlabs only/);
+  assert.throws(() => validatePhoneConfig({...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined, greetingFile: 'g.txt'}), /deepgram only/);
 });
 
 nodeTest('a line with a fixed greeting has Deepgram speak it at once, with no model-written greeting', () => {
