@@ -33,6 +33,11 @@ async function call(provider, settings = {}, {fetch, ...options} = {}) {
 }
 const tone = (hz, rate, ms) => Int16Array.from({length: rate * ms / 1000}, (_, i) => Math.round(12000 * Math.sin(2 * Math.PI * hz * i / rate)));
 const rms = samples => Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length);
+// Caller frames as Twilio sends them: a person talking (about -9 dBFS), and the model's own voice echoed back by a handset (about -41 dBFS).
+const loudFrame = () => pcmToUlaw(tone(300, 8000, 20)).toString('base64');
+const echoFrame = () => pcmToUlaw(Int16Array.from(tone(300, 8000, 20), x => Math.round(x / 40))).toString('base64');
+const talk = (audio, frames, frame = loudFrame()) => { for (let i = 0; i < frames; i++) audio.input(frame); };
+const modelSpeaks = (socket, seconds, id = 'resp_1', item = 'item_1') => socket.receive({type: 'response.output_audio.delta', response_id: id, item_id: item, delta: Buffer.alloc(8000 * seconds, 0x55).toString('base64')});
 
 test('G.711 mu-law round-trips within its quantization error', () => {
   const samples = Int16Array.from([-32000, -8000, -1000, -100, -1, 0, 1, 100, 1000, 8000, 32000]);
@@ -144,6 +149,15 @@ test('a placed call answered in silence is greeted after the silent-answer wait;
     await sleep(200);
     assert.equal(hello.greetings(), 0); assert.equal(hello.audio.stats.silentAnswer, undefined);
   } finally { hello.audio.close('test'); hello.socket().close(); await hello.audio.done; }
+  // a callee mid-hello that the provider has not yet called speech is not greeted over: the greeting waits for a quiet moment
+  const talking = await placed();
+  try {
+    const voice = setInterval(() => talking.audio.input(loudFrame()), 20);
+    await sleep(250); clearInterval(voice);
+    assert.equal(talking.greetings(), 0, 'no greeting while there is sound on the line');
+    await wait(() => talking.greetings() === 1);
+    assert(talking.audio.stats.greetingMs >= 250, `greeted at ${talking.audio.stats.greetingMs} ms`);
+  } finally { talking.audio.close('test'); talking.socket().close(); await talking.audio.done; }
   // a session opened while the phone rang waits from the answer, not from its own start
   const twilio = Object.assign(new EventEmitter(), {readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], send() {}, close() {}});
   const sockets = [], early = new PhoneAudio(null, {...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', idleSeconds: 0, call: {id: 'r1', direction: 'out'}}, async () => {},
@@ -247,6 +261,7 @@ test('elevenlabs mints a client secret, configures the session natively and pass
   assert.equal(update.type, 'session.update'); assert.equal(update.session.model, 'eleven_realtime_v1_max'); assert.equal(update.session.audio.output.voice, 'vOZtmBu4RanHWgj2KUOY');
   assert.deepEqual([update.session.audio.input.format, update.session.audio.output.format], [{type: 'audio/pcmu'}, {type: 'audio/pcmu'}]);
   assert.deepEqual(update.session.audio.input.transcription, {language: 'es'});
+  assert.deepEqual(update.session.audio.input.turn_detection, {type: 'semantic_vad', interrupt_response: false}, 'the bridge, not the provider, cancels a reply');
   assert.deepEqual(update.session.tools.map(t => [t.type, t.name]), [['function', 'end_call']]);
   assert.equal(ready(), 0);
   socket().receive({type: 'conversation.created', conversation: {id: 'conv_1'}}); socket().receive({type: 'session.updated', session: {}});
@@ -255,8 +270,11 @@ test('elevenlabs mints a client secret, configures the session natively and pass
   socket().receive({type: 'session.updated', session: {}}); assert.equal(ready(), 1);
   socket().receive({type: 'response.output_audio.delta', delta: '//8='});
   assert.deepEqual(twilio.sent.at(-1), {event: 'media', streamSid, media: {payload: '//8='}});
-  // the caller starting to talk is a who-spoke signal and a barge-in: Twilio's queued playback is cleared
+  // the provider hearing the caller start is a who-spoke signal only; the bridge cuts the model off for a person talking over it
   socket().receive({type: 'input_audio_buffer.speech_started', audio_start_ms: 1});
+  assert.notDeepEqual(twilio.sent.at(-1), {event: 'clear', streamSid});
+  socket().receive({type: 'response.created', response: {id: 'resp_1'}}); modelSpeaks(socket(), 2);
+  talk(audio, 15);
   assert.deepEqual(twilio.sent.at(-1), {event: 'clear', streamSid});
   for (let i = 0; i < 300 && !audio.closing; i++) await new Promise(r => setTimeout(r, 10));
   assert.equal(audio.stats.reason, 'idle_timeout');
@@ -282,24 +300,40 @@ test('elevenlabs runs end_call natively and answers the function call', async ()
   await audio.done;
 });
 
-test('elevenlabs drops the audio a reply keeps streaming after the caller talked over it', async () => {
+test('elevenlabs: a person talking over the model stops it, the model is told what was heard, and the rest of that reply never plays', async () => {
   const {audio, twilio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
   await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
-  const media = () => twilio.sent.filter(m => m.event === 'media').length, delta = id => socket().receive({type: 'response.output_audio.delta', response_id: id, delta: '//8='});
+  const media = () => twilio.sent.filter(m => m.event === 'media').length, delta = id => socket().receive({type: 'response.output_audio.delta', response_id: id, item_id: 'item_' + id, delta: '//8='});
   try {
-    socket().receive({type: 'response.created', response: {id: 'resp_1'}}); delta('resp_1');
+    socket().receive({type: 'response.created', response: {id: 'resp_1'}}); modelSpeaks(socket(), 3, 'resp_1', 'item_resp_1');
     assert.equal(media(), 1);
-    socket().receive({type: 'input_audio_buffer.speech_started'});
+    talk(audio, 14); assert(!socket().events.some(e => e.type === 'response.cancel'), '280 ms of a person is not yet a barge-in');
+    talk(audio, 1);
     assert.deepEqual(twilio.sent.at(-1), {event: 'clear', streamSid});
-    delta('resp_1'); delta('resp_1'); // the provider streams the cancelled reply until it confirms: after the clear, none of it may reach Twilio
+    const cancel = socket().events.findIndex(e => e.type === 'response.cancel'), truncate = socket().events.find(e => e.type === 'conversation.item.truncate');
+    assert(cancel >= 0, 'the reply is cancelled');
+    assert.equal(truncate.item_id, 'item_resp_1'); assert(truncate.audio_end_ms >= 0 && truncate.audio_end_ms < 3000, `truncated at ${truncate.audio_end_ms} ms`);
+    assert.equal(audio.stats.interruptions.length, 1);
+    delta('resp_1'); delta('resp_1'); // the provider streams the cancelled reply until it confirms: none of it may reach Twilio
     assert.equal(media(), 1, 'a cancelled reply plays no more');
     socket().receive({type: 'output_audio_buffer.cleared', response_id: 'resp_1'}); socket().receive({type: 'response.done', response: {id: 'resp_1', status: 'cancelled'}});
     socket().receive({type: 'response.created', response: {id: 'resp_2'}}); delta('resp_2');
     assert.equal(media(), 2, 'the next reply plays');
-    socket().receive({type: 'response.done', response: {id: 'resp_2', status: 'completed'}});
-    socket().receive({type: 'input_audio_buffer.speech_started'}); // a sound while the model is silent cancels nothing
-    socket().receive({type: 'response.created', response: {id: 'resp_3'}}); delta('resp_3');
-    assert.equal(media(), 3, 'a reply that follows a sound while the model was silent plays');
+  } finally { audio.close(); await audio.done; }
+});
+
+test('elevenlabs: echo of the model and a click on the line never cut it off', async () => {
+  const {audio, twilio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
+  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
+  try {
+    socket().receive({type: 'response.created', response: {id: 'resp_1'}}); modelSpeaks(socket(), 5);
+    talk(audio, 100, echoFrame()); // two seconds of the model's own voice coming back at -41 dBFS
+    socket().receive({type: 'input_audio_buffer.speech_started'}); // the provider takes it for the caller
+    talk(audio, 3); talk(audio, 20, echoFrame()); talk(audio, 2); // two clicks, 60 and 40 ms
+    assert(!twilio.sent.some(m => m.event === 'clear'), 'nothing cleared'); assert(!socket().events.some(e => e.type === 'response.cancel'), 'nothing cancelled');
+    assert.equal(audio.stats.interruptions, undefined); assert.equal(audio.stats.speechOverModel, 1);
+    const forwarded = socket().events.filter(e => e.type === 'input_audio_buffer.append').map(e => e.audio);
+    assert(!forwarded.includes(echoFrame()), 'the echo never reaches the provider'); assert(forwarded.includes(loudFrame()), 'a loud frame does');
   } finally { audio.close(); await audio.done; }
 });
 
@@ -329,8 +363,8 @@ test('elevenlabs keeps dropping a cancelled reply\'s audio when the provider sen
   await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
   const media = () => twilio.sent.filter(m => m.event === 'media').length, delta = id => socket().receive({type: 'response.output_audio.delta', response_id: id, delta: '//8='});
   try {
-    socket().receive({type: 'response.created', response: {id: 'resp_1'}}); delta('resp_1');
-    socket().receive({type: 'input_audio_buffer.speech_started'});
+    socket().receive({type: 'response.created', response: {id: 'resp_1'}}); modelSpeaks(socket(), 2);
+    talk(audio, 15);
     socket().receive({type: 'response.done', response: {id: 'resp_1', status: 'cancelled'}});
     delta('resp_1');
     assert.equal(media(), 1, 'audio after response.done of a cancelled reply plays no more');
@@ -548,7 +582,7 @@ test('the idle hang-up waits for queued speech to finish playing, and a barge-in
   assert.equal(audio.stats.reason, 'idle_timeout'); await audio.done;
   const barge = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0.4}, {fetch: mintOk().fetch});
   await wait(() => barge.socket()); barge.socket().receive({type: 'session.created'}); barge.socket().receive({type: 'session.updated'});
-  barge.socket().receive(burst(30)); barge.socket().receive({type: 'input_audio_buffer.speech_started'});
+  barge.socket().receive(burst(30)); talk(barge.audio, 15);
   const started = Date.now();
   for (let i = 0; i < 400 && !barge.audio.closing; i++) await new Promise(r => setTimeout(r, 10));
   assert.equal(barge.audio.stats.reason, 'idle_timeout'); assert(Date.now() - started < 3000, 'the 30 s that were queued were cleared, not waited for');
@@ -1119,4 +1153,100 @@ test('invalid endpoint receipts preserve only fixed vocabulary hints, never prov
     assert.deepEqual(c.finished[0].providerWarnings[0].endpointHints, ['wss', 'api.elevenlabs.io', 'text-to-speech', 'url', 'endpoint', 'must', 'start']);
     assert(!JSON.stringify(c.finished).includes('secret-value-do-not-log'));
   } finally {await c.audio.close();}
+});
+
+test('deepgram: Flux end of turn is a line setting, passed to the agent as eot_threshold and eot_timeout_ms, and checked', () => {
+  const line = {...base, apiKey: keys.deepgram, provider: 'deepgram', ...deepgramKeys};
+  const listen = createAdapter({...line, eotThreshold: 0.85, eotTimeoutMs: 3000}).settings().agent.listen.provider;
+  assert.deepEqual(listen, {type: 'deepgram', model: 'flux-general-en', version: 'v2', eot_threshold: 0.85, eot_timeout_ms: 3000});
+  assert.deepEqual(createAdapter(line).settings().agent.listen.provider, {type: 'deepgram', model: 'flux-general-en', version: 'v2'}, 'unset keeps Deepgram\'s defaults');
+  assert.equal(validatePhoneConfig({...line, eotThreshold: 0.85, eotTimeoutMs: 3000}).provider, 'deepgram');
+  assert.throws(() => validatePhoneConfig({...line, eotThreshold: 0.3}), /eotThreshold/);
+  assert.throws(() => validatePhoneConfig({...line, eotTimeoutMs: 100}), /eotTimeoutMs/);
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', eotThreshold: 0.85}), /deepgram only/);
+});
+
+test('deepgram: a placed call\'s opener is pre-rendered, played when the callee\'s hello ends, and the hello never reaches the provider', async () => {
+  const clip = Buffer.alloc(1600, 0x55), renders = [];
+  const fetch = async (url, options) => { renders.push({url, body: JSON.parse(options.body)}); return new Response(clip, {status: 200}); };
+  const opener = 'Hi, do you have a second?';
+  const c = await call('deepgram', {...deepgramKeys, voice: 'l4Coq6695JDX9xtLqXDE', opener, idleSeconds: 0, call: {id: 'CA1', direction: 'out'}}, {fetch, silentAnswerMs: 5000});
+  try {
+    assert.deepEqual(createAdapter({...base, provider: 'deepgram', ...deepgramKeys, opener}).settings().agent.context,
+      {messages: [{type: 'History', role: 'assistant', content: opener}]}, 'the model starts with the opener already said');
+    const media = () => c.twilio.sent.filter(m => m.event === 'media').length;
+    for (let i = 0; i < 3; i++) { c.audio.input(loudFrame()); await sleep(20); }       // the pickup's click
+    for (let i = 0; i < 25; i++) { c.audio.input('//8='); await sleep(20); }
+    assert.equal(media(), 0, 'a click is not a hello');
+    for (let i = 0; i < 15; i++) { c.audio.input(loudFrame()); await sleep(20); }      // "Hello?"
+    assert.equal(media(), 0, 'nothing plays while the callee speaks');
+    for (let i = 0; i < 25; i++) { c.audio.input('//8='); await sleep(20); }          // then quiet
+    await wait(() => media() === 10);
+    assert.equal(renders[0].url, 'https://api.elevenlabs.io/v1/text-to-speech/l4Coq6695JDX9xtLqXDE?output_format=ulaw_8000');
+    assert.equal(renders[0].body.text, opener);
+    assert.equal(c.audio.stats.openerOn, 'hello'); assert(c.audio.stats.openerMs > 0);
+    const sent = c.socket()?.events.filter(e => Buffer.isBuffer(e)) ?? [];
+    assert(sent.every(b => b.every(x => x === 0xff)), 'the provider heard only silence before the opener played');
+    assert.equal(c.audio.transcript.receipt().transcript[0].text, opener);
+  } finally { c.audio.close(); await c.audio.done; }
+});
+
+test('deepgram: a placed call answered in silence gets the pre-rendered opener after the wait', async () => {
+  const fetch = async () => new Response(Buffer.alloc(800, 0x55), {status: 200});
+  const c = await call('deepgram', {...deepgramKeys, voice: 'v1', opener: 'Hi there, opener silent test.', idleSeconds: 0, call: {id: 'CA2', direction: 'out'}}, {fetch, silentAnswerMs: 150});
+  try {
+    await wait(() => c.twilio.sent.some(m => m.event === 'media'));
+    assert.equal(c.audio.stats.openerOn, 'silence');
+  } finally { c.audio.close(); await c.audio.done; }
+});
+
+test('a greeting is a Deepgram line\'s; an opener (a placed call\'s first line) is a Deepgram or ElevenLabs line\'s', () => {
+  const line = {...base, apiKey: keys.deepgram, provider: 'deepgram', ...deepgramKeys};
+  assert.equal(validatePhoneConfig({...line, greeting: 'Thanks for calling back.', opener: 'Hi, do you have a second?'}).provider, 'deepgram');
+  assert.throws(() => validatePhoneConfig({...line, opener: ''}), /opener/);
+  const eleven = {...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max'};
+  assert.equal(validatePhoneConfig({...eleven, opener: 'Hola, ¿tiene un segundo?'}).provider, 'elevenlabs');
+  assert.throws(() => validatePhoneConfig({...eleven, greeting: 'Hi'}), /deepgram only/);
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.gemini, provider: 'gemini', opener: 'Hi'}), /deepgram and elevenlabs only/);
+});
+
+test('an ambience line plays a quiet office in the pauses and under the voice, and never one at speech level', async () => {
+  const {officeBed} = await import('../src/phone-ambience.mjs');
+  const bed = officeBed(-46);
+  let loudest = 0;
+  for (let i = 0; i + 160 <= bed.length; i += 160) loudest = Math.max(loudest, rms(bed.subarray(i, i + 160)));
+  assert(20 * Math.log10(loudest / 32768) < -38, 'no 20 ms frame of the bed reaches speech level');
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, ambienceDb: -46}, {fetch: mintOk().fetch});
+  try {
+    await sleep(200);
+    const media = c.twilio.sent.filter(m => m.event === 'media');
+    assert(media.length >= 5, `room tone between lines (${media.length} frames in 200 ms)`);
+    assert(!c.audio.conversationStarted, 'room tone is not the persona speaking');
+  } finally { c.audio.close(); await c.audio.done; }
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', ambienceDb: -10}), /ambienceDb/);
+});
+
+test('elevenlabs: a placed call\'s opener plays on the hello, and the session takes it as already said', async () => {
+  const fetch = async (url, options) => url.includes('text-to-speech') ? new Response(Buffer.alloc(800, 0x55), {status: 200}) : mintOk().fetch(url, options);
+  const opener = 'Hola, ¿tiene un segundo?';
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', voice: 'JZJCDoXvs6Z2i7YDOkDX', opener, idleSeconds: 0, call: {id: 'CA3', direction: 'out'}}, {fetch, silentAnswerMs: 5000});
+  try {
+    await wait(() => c.socket()); c.socket().receive({type: 'session.created'}); c.socket().receive({type: 'session.updated'});
+    assert.deepEqual(c.socket().events.find(e => e.type === 'conversation.item.create')?.item,
+      {type: 'message', role: 'assistant', content: [{type: 'output_text', text: opener}]});
+    for (let i = 0; i < 15; i++) { c.audio.input(loudFrame()); await sleep(20); }
+    for (let i = 0; i < 25; i++) { c.audio.input('//8='); await sleep(20); }
+    await wait(() => c.twilio.sent.filter(m => m.event === 'media').length >= 5);
+    assert.equal(c.audio.stats.openerOn, 'hello');
+    const heard = c.socket().events.filter(e => e.type === 'input_audio_buffer.append').map(e => e.audio);
+    assert(!heard.includes(loudFrame()), 'the hello never reached the provider');
+  } finally { c.audio.close(); await c.audio.done; }
+});
+
+test('an opener never touches a call the line answers', async () => {
+  const c = await call('deepgram', {...deepgramKeys, voice: 'v1', opener: 'Hi, do you have a second?', idleSeconds: 0, greet: true, call: {id: 'CA4', direction: 'in'}}, {fetch: async () => { throw Error('no render for an answered call'); }});
+  try {
+    assert.equal(c.audio.opener, undefined); assert.equal(c.audio.stats.openerFixed, undefined);
+    c.audio.input(loudFrame()); assert.equal(c.audio.queued.at(-1) ?? loudFrame(), loudFrame(), 'the caller is heard as is');
+  } finally { c.audio.close(); await c.audio.done; }
 });

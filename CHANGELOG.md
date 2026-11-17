@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- A placed call's first line is its own setting, `openerFile` (or inline `opener`), on Deepgram and ElevenLabs Realtime lines; `greetingFile` stays
+  the greeting of a call a Deepgram line answers. ElevenLabs Realtime lines take the pre-rendered opener too: played when the
+  callee's hello ends, and added to the session as an assistant message (`output_text`), so the model goes on from it. A session
+  pre-opened at the dial carries the opener too.
+
+- `ambienceDb` (any provider, -60..-30 dBFS): a quiet synthetic office (1/f room tone and soft keyboard clicks, no voices, a 20 s
+  loop) mixed under the voice and played in its pauses, ported from Quarre's phone bench (its level there: -46). It hides the hard
+  onset and offset of synthetic speech and the dead line between replies; no 20 ms frame of it reaches speech level.
+
+- Deepgram receipts keep the provider's split of each reply's wait (`replyLatency`: `totalMs`, `thinkMs` to the model's first words,
+  `ttsMs` to the voice's first audio), from `AgentStartedSpeaking`.
+
+- Deepgram lines: a placed call's opener (`openerFile`) is pre-rendered. It is rendered once per voice, model, speed and text in
+  the line's ElevenLabs voice, played to Twilio as soon as the callee's hello ends (250 ms of voice at speaking level, then 400 ms of quiet; a pickup click is not a hello) or after
+  3 s of silence, and the session starts with it in its history (`agent.context.messages`). The provider hears silence until the
+  opener and its echo have passed, so it never answers the hello itself. The model-written greeting took 2 to 3 s after the hello.
+  Receipts: `openerOn` (hello or silence), `openerMs`, `openerWaitMs`, `openerError`. A line with inline instructions gives it inline (`opener`).
+
+- Deepgram lines admit `gemini-3.6-flash` (thinking low, medium or high): first words in about 1.5 s against 2.6 to 2.8 s for 3.8
+  Flash at low, with the same instruction-following in Quarre's text bench.
+
+- Deepgram lines take Flux's end of turn as settings: `eotThreshold` (0.5..1, the confidence Flux needs to end the caller's turn) and
+  `eotTimeoutMs` (500..10000), passed as the agent's `eot_threshold` and `eot_timeout_ms` (accepted by Deepgram, probed 2026-11-17).
+  Unset keeps Deepgram's defaults. A higher threshold waits longer, so a caller pausing mid-sentence is not answered over.
+
+- ElevenLabs turn-taking is the bridge's (`bridgeTurns`). Five live calls (2026-11-16) showed the provider's own barge-in cancelling
+  replies on non-speech: clicks, breaths and the model's own voice echoed back by the callee's handset (-39 to -45 dBFS), each followed
+  by 6 to 14 s of silence and a restarted greeting. Sessions now take `turn_detection: {type: 'semantic_vad', interrupt_response:
+  false}`; the bridge cuts the model off only after 300 ms of caller sound at about -33 dBFS or louder (`response.cancel`, then
+  `conversation.item.truncate` to what Twilio had played, so the model continues instead of restarting), suppresses echo (while the
+  model's audio plays and 600 ms after, quieter caller sound reaches the provider as silence: fed the echo, the model answered its
+  own words). The end of the caller's turn stays the provider's: closing short turns from the bridge (`input_audio_buffer.commit`)
+  made the provider commit some turns twice and the model answer twice (lab calls), so it was dropped. Lab (`voice_lab.sh cases`, echo at -20 dB plus clicks):
+  14 false cut-offs to 0; clean-line reply gaps 0.58 to 1.51 s to 0.43 to 0.79 s. Receipts: `interruptions` ({atMs, playedMs}),
+  `speechOverModel` (provider speech starts the bridge did not take for a barge-in), and `turns`: a timeline of
+  replies created and done (with status), their first audio (played or dropped), speech starts and stops, cancels, truncates and commits.
+- The silent-answer greeting of a placed call waits for a quiet moment (at most another `silentAnswerMs`): it had started over a
+  callee's "This is Dave" that the provider had not yet called speech.
+
 - Inbound greeting: an audible startup (a caller who speaks, or line noise, as the call connects) gets one 250 ms window after its
   audio is forwarded, then the greeting is requested; continuing line energy no longer defers it (it was 1.2 s, then re-deferred in
   250 ms steps for up to 5 s while the line stayed above the audible level). Early caller audio is still forwarded first. Once the

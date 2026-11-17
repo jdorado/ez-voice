@@ -35,12 +35,14 @@ export class DeepgramAdapter {
   static limits = {instructions: 13500, session: 16000};
   static label = 'Deepgram';
   // gemini-3.5-flash-lite answers in about 0.9 s a request and has no thinking to configure (a `thinking` level is refused for it).
-  static models = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+  // gemini-3.6-flash at `low` starts answering in about 1.5 s against 3.8 Flash's 2.6 to 2.8 s and followed a scripted opener as well (6
+  // of 6) with the same coherence in Quarre's text bench (2026-11-17).
+  static models = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
   static defaultModel = 'gemini-3.8-flash';
   // How long the model may think before it answers, which is delay on a phone line: gemini-3.8-flash thinks by default (over a
   // thousand thought tokens a turn, 5 to 17 s to a first token) and has no minimal level, but `low` answers in about 2.5 s with
   // the same triage quality (measured). Google rejects a level a model does not take, so levels are admitted per model.
-  static thinkingLevels = {'gemini-3.8-flash': ['low', 'medium', 'high']};
+  static thinkingLevels = {'gemini-3.8-flash': ['low', 'medium', 'high'], 'gemini-3.6-flash': ['low', 'medium', 'high']};
   static defaultVoice = 'JBFqnCBsd6RMkjVDRZzb';
   static ttsModels = ['eleven_flash_v2_5'];
   static defaultTtsModel = 'eleven_flash_v2_5';
@@ -100,7 +102,11 @@ export class DeepgramAdapter {
       input: {encoding: 'mulaw', sample_rate: 8000},
       output: {encoding: 'mulaw', sample_rate: 8000, container: 'none'},
     }, agent: {
-      listen: {provider: {type: 'deepgram', model: 'flux-general-en', version: 'v2'}},
+      // Flux's end of turn: Deepgram accepts eot_threshold 0.5..1 and eot_timeout_ms on the agent's listen provider (probed 2026-11-17).
+      listen: {provider: {type: 'deepgram', model: 'flux-general-en', version: 'v2', ...(c.eotThreshold !== undefined && {eot_threshold: c.eotThreshold}),
+        ...(c.eotTimeoutMs !== undefined && {eot_timeout_ms: c.eotTimeoutMs})}},
+      // A placed call's pre-rendered opener (phone-opener.mjs) is played by the bridge; the model starts with it already said.
+      ...(c.opener && {context: {messages: [{type: 'History', role: 'assistant', content: c.opener}]}}),
       think: {
         provider: {type: 'google'},
         endpoint: c.think ? {url: c.think.url, headers: {authorization: `Bearer ${c.think.token}`}} : this.thinkTarget(),
@@ -119,6 +125,7 @@ export class DeepgramAdapter {
     if (this.config.greeting) return [{type: 'InjectAgentMessage', message: this.config.greeting}];
     this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}];
   }
+  injectAgentMessage(message) { return [{type: 'InjectAgentMessage', message}]; }
   audioIn(payload) { return [Buffer.from(payload, 'base64')]; }
   parse(event) {
     if (Buffer.isBuffer(event)) return event.length ? [{type: 'audio', audio: event.toString('base64')}] : [];
@@ -131,6 +138,8 @@ export class DeepgramAdapter {
       case 'SettingsApplied':
         if (this.ready) return [];
         this.ready = true; return [{type: 'ready', id: this.id}];
+      // Deepgram's own split of each reply's wait, in seconds: think (to the model's first words), tts (to the voice's first audio).
+      case 'AgentStartedSpeaking': return [{type: 'latency', total: event.total_latency, think: event.ttt_latency, tts: event.tts_latency}];
       case 'UserStartedSpeaking': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
       case 'ConversationText':
         if (this.greetingInjected && event.role === 'user' && event.content === CONNECTED) {this.greetingInjected = false; return [];}

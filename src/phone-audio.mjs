@@ -5,8 +5,10 @@ import {PHONE_TOOLS} from './phone-tools.mjs';
 const parseArgs = value => { try { const args = typeof value === 'string' ? JSON.parse(value) : value; return args && typeof args === 'object' && !Array.isArray(args) ? args : {}; } catch { return {}; } };
 import {createAdapter} from './phone-providers/index.mjs';
 import {Transcript} from './phone-providers/transcript.mjs';
-import {RING_CYCLE, audible} from './phone-providers/ringback.mjs';
+import {RING_CYCLE, audible, level} from './phone-providers/ringback.mjs';
 import {PhoneAdvice} from './phone-advice.mjs';
+import {renderOpener} from './phone-opener.mjs';
+import {Ambience} from './phone-ambience.mjs';
 
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
 const RING_AFTER_READY_MS = 5000;
@@ -19,6 +21,23 @@ const GREETING_BOUND_MS = 5000;
 // A placed call waits for the callee's hello. One answered in silence (a screener, a cautious owner, a silent mailbox) would stay
 // silent on both ends until a hang-up: after this long with no caller speech the model speaks first.
 const SILENT_ANSWER_MS = 3000;
+// Turn-taking the bridge owns for a provider that leaves it to it (`bridgeTurns`). The model is cut off only by caller sound loud enough to
+// be a person talking (RMS about -33 dBFS) for BARGE_MS: a callee's handset echoed the model's own voice back at -39 to -45 dBFS, and a
+// click or a breath lasts a frame or two (live calls, 2026-11-16). ECHO_TAIL_MS after the model's last audio its echo can still arrive.
+// The end of the caller's turn stays the provider's: closing short turns from here (input_audio_buffer.commit after a quiet gap) was
+// tried and dropped, because the provider then sometimes committed the same turn again and the model answered it twice (lab calls,
+// 2026-11-17).
+const BARGE_RMS = 700, BARGE_MS = 300, ECHO_TAIL_MS = 600;
+
+const TRACED = new Set(['input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped', 'input_audio_buffer.committed', 'input_audio_buffer.commit',
+  'response.created', 'response.done', 'response.cancel', 'response.create', 'response.output_audio.delta', 'output_audio_buffer.cleared',
+  'conversation.item.truncate', 'conversation.item.truncated', 'error']);
+// A placed call's pre-rendered first line (`opener`, see phone-opener.mjs) plays once the callee's hello ends: OPENER_HELLO_MS of their
+// voice at speaking level (BARGE_RMS) followed by OPENER_QUIET_MS of quiet, or after silentAnswerMs with no hello. A pickup's click or
+// line noise is shorter or quieter (100 ms of plain audible sound started the opener before the callee's hello on a lab call). Until it
+// has played and its echo has passed, the provider hears silence, so it never answers the hello itself.
+const OPENER_HELLO_MS = 250, OPENER_QUIET_MS = 400, OPENER_ECHO_MS = 300;
+const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
 // until `adopt` hands it one.
@@ -37,6 +56,14 @@ export class PhoneAudio {
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     if (config.ttsSpeed !== undefined) this.stats.ttsSpeed = config.ttsSpeed;
     if (config.greeting) this.stats.greetingFixed = true;
+    // A quiet office under the voice and in its pauses (`ambienceDb`, phone-ambience.mjs): the queue at Twilio is kept about 60 ms
+    // ahead with room tone whenever the persona is silent, and the tone runs on under what it says.
+    if (config.ambienceDb !== undefined) { this.ambience = new Ambience(config.ambienceDb); this.ambienceTick = setInterval(() => this.fillAmbience(), 20); }
+    if (config.opener && config.call?.direction === 'out') { // a placed call's first line only: an answered call keeps its own greeting
+      this.opener = {state: 'waiting', heardMs: 0}; this.stats.openerFixed = true;
+      this.openerClip = renderOpener(config, config.opener, fetchImpl); this.openerClip.catch(() => {});
+      if (twilio) this.openerTimer = setTimeout(() => this.playOpener('silence'), this.silentAnswerMs);
+    }
     if (config.advisor) this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs, onReady: () => this.pushAdvice(),
       receipts: this.stats.advice = []});
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
@@ -105,19 +132,26 @@ export class PhoneAudio {
     else { clearTimeout(this.startTimer); this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000); } // the call's own start allowance
     clearTimeout(this.duration); this.duration = setTimeout(() => this.close('duration_limit'), (this.config.maxCallSeconds ?? 180) * 1000);
     this.armSilentAnswer();
+    if (this.opener) { clearTimeout(this.openerTimer); this.openerTimer = setTimeout(() => this.playOpener('silence'), this.silentAnswerMs); }
   }
   // A placed call, answered and ready, in which nobody has spoken after `silentAnswerMs` is greeted (`silentAnswer` in the receipt).
   armSilentAnswer() {
-    if (this.config.greet || this.config.call?.direction !== 'out' || !this.ready || this.twilio === DETACHED || this.silentAnswer) return;
-    this.silentAnswer = setTimeout(() => {
+    if (this.config.greet || this.opener || this.config.call?.direction !== 'out' || !this.ready || this.twilio === DETACHED || this.silentAnswer) return;
+    const armedAt = Date.now();
+    const check = () => {
       if (this.stats.inputTranscriptEvents || this.conversationStarted) return; // the callee spoke: the provider answers them
+      // Sound on the line may be a callee mid-hello that the provider has not called speech yet (an owner's "This is Dave" met the
+      // greeting at 3 s): wait for a quiet moment, at most another silentAnswerMs, so a noisy line is still greeted.
+      if (Date.now() - (this.soundHeardAt ?? -Infinity) < 800 && Date.now() - armedAt < 2 * this.silentAnswerMs) return void (this.silentAnswer = setTimeout(check, 200));
       this.greetSilent = true; this.stats.silentAnswer = true; this.greet();
-    }, this.silentAnswerMs);
+    };
+    this.silentAnswer = setTimeout(check, this.silentAnswerMs);
   }
   get usable() { return !this.closing && !this.completed; }
   send(message) {
     if (this.provider?.readyState !== WebSocket.OPEN) return false;
     if (this.provider.bufferedAmount > 256000) { this.close('provider_backpressure'); return false; }
+    if (!Buffer.isBuffer(message)) this.trace(message, 'out');
     this.provider.send(Buffer.isBuffer(message) ? message : JSON.stringify(message)); return true;
   }
   input(payload) {
@@ -126,9 +160,16 @@ export class PhoneAudio {
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
     const sound = audible(payload);
     if (sound) this.soundHeardAt = Date.now();
+    if (this.opener && this.opener.state !== 'done') { this.listenOpener(level(payload) >= BARGE_RMS); payload = silenceLike(payload); }
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
-    if (this.ready && !this.flushingInput) this.forward(payload);
+    if (this.ready && !this.flushingInput) {
+      if (!this.adapter.constructor.bridgeTurns) this.forward(payload);
+      // Echo suppression: while the model's audio plays at the phone and its echo can still come back, only caller sound loud enough
+      // to be a person reaches the provider; quieter sound goes as silence. Fed the echo, the provider took the model's own words for the
+      // caller's ("Is this Juan?" came back as "Yes. This is Juan.") and answered itself (lab, -20 dB echo).
+      else { this.forward(Date.now() - (this.soundUntil ?? 0) < ECHO_TAIL_MS && level(payload) < BARGE_RMS ? silenceLike(payload) : payload); this.listen(payload); }
+    }
     else {
       if (sound) this.startupSound = true;
       this.queuedBytes += payload.length;
@@ -136,6 +177,60 @@ export class PhoneAudio {
       // ready, as long as the start timeout (15 s) allows; that timeout, not this, ends a call whose provider never comes up.
       if (this.queuedBytes > 200000) return this.close('startup_audio_limit');
       this.queued.push(payload);
+    }
+  }
+  // Caller sound against the bridge's turn rules (see BARGE_RMS): one Twilio frame (20 ms) at a time.
+  listen(payload) {
+    const now = Date.now(), rms = level(payload), modelSounding = now < (this.soundUntil ?? 0);
+    if (rms >= BARGE_RMS) { this.loudMs = (this.loudMs ?? 0) + 20; this.quietMs = 0; }
+    else if ((this.quietMs = (this.quietMs ?? 0) + 20) >= 200) this.loudMs = 0;
+    if (this.loudMs >= BARGE_MS) {
+      this.loudMs = 0;
+      if (modelSounding) this.bargeIn(now);
+    }
+  }
+  // Stop the model for the caller: the adapter cancels the reply and cuts the model's record of it to what Twilio had played.
+  bargeIn(now) {
+    const playedMs = this.item ? Math.max(0, Math.min(now - this.item.playFrom, this.item.bytes / 8)) : 0;
+    for (const message of this.adapter.interrupt({item: this.item?.id, playedMs})) this.send(message);
+    if ((this.stats.interruptions ??= []).length < 32) this.stats.interruptions.push({atMs: now - this.startedAt, playedMs: Math.round(playedMs)});
+    this.item = undefined;
+    this.handle({type: 'interrupted'});
+  }
+  // The callee's hello, as Twilio frames arrive (20 ms each): the opener plays once it has ended; after the opener, its echo's window.
+  listenOpener(sound) {
+    const o = this.opener, now = Date.now();
+    if (o.state === 'waiting') {
+      if (sound) { o.heardMs += 20; o.lastSoundAt = now; }
+      else if (o.heardMs >= OPENER_HELLO_MS && now - o.lastSoundAt >= OPENER_QUIET_MS) this.playOpener('hello');
+    } else if (o.state === 'playing' && now > (this.soundUntil ?? 0) + OPENER_ECHO_MS) o.state = 'done';
+  }
+  playOpener(why) {
+    if (!this.opener || this.opener.state !== 'waiting' || this.closing || this.completed) return;
+    this.opener.state = 'rendering'; clearTimeout(this.openerTimer);
+    const asked = Date.now(); this.stats.openerOn = why;
+    this.openerClip.then(frames => {
+      if (this.closing || this.completed) return;
+      const now = Date.now(), bytes = frames.reduce((n, f) => n + Buffer.from(f, 'base64').length, 0);
+      if (this.twilio.readyState === WebSocket.OPEN) for (const payload of frames) this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience ? this.ambience.under(payload) : payload}}));
+      this.playedUntil = this.soundUntil = this.speakingUntil = Math.max(this.playedUntil ?? 0, now) + bytes / 8;
+      this.conversationStarted = true; this.activeAt = now; this.stats.outputBytes += bytes;
+      this.stats.firstSpeechMs ??= now - this.startedAt; this.stats.firstAudioMs ??= now - this.startedAt;
+      Object.assign(this.stats, {openerMs: now - this.startedAt, openerWaitMs: now - asked});
+      this.transcript.add('model', {text: this.config.opener});
+      this.opener.state = 'playing';
+    }, () => {
+      // No clip (the render failed): the provider speaks the same line, which is already the first entry of its history.
+      this.stats.openerError = 'render_failed'; this.opener.state = 'done';
+      for (const message of this.adapter.injectAgentMessage?.(this.config.opener) ?? []) this.send(message);
+    });
+  }
+  fillAmbience() {
+    if (this.twilio.readyState !== WebSocket.OPEN || this.ringing || this.closing || this.completed) return;
+    const now = Date.now();
+    for (let n = 0; (this.playedUntil ?? 0) < now + 60 && n < 10; n++) {
+      this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience.frame()}}));
+      this.playedUntil = Math.max(this.playedUntil ?? 0, now) + 20;
     }
   }
   forward(payload) { for (const message of this.adapter.audioIn(payload)) this.send(message); }
@@ -175,7 +270,19 @@ export class PhoneAudio {
     this.greeted = true; this.stats.greetingMs = Date.now() - this.startedAt;
     for (const message of messages) this.send(message);
   }
-  event(event) { for (const item of this.adapter.parse(event)) this.handle(item); }
+  event(event) { this.trace(event, 'in'); for (const item of this.adapter.parse(event)) this.handle(item); }
+  // A compact timeline of the turn-taking events on the receipt (`turns`, at most 400): when replies start and end and how, whether
+  // their audio was played or dropped, and the cancels and commits the bridge sent. A reply that never reaches the phone shows here.
+  trace(message, way) {
+    const type = message?.type;
+    if (typeof type !== 'string' || !TRACED.has(type)) return;
+    const response = message.response?.id ?? message.response_id;
+    if (type === 'response.output_audio.delta') { if (this.tracedAudio?.has(response)) return; (this.tracedAudio ??= new Set()).add(response); }
+    const turns = this.stats.turns ??= [];
+    if (turns.length < 400) turns.push({ms: Date.now() - this.startedAt, way, type, ...(response && {response}), ...(message.response?.status && {status: message.response.status}),
+      ...(message.response?.status_details?.reason && {reason: message.response.status_details.reason}), ...(message.audio_end_ms !== undefined && {audioEndMs: message.audio_end_ms}),
+      ...(type === 'response.output_audio.delta' && {dropped: this.adapter.cancelled?.has(response) ?? false}), ...(message.error?.code && {code: message.error.code})});
+  }
   handle(item) {
     if (item.type === 'closed') {
       this.stats.finalized = true; this.stats.usage = item.usage;
@@ -189,6 +296,7 @@ export class PhoneAudio {
         clearTimeout(this.startTimer); this.ready = true; this.stats.providerSessionId = item.id;
         this.stats.ready = true; this.stats.readyMs = Date.now() - this.startedAt; this.startup('readyMs');
         this.flushInput(); this.armSilentAnswer();
+        if (this.opener) for (const message of this.adapter.history?.(this.config.opener) ?? []) this.send(message); // Deepgram: in its settings
         if (this.ringing) this.ringCap = setTimeout(() => this.stopRing('timeout'), this.ringAfterReadyMs);
         this.onReady();
         break;
@@ -211,6 +319,8 @@ export class PhoneAudio {
         }
         // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so audio a provider sends faster than
         // that is still playing after it arrived: `playedUntil` is when Twilio's queue runs out, `soundUntil` when its last speech does.
+        if (item.item && item.item !== this.item?.id) this.item = {id: item.item, playFrom: Math.max(this.playedUntil ?? 0, now), bytes: 0};
+        if (this.item && item.item === this.item.id) this.item.bytes += bytes;
         this.playedUntil = Math.max(this.playedUntil ?? 0, now) + bytes / 8;
         if (sound) this.soundUntil = this.playedUntil;
         // Where output audio only flows while the model speaks, its arrival is the model speaking (GPT-Live streams silence):
@@ -218,13 +328,14 @@ export class PhoneAudio {
         if (this.adapter.constructor.audioMeansSpeech) { this.activeAt = now; this.speakingUntil = this.playedUntil; }
         if (this.twilio.readyState === WebSocket.OPEN) {
           if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
-          this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: item.audio}}));
+          this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience ? this.ambience.under(item.audio) : item.audio}}));
         }
         break;
       case 'speech':
         if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
+          if (item.start && Date.now() < (this.soundUntil ?? 0)) this.stats.speechOverModel = (this.stats.speechOverModel ?? 0) + 1;
           if (item.start) this.callerStoppedAt = undefined;
           else if (item.stop) {
             this.callerStoppedAt = Date.now();
@@ -255,6 +366,11 @@ export class PhoneAudio {
         this.speakingUntil = this.playedUntil = this.soundUntil = 0;
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
         break;
+      case 'latency': {
+        const ms = x => typeof x === 'number' && Number.isFinite(x) ? Math.round(x * 1000) : undefined;
+        if ((this.stats.replyLatency ??= []).length < 64) this.stats.replyLatency.push({totalMs: ms(item.total), thinkMs: ms(item.think), ttsMs: ms(item.tts)});
+        break;
+      }
       case 'tool': this.tool(item); break;
       case 'warning':
         if ((this.stats.providerWarnings ??= []).length < 8) this.stats.providerWarnings.push({code: item.code,
@@ -386,7 +502,7 @@ export class PhoneAudio {
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.closing = true; this.stats.reason = reason;
-    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     if (this.provider?.readyState === WebSocket.OPEN) {
@@ -402,7 +518,7 @@ export class PhoneAudio {
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
-    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();

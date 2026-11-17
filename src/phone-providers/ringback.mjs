@@ -13,6 +13,19 @@ const toneFrames = Array.from({length: ON}, (_, f) => pcmToUlaw(tone.subarray(f 
 const quiet = Buffer.alloc(FRAME, 0xff).toString('base64'); // mu-law silence
 export const RING_CYCLE = [...toneFrames, ...Array(OFF).fill(quiet)];
 
+// The loudest 20 ms frame of a chunk of mu-law audio (base64), as RMS.
+export function level(base64) {
+  const samples = ulawToPcm(Buffer.from(base64, 'base64'));
+  let loudest = 0;
+  for (let start = 0; start < samples.length; start += FRAME) {
+    const frame = samples.subarray(start, start + FRAME);
+    let sum = 0;
+    for (const s of frame) sum += s * s;
+    if (frame.length) loudest = Math.max(loudest, Math.sqrt(sum / frame.length));
+  }
+  return loudest;
+}
+
 // Whether a chunk of mu-law audio (base64) carries speech: any 20 ms frame of it above the silence level.
 export function audible(base64) {
   const samples = ulawToPcm(Buffer.from(base64, 'base64'));

@@ -22,6 +22,11 @@ export class ElevenLabsAdapter {
   static keyPattern = /^sk_[A-Za-z0-9]{20,100}$/;
   static confirmsClose = false;
   static audioMeansSpeech = true;
+  // The provider's own barge-in cancels a reply on any sound it takes for speech: a click, a breath, the model's own voice echoed back by
+  // the callee's handset (five live calls on 2026-11-16: three replies cut with no word on the caller's line, then 6 to 14 s of silence).
+  // Its sessions take `interrupt_response: false` and keep reporting `speech_started`, so the bridge decides: it cancels only on sustained
+  // caller sound (`interrupt`).
+  static bridgeTurns = true;
   // Mini does not call tools: given end_call it writes "[end_call]" into its speech instead, while Max issues real function calls.
   static toolModels = ['eleven_realtime_v1_max'];
   // A session can be opened while an outbound call rings and wait for its media stream (see `warmSeconds` in `configure`).
@@ -49,7 +54,7 @@ export class ElevenLabsAdapter {
     return {type: 'session.update', session: {type: 'realtime', model: c.model, instructions: c.instructions, output_modalities: ['audio'],
       max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15 + (c.warmSeconds ?? 0))),
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
-      audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
+      audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}, turn_detection: {type: 'semantic_vad', interrupt_response: false}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
   }
   // An empty response request can produce no turn. Supply the actual transport event,
   // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
@@ -72,16 +77,12 @@ export class ElevenLabsAdapter {
       case 'response.output_audio.delta':
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         if (this.cancelled.has(event.response_id)) return []; // the reply the caller already talked over
-        return [{type: 'audio', audio: event.delta}];
-      // Server-side voice activity says at once when the caller starts talking (a barge-in also stops what is queued at Twilio).
-      // The provider cancels the reply in flight but keeps streaming it, faster than realtime, until `output_audio_buffer.cleared`
-      // (about 0.3 s later: seconds of speech). That audio would reach Twilio after the clear and play over the caller (a voicemail
-      // greeting that paused mid-sentence was talked over for six seconds), so the cancelled reply's audio is dropped from here.
-      // The id stays for the call: the provider may send `response.done` before its last stray audio, and ids are never reused.
+        return [{type: 'audio', audio: event.delta, item: event.item_id}];
+      // Server-side voice activity says when it hears the caller start; with `interrupt_response: false` that cancels nothing (see
+      // `bridgeTurns`): the bridge decides whether it was speech and calls `interrupt`.
       case 'input_audio_buffer.speech_started':
-        if (this.response) this.cancelled.add(this.response);
         this.callerSpeaking = true;
-        return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
+        return [{type: 'speech', who: 'caller', start: true}];
       case 'input_audio_buffer.speech_stopped': this.callerSpeaking = false; return [{type: 'speech', who: 'caller', stop: true}];
       // The caller's words arrive whole per utterance, the model's as it speaks.
       case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
@@ -89,6 +90,8 @@ export class ElevenLabsAdapter {
       case 'response.output_item.done':
         return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
       case 'error':
+        // A cancel the bridge sent can meet a reply that just ended: what it asked for is moot, so it ends nothing.
+        if (Date.now() - (this.controlAt ?? -Infinity) < 1500 && /cancel|response/i.test(String(event.error?.code ?? ''))) return [{type: 'warning', code: String(event.error.code).slice(0, 100)}];
         // The provider answers a caller who speaks first on its own; a greeting asked for in the same instant meets that reply in flight.
         // What was asked for is happening, so this ends nothing (the receipt keeps a warning). The same error for anything else, such as
         // a tool result that asked the model to go on, still ends the call.
@@ -97,6 +100,19 @@ export class ElevenLabsAdapter {
       default: return [];
     }
   }
+  // The caller talked over the reply: stop it, drop the audio it keeps streaming until it confirms (`output_audio_buffer.cleared`, seconds
+  // of speech at its burst rate, which would play over the caller), and cut the model's record of it to what was heard (`playedMs` of
+  // `item`), so its next turn follows on from there instead of assuming the whole reply was heard. Ids stay cancelled for the call:
+  // `response.done` can come before the last stray audio, and ids are never reused.
+  interrupt({item, playedMs}) {
+    this.controlAt = Date.now();
+    const messages = [];
+    if (this.response) { this.cancelled.add(this.response); messages.push({type: 'response.cancel'}); }
+    if (item) messages.push({type: 'conversation.item.truncate', item_id: item, content_index: 0, audio_end_ms: Math.max(0, Math.round(playedMs))});
+    return messages;
+  }
+  // A line the bridge already played (a placed call's pre-rendered opener): the model takes it as its own and goes on from there.
+  history(text) { return [{type: 'conversation.item.create', item: {type: 'message', role: 'assistant', content: [{type: 'output_text', text}]}}]; }
   toolResult(id, name, output, {final = false} = {}) {
     this.greetedAt = undefined;
     const answer = {type: 'conversation.item.create', item: {type: 'function_call_output', call_id: id, output: JSON.stringify(output)}};
