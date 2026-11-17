@@ -1203,3 +1203,19 @@ test('deepgram: an inline greeting is checked like a greeting file', () => {
   assert.throws(() => validatePhoneConfig({...line, greeting: ''}), /greeting/);
   assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', greeting: 'Hi'}), /deepgram only/);
 });
+
+test('an ambience line plays a quiet office in the pauses and under the voice, and never one at speech level', async () => {
+  const {officeBed} = await import('../src/phone-ambience.mjs');
+  const bed = officeBed(-46);
+  let loudest = 0;
+  for (let i = 0; i + 160 <= bed.length; i += 160) loudest = Math.max(loudest, rms(bed.subarray(i, i + 160)));
+  assert(20 * Math.log10(loudest / 32768) < -38, 'no 20 ms frame of the bed reaches speech level');
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, ambienceDb: -46}, {fetch: mintOk().fetch});
+  try {
+    await sleep(200);
+    const media = c.twilio.sent.filter(m => m.event === 'media');
+    assert(media.length >= 5, `room tone between lines (${media.length} frames in 200 ms)`);
+    assert(!c.audio.conversationStarted, 'room tone is not the persona speaking');
+  } finally { c.audio.close(); await c.audio.done; }
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', ambienceDb: -10}), /ambienceDb/);
+});

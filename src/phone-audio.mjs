@@ -8,6 +8,7 @@ import {Transcript} from './phone-providers/transcript.mjs';
 import {RING_CYCLE, audible, level} from './phone-providers/ringback.mjs';
 import {PhoneAdvice} from './phone-advice.mjs';
 import {renderOpener} from './phone-opener.mjs';
+import {Ambience} from './phone-ambience.mjs';
 
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
 const RING_AFTER_READY_MS = 5000;
@@ -54,6 +55,9 @@ export class PhoneAudio {
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
     if (config.ttsSpeed !== undefined) this.stats.ttsSpeed = config.ttsSpeed;
     if (config.greeting) this.stats.greetingFixed = true;
+    // A quiet office under the voice and in its pauses (`ambienceDb`, phone-ambience.mjs): the queue at Twilio is kept about 60 ms
+    // ahead with room tone whenever the persona is silent, and the tone runs on under what it says.
+    if (config.ambienceDb !== undefined) { this.ambience = new Ambience(config.ambienceDb); this.ambienceTick = setInterval(() => this.fillAmbience(), 20); }
     if (config.opener) {
       this.opener = {state: 'waiting', heardMs: 0}; this.stats.openerFixed = true;
       this.openerClip = renderOpener(config, config.opener, fetchImpl); this.openerClip.catch(() => {});
@@ -207,7 +211,7 @@ export class PhoneAudio {
     this.openerClip.then(frames => {
       if (this.closing || this.completed) return;
       const now = Date.now(), bytes = frames.reduce((n, f) => n + Buffer.from(f, 'base64').length, 0);
-      if (this.twilio.readyState === WebSocket.OPEN) for (const payload of frames) this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload}}));
+      if (this.twilio.readyState === WebSocket.OPEN) for (const payload of frames) this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience ? this.ambience.under(payload) : payload}}));
       this.playedUntil = this.soundUntil = this.speakingUntil = Math.max(this.playedUntil ?? 0, now) + bytes / 8;
       this.conversationStarted = true; this.activeAt = now; this.stats.outputBytes += bytes;
       this.stats.firstSpeechMs ??= now - this.startedAt; this.stats.firstAudioMs ??= now - this.startedAt;
@@ -219,6 +223,14 @@ export class PhoneAudio {
       this.stats.openerError = 'render_failed'; this.opener.state = 'done';
       for (const message of this.adapter.injectAgentMessage?.(this.config.opener) ?? []) this.send(message);
     });
+  }
+  fillAmbience() {
+    if (this.twilio.readyState !== WebSocket.OPEN || this.ringing || this.closing || this.completed) return;
+    const now = Date.now();
+    for (let n = 0; (this.playedUntil ?? 0) < now + 60 && n < 10; n++) {
+      this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience.frame()}}));
+      this.playedUntil = Math.max(this.playedUntil ?? 0, now) + 20;
+    }
   }
   forward(payload) { for (const message of this.adapter.audioIn(payload)) this.send(message); }
   flushInput() {
@@ -314,7 +326,7 @@ export class PhoneAudio {
         if (this.adapter.constructor.audioMeansSpeech) { this.activeAt = now; this.speakingUntil = this.playedUntil; }
         if (this.twilio.readyState === WebSocket.OPEN) {
           if (this.twilio.bufferedAmount > 256000) return this.close('twilio_backpressure');
-          this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: item.audio}}));
+          this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience ? this.ambience.under(item.audio) : item.audio}}));
         }
         break;
       case 'speech':
@@ -488,7 +500,7 @@ export class PhoneAudio {
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.closing = true; this.stats.reason = reason;
-    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
     if (this.provider?.readyState === WebSocket.OPEN) {
@@ -504,7 +516,7 @@ export class PhoneAudio {
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
     this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
-    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer);
+    clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();

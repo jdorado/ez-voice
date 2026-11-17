@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ambienceDb` (any provider, -60..-30 dBFS): a quiet synthetic office (1/f room tone and soft keyboard clicks, no voices, a 20 s
+  loop) mixed under the voice and played in its pauses, ported from Quarre's phone bench (its level there: -46). It hides the hard
+  onset and offset of synthetic speech and the dead line between replies; no 20 ms frame of it reaches speech level.
+
 - Deepgram receipts keep the provider's split of each reply's wait (`replyLatency`: `totalMs`, `thinkMs` to the model's first words,
   `ttsMs` to the voice's first audio), from `AgentStartedSpeaking`.
 
