@@ -1242,3 +1242,11 @@ test('elevenlabs: a placed call\'s opener plays on the hello, and the session ta
     assert(!heard.includes(loudFrame()), 'the hello never reached the provider');
   } finally { c.audio.close(); await c.audio.done; }
 });
+
+test('an opener never touches a call the line answers', async () => {
+  const c = await call('deepgram', {...deepgramKeys, voice: 'v1', opener: 'Hi, do you have a second?', idleSeconds: 0, greet: true, call: {id: 'CA4', direction: 'in'}}, {fetch: async () => { throw Error('no render for an answered call'); }});
+  try {
+    assert.equal(c.audio.opener, undefined); assert.equal(c.audio.stats.openerFixed, undefined);
+    c.audio.input(loudFrame()); assert.equal(c.audio.queued.at(-1) ?? loudFrame(), loudFrame(), 'the caller is heard as is');
+  } finally { c.audio.close(); await c.audio.done; }
+});

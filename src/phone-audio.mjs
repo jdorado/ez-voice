@@ -59,7 +59,7 @@ export class PhoneAudio {
     // A quiet office under the voice and in its pauses (`ambienceDb`, phone-ambience.mjs): the queue at Twilio is kept about 60 ms
     // ahead with room tone whenever the persona is silent, and the tone runs on under what it says.
     if (config.ambienceDb !== undefined) { this.ambience = new Ambience(config.ambienceDb); this.ambienceTick = setInterval(() => this.fillAmbience(), 20); }
-    if (config.opener) {
+    if (config.opener && config.call?.direction === 'out') { // a placed call's first line only: an answered call keeps its own greeting
       this.opener = {state: 'waiting', heardMs: 0}; this.stats.openerFixed = true;
       this.openerClip = renderOpener(config, config.opener, fetchImpl); this.openerClip.catch(() => {});
       if (twilio) this.openerTimer = setTimeout(() => this.playOpener('silence'), this.silentAnswerMs);
