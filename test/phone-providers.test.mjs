@@ -1165,3 +1165,34 @@ test('deepgram: Flux end of turn is a line setting, passed to the agent as eot_t
   assert.throws(() => validatePhoneConfig({...line, eotTimeoutMs: 100}), /eotTimeoutMs/);
   assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', eotThreshold: 0.85}), /deepgram only/);
 });
+
+test('deepgram: a placed call\'s opener is pre-rendered, played when the callee\'s hello ends, and the hello never reaches the provider', async () => {
+  const clip = Buffer.alloc(1600, 0x55), renders = [];
+  const fetch = async (url, options) => { renders.push({url, body: JSON.parse(options.body)}); return new Response(clip, {status: 200}); };
+  const opener = 'Hi, do you have a second?';
+  const c = await call('deepgram', {...deepgramKeys, voice: 'l4Coq6695JDX9xtLqXDE', opener, idleSeconds: 0, call: {id: 'CA1', direction: 'out'}}, {fetch, silentAnswerMs: 5000});
+  try {
+    assert.deepEqual(createAdapter({...base, provider: 'deepgram', ...deepgramKeys, opener}).settings().agent.context,
+      {messages: [{type: 'History', role: 'assistant', content: opener}]}, 'the model starts with the opener already said');
+    const media = () => c.twilio.sent.filter(m => m.event === 'media').length;
+    for (let i = 0; i < 10; i++) { c.audio.input(loudFrame()); await sleep(20); }      // "Hello?"
+    assert.equal(media(), 0, 'nothing plays while the callee speaks');
+    for (let i = 0; i < 25; i++) { c.audio.input('//8='); await sleep(20); }          // then quiet
+    await wait(() => media() === 10);
+    assert.equal(renders[0].url, 'https://api.elevenlabs.io/v1/text-to-speech/l4Coq6695JDX9xtLqXDE?output_format=ulaw_8000');
+    assert.equal(renders[0].body.text, opener);
+    assert.equal(c.audio.stats.openerOn, 'hello'); assert(c.audio.stats.openerMs > 0);
+    const sent = c.socket()?.events.filter(e => Buffer.isBuffer(e)) ?? [];
+    assert(sent.every(b => b.every(x => x === 0xff)), 'the provider heard only silence before the opener played');
+    assert.equal(c.audio.transcript.receipt().transcript[0].text, opener);
+  } finally { c.audio.close(); await c.audio.done; }
+});
+
+test('deepgram: a placed call answered in silence gets the pre-rendered opener after the wait', async () => {
+  const fetch = async () => new Response(Buffer.alloc(800, 0x55), {status: 200});
+  const c = await call('deepgram', {...deepgramKeys, voice: 'v1', opener: 'Hi there, opener silent test.', idleSeconds: 0, call: {id: 'CA2', direction: 'out'}}, {fetch, silentAnswerMs: 150});
+  try {
+    await wait(() => c.twilio.sent.some(m => m.event === 'media'));
+    assert.equal(c.audio.stats.openerOn, 'silence');
+  } finally { c.audio.close(); await c.audio.done; }
+});

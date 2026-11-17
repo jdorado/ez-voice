@@ -105,6 +105,8 @@ export class DeepgramAdapter {
       // Flux's end of turn: Deepgram accepts eot_threshold 0.5..1 and eot_timeout_ms on the agent's listen provider (probed 2026-11-17).
       listen: {provider: {type: 'deepgram', model: 'flux-general-en', version: 'v2', ...(c.eotThreshold !== undefined && {eot_threshold: c.eotThreshold}),
         ...(c.eotTimeoutMs !== undefined && {eot_timeout_ms: c.eotTimeoutMs})}},
+      // A placed call's pre-rendered opener (phone-opener.mjs) is played by the bridge; the model starts with it already said.
+      ...(c.opener && {context: {messages: [{type: 'History', role: 'assistant', content: c.opener}]}}),
       think: {
         provider: {type: 'google'},
         endpoint: c.think ? {url: c.think.url, headers: {authorization: `Bearer ${c.think.token}`}} : this.thinkTarget(),
@@ -123,6 +125,7 @@ export class DeepgramAdapter {
     if (this.config.greeting) return [{type: 'InjectAgentMessage', message: this.config.greeting}];
     this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}];
   }
+  injectAgentMessage(message) { return [{type: 'InjectAgentMessage', message}]; }
   audioIn(payload) { return [Buffer.from(payload, 'base64')]; }
   parse(event) {
     if (Buffer.isBuffer(event)) return event.length ? [{type: 'audio', audio: event.toString('base64')}] : [];

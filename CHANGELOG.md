@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Deepgram lines: a placed call's `greetingFile` is a pre-rendered opener. It is rendered once per voice, model, speed and text in
+  the line's ElevenLabs voice, played to Twilio as soon as the callee's hello ends (100 ms of sound, then 400 ms of quiet) or after
+  3 s of silence, and the session starts with it in its history (`agent.context.messages`). The provider hears silence until the
+  opener and its echo have passed, so it never answers the hello itself. The model-written greeting took 2 to 3 s after the hello.
+  Receipts: `openerOn` (hello or silence), `openerMs`, `openerWaitMs`, `openerError`.
+
 - Deepgram lines admit `gemini-3.6-flash` (thinking low, medium or high): first words in about 1.5 s against 2.6 to 2.8 s for 3.8
   Flash at low, with the same instruction-following in Quarre's text bench.
 
