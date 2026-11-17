@@ -22,10 +22,13 @@ const SILENT_ANSWER_MS = 3000;
 // Turn-taking the bridge owns for a provider that leaves it to it (`bridgeTurns`). The model is cut off only by caller sound loud enough to
 // be a person talking (RMS about -33 dBFS) for BARGE_MS: a callee's handset echoed the model's own voice back at -39 to -45 dBFS, and a
 // click or a breath lasts a frame or two (live calls, 2026-11-16). A short caller turn (at most SHORT_TURN_MS of sound, a "Hello?" or a
-// "Yes") is closed after TURN_QUIET_MS of quiet instead of the provider's own wait (about 2 s); longer turns keep the provider's
+// "Yes") is closed after TURN_QUIET_MS of quiet (450 ms split a callee's "Mm-hmm. Hello?" in two) instead of the provider's own wait (about 2 s); longer turns keep the provider's
 // end-of-turn judgement. Sound within ECHO_TAIL_MS of the model's last audio is not counted as a turn: it can be the echo's tail.
-const BARGE_RMS = 700, BARGE_MS = 300, SPEECH_RMS = 400, SHORT_TURN_MS = 1500, TURN_QUIET_MS = 450, ECHO_TAIL_MS = 600;
+const BARGE_RMS = 700, BARGE_MS = 300, SPEECH_RMS = 400, SHORT_TURN_MS = 1500, TURN_QUIET_MS = 650, ECHO_TAIL_MS = 600;
 
+const TRACED = new Set(['input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped', 'input_audio_buffer.committed', 'input_audio_buffer.commit',
+  'response.created', 'response.done', 'response.cancel', 'response.create', 'response.output_audio.delta', 'output_audio_buffer.cleared',
+  'conversation.item.truncate', 'conversation.item.truncated', 'error']);
 const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
@@ -131,6 +134,7 @@ export class PhoneAudio {
   send(message) {
     if (this.provider?.readyState !== WebSocket.OPEN) return false;
     if (this.provider.bufferedAmount > 256000) { this.close('provider_backpressure'); return false; }
+    if (!Buffer.isBuffer(message)) this.trace(message, 'out');
     this.provider.send(Buffer.isBuffer(message) ? message : JSON.stringify(message)); return true;
   }
   input(payload) {
@@ -165,9 +169,6 @@ export class PhoneAudio {
     if (this.loudMs >= BARGE_MS) {
       this.loudMs = 0;
       if (modelSounding) this.bargeIn(now);
-      // A person talking after end_call (a callee who picks up as the voicemail message ends) is not hung up on: the model answers
-      // them and ends the call again when it is over.
-      if (this.endingAt && !this.closing) { this.endingAt = this.drainingAt = undefined; this.stats.endCallCancelled = (this.stats.endCallCancelled ?? 0) + 1; }
     }
     if (modelSounding || now - (this.soundUntil ?? 0) < ECHO_TAIL_MS) return void (this.utterance = undefined);
     if (rms >= SPEECH_RMS) { this.utterance ??= {from: now}; this.utterance.last = now; return; }
@@ -224,7 +225,19 @@ export class PhoneAudio {
     this.greeted = true; this.stats.greetingMs = Date.now() - this.startedAt;
     for (const message of messages) this.send(message);
   }
-  event(event) { for (const item of this.adapter.parse(event)) this.handle(item); }
+  event(event) { this.trace(event, 'in'); for (const item of this.adapter.parse(event)) this.handle(item); }
+  // A compact timeline of the turn-taking events on the receipt (`turns`, at most 400): when replies start and end and how, whether
+  // their audio was played or dropped, and the cancels and commits the bridge sent. A reply that never reaches the phone shows here.
+  trace(message, way) {
+    const type = message?.type;
+    if (typeof type !== 'string' || !TRACED.has(type)) return;
+    const response = message.response?.id ?? message.response_id;
+    if (type === 'response.output_audio.delta') { if (this.tracedAudio?.has(response)) return; (this.tracedAudio ??= new Set()).add(response); }
+    const turns = this.stats.turns ??= [];
+    if (turns.length < 400) turns.push({ms: Date.now() - this.startedAt, way, type, ...(response && {response}), ...(message.response?.status && {status: message.response.status}),
+      ...(message.response?.status_details?.reason && {reason: message.response.status_details.reason}), ...(message.audio_end_ms !== undefined && {audioEndMs: message.audio_end_ms}),
+      ...(type === 'response.output_audio.delta' && {dropped: this.adapter.cancelled?.has(response) ?? false}), ...(message.error?.code && {code: message.error.code})});
+  }
   handle(item) {
     if (item.type === 'closed') {
       this.stats.finalized = true; this.stats.usage = item.usage;

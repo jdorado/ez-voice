@@ -8,12 +8,11 @@
   false}`; the bridge cuts the model off only after 300 ms of caller sound at about -33 dBFS or louder (`response.cancel`, then
   `conversation.item.truncate` to what Twilio had played, so the model continues instead of restarting), suppresses echo (while the
   model's audio plays and 600 ms after, quieter caller sound reaches the provider as silence: fed the echo, the model answered its
-  own words), and closes a short caller turn (at most 1.5 s of sound, such as "Hello?") after 450 ms of quiet
-  (`input_audio_buffer.commit`) instead of the provider's wait of about 2 s. Lab (`voice_lab.sh cases`, echo at -20 dB plus clicks):
+  own words), and closes a short caller turn (at most 1.5 s of sound, such as "Hello?") after 650 ms of quiet
+  (`input_audio_buffer.commit`; 450 ms split a callee's "Mm-hmm. Hello?" into two turns on a real call) instead of the provider's wait of about 2 s. Lab (`voice_lab.sh cases`, echo at -20 dB plus clicks):
   14 false cut-offs to 0; clean-line reply gaps 0.58 to 1.51 s to 0.43 to 0.79 s. Receipts: `interruptions` ({atMs, playedMs}),
-  `shortTurns`, `speechOverModel` (provider speech starts the bridge did not take for a barge-in), `endCallCancelled`.
-- A person who talks after `end_call` (a callee picking up as the voicemail message ends) is no longer hung up on: the pending hang-up
-  is dropped and the model ends the call again when it is over.
+  `shortTurns`, `speechOverModel` (provider speech starts the bridge did not take for a barge-in), and `turns`: a timeline of
+  replies created and done (with status), their first audio (played or dropped), speech starts and stops, cancels, truncates and commits.
 - The silent-answer greeting of a placed call waits for a quiet moment (at most another `silentAnswerMs`): it had started over a
   callee's "This is Dave" that the provider had not yet called speech.
 

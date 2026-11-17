@@ -337,29 +337,17 @@ test('elevenlabs: echo of the model and a click on the line never cut it off', a
   } finally { audio.close(); await audio.done; }
 });
 
-test('elevenlabs: a short caller turn is closed after 450 ms of quiet; a long one is left to the provider', async () => {
+test('elevenlabs: a short caller turn is closed after 650 ms of quiet; a long one is left to the provider', async () => {
   const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0}, {fetch: mintOk().fetch});
   await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
   const commits = () => socket().events.filter(e => e.type === 'input_audio_buffer.commit').length;
   const speak = async (frames, quiet) => { for (let i = 0; i < frames; i++) { audio.input(loudFrame()); await sleep(20); } for (let i = 0; i < quiet; i++) { audio.input('//8='); await sleep(20); } };
   try {
     socket().receive({type: 'input_audio_buffer.speech_started'});
-    await speak(20, 10); assert.equal(commits(), 0, 'not before 450 ms of quiet');
+    await speak(20, 20); assert.equal(commits(), 0, 'not before 650 ms of quiet (a pause between "Mm-hmm" and "Hello?")');
     await speak(0, 20); assert.equal(commits(), 1, 'a "Hello?" is closed by the bridge'); assert.equal(audio.stats.shortTurns, 1);
     socket().receive({type: 'input_audio_buffer.speech_stopped'}); socket().receive({type: 'input_audio_buffer.speech_started'});
     await speak(90, 30); assert.equal(commits(), 1, 'a turn of almost two seconds keeps the provider\'s judgement');
-  } finally { audio.close(); await audio.done; }
-});
-
-test('elevenlabs: a person who speaks after end_call is not hung up on', async () => {
-  const {audio, socket} = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, endCallGraceMs: 50, endCallQuietMs: 100, endCallMaxMs: 3000, endCallDrainMs: 100}, {fetch: mintOk().fetch});
-  await wait(() => socket()); socket().receive({type: 'session.created'}); socket().receive({type: 'session.updated'});
-  try {
-    socket().receive({type: 'response.output_item.done', item: {type: 'function_call', call_id: 'c1', name: 'end_call', arguments: '{}'}});
-    assert(audio.endingAt);
-    talk(audio, 15);
-    assert.equal(audio.endingAt, undefined); assert.equal(audio.stats.endCallCancelled, 1);
-    await sleep(400); assert.equal(audio.closing, undefined, 'the call stays up');
   } finally { audio.close(); await audio.done; }
 });
 
