@@ -10,7 +10,7 @@
   `ttsMs` to the voice's first audio), from `AgentStartedSpeaking`.
 
 - Deepgram lines: a placed call's `greetingFile` is a pre-rendered opener. It is rendered once per voice, model, speed and text in
-  the line's ElevenLabs voice, played to Twilio as soon as the callee's hello ends (100 ms of sound, then 400 ms of quiet) or after
+  the line's ElevenLabs voice, played to Twilio as soon as the callee's hello ends (250 ms of voice at speaking level, then 400 ms of quiet; a pickup click is not a hello) or after
   3 s of silence, and the session starts with it in its history (`agent.context.messages`). The provider hears silence until the
   opener and its echo have passed, so it never answers the hello itself. The model-written greeting took 2 to 3 s after the hello.
   Receipts: `openerOn` (hello or silence), `openerMs`, `openerWaitMs`, `openerError`. A line with inline instructions gives the same

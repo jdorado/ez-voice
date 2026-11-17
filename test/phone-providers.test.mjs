@@ -1175,7 +1175,10 @@ test('deepgram: a placed call\'s opener is pre-rendered, played when the callee\
     assert.deepEqual(createAdapter({...base, provider: 'deepgram', ...deepgramKeys, opener}).settings().agent.context,
       {messages: [{type: 'History', role: 'assistant', content: opener}]}, 'the model starts with the opener already said');
     const media = () => c.twilio.sent.filter(m => m.event === 'media').length;
-    for (let i = 0; i < 10; i++) { c.audio.input(loudFrame()); await sleep(20); }      // "Hello?"
+    for (let i = 0; i < 3; i++) { c.audio.input(loudFrame()); await sleep(20); }       // the pickup's click
+    for (let i = 0; i < 25; i++) { c.audio.input('//8='); await sleep(20); }
+    assert.equal(media(), 0, 'a click is not a hello');
+    for (let i = 0; i < 15; i++) { c.audio.input(loudFrame()); await sleep(20); }      // "Hello?"
     assert.equal(media(), 0, 'nothing plays while the callee speaks');
     for (let i = 0; i < 25; i++) { c.audio.input('//8='); await sleep(20); }          // then quiet
     await wait(() => media() === 10);

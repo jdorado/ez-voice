@@ -33,9 +33,10 @@ const TRACED = new Set(['input_audio_buffer.speech_started', 'input_audio_buffer
   'response.created', 'response.done', 'response.cancel', 'response.create', 'response.output_audio.delta', 'output_audio_buffer.cleared',
   'conversation.item.truncate', 'conversation.item.truncated', 'error']);
 // A placed call's pre-rendered first line (`opener`, see phone-opener.mjs) plays once the callee's hello ends: OPENER_HELLO_MS of their
-// sound followed by OPENER_QUIET_MS of quiet, or after silentAnswerMs with no hello. Until it has played and its echo has passed, the
-// provider hears silence, so it never answers the hello itself.
-const OPENER_HELLO_MS = 100, OPENER_QUIET_MS = 400, OPENER_ECHO_MS = 300;
+// voice at speaking level (BARGE_RMS) followed by OPENER_QUIET_MS of quiet, or after silentAnswerMs with no hello. A pickup's click or
+// line noise is shorter or quieter (100 ms of plain audible sound started the opener before the callee's hello on a lab call). Until it
+// has played and its echo has passed, the provider hears silence, so it never answers the hello itself.
+const OPENER_HELLO_MS = 250, OPENER_QUIET_MS = 400, OPENER_ECHO_MS = 300;
 const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
@@ -159,7 +160,7 @@ export class PhoneAudio {
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
     const sound = audible(payload);
     if (sound) this.soundHeardAt = Date.now();
-    if (this.opener && this.opener.state !== 'done') { this.listenOpener(sound); payload = silenceLike(payload); }
+    if (this.opener && this.opener.state !== 'done') { this.listenOpener(level(payload) >= BARGE_RMS); payload = silenceLike(payload); }
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready && !this.flushingInput) {
