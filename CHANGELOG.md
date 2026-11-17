@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Deepgram lines admit `gemini-3.6-flash` (thinking low, medium or high): first words in about 1.5 s against 2.6 to 2.8 s for 3.8
+  Flash at low, with the same instruction-following in Quarre's text bench.
+
 - Deepgram lines take Flux's end of turn as settings: `eotThreshold` (0.5..1, the confidence Flux needs to end the caller's turn) and
   `eotTimeoutMs` (500..10000), passed as the agent's `eot_threshold` and `eot_timeout_ms` (accepted by Deepgram, probed 2026-11-17).
   Unset keeps Deepgram's defaults. A higher threshold waits longer, so a caller pausing mid-sentence is not answered over.

@@ -35,12 +35,14 @@ export class DeepgramAdapter {
   static limits = {instructions: 13500, session: 16000};
   static label = 'Deepgram';
   // gemini-3.5-flash-lite answers in about 0.9 s a request and has no thinking to configure (a `thinking` level is refused for it).
-  static models = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+  // gemini-3.6-flash at `low` starts answering in about 1.5 s against 3.8 Flash's 2.6 to 2.8 s and followed a scripted opener as well (6
+  // of 6) with the same coherence in Quarre's text bench (2026-11-17).
+  static models = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
   static defaultModel = 'gemini-3.8-flash';
   // How long the model may think before it answers, which is delay on a phone line: gemini-3.8-flash thinks by default (over a
   // thousand thought tokens a turn, 5 to 17 s to a first token) and has no minimal level, but `low` answers in about 2.5 s with
   // the same triage quality (measured). Google rejects a level a model does not take, so levels are admitted per model.
-  static thinkingLevels = {'gemini-3.8-flash': ['low', 'medium', 'high']};
+  static thinkingLevels = {'gemini-3.8-flash': ['low', 'medium', 'high'], 'gemini-3.6-flash': ['low', 'medium', 'high']};
   static defaultVoice = 'JBFqnCBsd6RMkjVDRZzb';
   static ttsModels = ['eleven_flash_v2_5'];
   static defaultTtsModel = 'eleven_flash_v2_5';
