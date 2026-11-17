@@ -1196,3 +1196,10 @@ test('deepgram: a placed call answered in silence gets the pre-rendered opener a
     assert.equal(c.audio.stats.openerOn, 'silence');
   } finally { c.audio.close(); await c.audio.done; }
 });
+
+test('deepgram: an inline greeting is checked like a greeting file', () => {
+  const line = {...base, apiKey: keys.deepgram, provider: 'deepgram', ...deepgramKeys};
+  assert.equal(validatePhoneConfig({...line, greeting: 'Hi, do you have a second?'}).provider, 'deepgram');
+  assert.throws(() => validatePhoneConfig({...line, greeting: ''}), /greeting/);
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', greeting: 'Hi'}), /deepgram only/);
+});
