@@ -111,6 +111,8 @@ export class ElevenLabsAdapter {
     if (item) messages.push({type: 'conversation.item.truncate', item_id: item, content_index: 0, audio_end_ms: Math.max(0, Math.round(playedMs))});
     return messages;
   }
+  // A line the bridge already played (a placed call's pre-rendered opener): the model takes it as its own and goes on from there.
+  history(text) { return [{type: 'conversation.item.create', item: {type: 'message', role: 'assistant', content: [{type: 'output_text', text}]}}]; }
   toolResult(id, name, output, {final = false} = {}) {
     this.greetedAt = undefined;
     const answer = {type: 'conversation.item.create', item: {type: 'function_call_output', call_id: id, output: JSON.stringify(output)}};

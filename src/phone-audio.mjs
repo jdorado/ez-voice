@@ -296,6 +296,7 @@ export class PhoneAudio {
         clearTimeout(this.startTimer); this.ready = true; this.stats.providerSessionId = item.id;
         this.stats.ready = true; this.stats.readyMs = Date.now() - this.startedAt; this.startup('readyMs');
         this.flushInput(); this.armSilentAnswer();
+        if (this.opener) for (const message of this.adapter.history?.(this.config.opener) ?? []) this.send(message); // Deepgram: in its settings
         if (this.ringing) this.ringCap = setTimeout(() => this.stopRing('timeout'), this.ringAfterReadyMs);
         this.onReady();
         break;

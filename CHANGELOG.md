@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- ElevenLabs Realtime lines take the same pre-rendered opener on placed calls (`greetingFile` or `greeting`): played when the
+  callee's hello ends, and added to the session as an assistant message (`output_text`), so the model goes on from it. A session
+  pre-opened at the dial carries the opener too.
+
 - `ambienceDb` (any provider, -60..-30 dBFS): a quiet synthetic office (1/f room tone and soft keyboard clicks, no voices, a 20 s
   loop) mixed under the voice and played in its pauses, ported from Quarre's phone bench (its level there: -46). It hides the hard
   onset and offset of synthetic speech and the dead line between replies; no 20 ms frame of it reaches speech level.

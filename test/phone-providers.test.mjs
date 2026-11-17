@@ -1200,11 +1200,12 @@ test('deepgram: a placed call answered in silence gets the pre-rendered opener a
   } finally { c.audio.close(); await c.audio.done; }
 });
 
-test('deepgram: an inline greeting is checked like a greeting file', () => {
+test('an inline greeting is checked like a greeting file, on Deepgram and ElevenLabs lines', () => {
   const line = {...base, apiKey: keys.deepgram, provider: 'deepgram', ...deepgramKeys};
   assert.equal(validatePhoneConfig({...line, greeting: 'Hi, do you have a second?'}).provider, 'deepgram');
   assert.throws(() => validatePhoneConfig({...line, greeting: ''}), /greeting/);
-  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', greeting: 'Hi'}), /deepgram only/);
+  assert.equal(validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', model: 'eleven_realtime_v1_max', greeting: 'Hola, ¿tiene un segundo?'}).provider, 'elevenlabs');
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.gemini, provider: 'gemini', greeting: 'Hi'}), /deepgram and elevenlabs only/);
 });
 
 test('an ambience line plays a quiet office in the pauses and under the voice, and never one at speech level', async () => {
@@ -1221,4 +1222,21 @@ test('an ambience line plays a quiet office in the pauses and under the voice, a
     assert(!c.audio.conversationStarted, 'room tone is not the persona speaking');
   } finally { c.audio.close(); await c.audio.done; }
   assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', ambienceDb: -10}), /ambienceDb/);
+});
+
+test('elevenlabs: a placed call\'s opener plays on the hello, and the session takes it as already said', async () => {
+  const fetch = async (url, options) => url.includes('text-to-speech') ? new Response(Buffer.alloc(800, 0x55), {status: 200}) : mintOk().fetch(url, options);
+  const opener = 'Hola, ¿tiene un segundo?';
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', voice: 'JZJCDoXvs6Z2i7YDOkDX', opener, idleSeconds: 0, call: {id: 'CA3', direction: 'out'}}, {fetch, silentAnswerMs: 5000});
+  try {
+    await wait(() => c.socket()); c.socket().receive({type: 'session.created'}); c.socket().receive({type: 'session.updated'});
+    assert.deepEqual(c.socket().events.find(e => e.type === 'conversation.item.create')?.item,
+      {type: 'message', role: 'assistant', content: [{type: 'output_text', text: opener}]});
+    for (let i = 0; i < 15; i++) { c.audio.input(loudFrame()); await sleep(20); }
+    for (let i = 0; i < 25; i++) { c.audio.input('//8='); await sleep(20); }
+    await wait(() => c.twilio.sent.filter(m => m.event === 'media').length >= 5);
+    assert.equal(c.audio.stats.openerOn, 'hello');
+    const heard = c.socket().events.filter(e => e.type === 'input_audio_buffer.append').map(e => e.audio);
+    assert(!heard.includes(loudFrame()), 'the hello never reached the provider');
+  } finally { c.audio.close(); await c.audio.done; }
 });
