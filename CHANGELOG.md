@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Deepgram lines take Flux's end of turn as settings: `eotThreshold` (0.5..1, the confidence Flux needs to end the caller's turn) and
+  `eotTimeoutMs` (500..10000), passed as the agent's `eot_threshold` and `eot_timeout_ms` (accepted by Deepgram, probed 2026-11-17).
+  Unset keeps Deepgram's defaults. A higher threshold waits longer, so a caller pausing mid-sentence is not answered over.
+
 - ElevenLabs turn-taking is the bridge's (`bridgeTurns`). Five live calls (2026-11-16) showed the provider's own barge-in cancelling
   replies on non-speech: clicks, breaths and the model's own voice echoed back by the callee's handset (-39 to -45 dBFS), each followed
   by 6 to 14 s of silence and a restarted greeting. Sessions now take `turn_detection: {type: 'semantic_vad', interrupt_response:

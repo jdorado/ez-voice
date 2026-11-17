@@ -1154,3 +1154,14 @@ test('invalid endpoint receipts preserve only fixed vocabulary hints, never prov
     assert(!JSON.stringify(c.finished).includes('secret-value-do-not-log'));
   } finally {await c.audio.close();}
 });
+
+test('deepgram: Flux end of turn is a line setting, passed to the agent as eot_threshold and eot_timeout_ms, and checked', () => {
+  const line = {...base, apiKey: keys.deepgram, provider: 'deepgram', ...deepgramKeys};
+  const listen = createAdapter({...line, eotThreshold: 0.85, eotTimeoutMs: 3000}).settings().agent.listen.provider;
+  assert.deepEqual(listen, {type: 'deepgram', model: 'flux-general-en', version: 'v2', eot_threshold: 0.85, eot_timeout_ms: 3000});
+  assert.deepEqual(createAdapter(line).settings().agent.listen.provider, {type: 'deepgram', model: 'flux-general-en', version: 'v2'}, 'unset keeps Deepgram\'s defaults');
+  assert.equal(validatePhoneConfig({...line, eotThreshold: 0.85, eotTimeoutMs: 3000}).provider, 'deepgram');
+  assert.throws(() => validatePhoneConfig({...line, eotThreshold: 0.3}), /eotThreshold/);
+  assert.throws(() => validatePhoneConfig({...line, eotTimeoutMs: 100}), /eotTimeoutMs/);
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', eotThreshold: 0.85}), /deepgram only/);
+});

@@ -100,7 +100,9 @@ export class DeepgramAdapter {
       input: {encoding: 'mulaw', sample_rate: 8000},
       output: {encoding: 'mulaw', sample_rate: 8000, container: 'none'},
     }, agent: {
-      listen: {provider: {type: 'deepgram', model: 'flux-general-en', version: 'v2'}},
+      // Flux's end of turn: Deepgram accepts eot_threshold 0.5..1 and eot_timeout_ms on the agent's listen provider (probed 2026-11-17).
+      listen: {provider: {type: 'deepgram', model: 'flux-general-en', version: 'v2', ...(c.eotThreshold !== undefined && {eot_threshold: c.eotThreshold}),
+        ...(c.eotTimeoutMs !== undefined && {eot_timeout_ms: c.eotTimeoutMs})}},
       think: {
         provider: {type: 'google'},
         endpoint: c.think ? {url: c.think.url, headers: {authorization: `Bearer ${c.think.token}`}} : this.thinkTarget(),
