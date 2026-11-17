@@ -44,8 +44,13 @@ export class DeepgramAdapter {
   // the same triage quality (measured). Google rejects a level a model does not take, so levels are admitted per model.
   static thinkingLevels = {'gemini-3.8-flash': ['low', 'medium', 'high'], 'gemini-3.6-flash': ['low', 'medium', 'high']};
   static defaultVoice = 'JBFqnCBsd6RMkjVDRZzb';
-  static ttsModels = ['eleven_flash_v2_5'];
+  // eleven_v4_turbo speaks only on ElevenLabs' Text-to-Dialogue socket: Deepgram is told Flash v2.5 and the call's speech relay
+  // (src/phone-speech.mjs, Dialogue) translates its TTS frames to that socket, so the line hears v4.
+  static ttsModels = ['eleven_flash_v2_5', 'eleven_v4_turbo'];
   static defaultTtsModel = 'eleven_flash_v2_5';
+  // Flux Multilingual's languages; a line in another language than English listens with it, hinted to that language and English.
+  static languages = ['en', 'es', 'fr', 'de', 'hi', 'ru', 'pt', 'ja', 'it', 'nl'];
+  static dialogue(model) { return /^eleven_v[34]/.test(model ?? ''); }
   static keyPattern = /^[A-Za-z0-9_-]{20,200}$/;
   static confirmsClose = false;
   static audioMeansSpeech = true;
@@ -72,18 +77,19 @@ export class DeepgramAdapter {
   }
   speechTarget(query = new URLSearchParams()) {
     const model = this.config.ttsModel ?? DeepgramAdapter.defaultTtsModel;
-    const url = new URL(`wss://api.elevenlabs.io/v1/text-to-speech/${this.config.voice}/multi-stream-input?model_id=${model}&output_format=ulaw_8000`);
-    // Preserve the managed provider's streaming/normalization choices, never its target or credentials.
+    const dialogue = DeepgramAdapter.dialogue(model);
+    const url = new URL(dialogue ? `wss://api.elevenlabs.io/v1/text-to-dialogue/multi-stream-input?model_id=${model}&output_format=ulaw_8000`
+      : `wss://api.elevenlabs.io/v1/text-to-speech/${this.config.voice}/multi-stream-input?model_id=${model}&output_format=ulaw_8000`);
+    // Preserve the managed provider's streaming/normalization choices, never its target, model or credentials.
     const allowed = {
-      model_id: value => value === model,
       output_format: value => /^(ulaw_8000|alaw_8000|pcm_(8000|16000|22050|24000|44100|48000))$/.test(value),
-      auto_mode: value => ['true', 'false'].includes(value),
+      ...(!dialogue && {auto_mode: value => ['true', 'false'].includes(value)}),
       sync_alignment: value => ['true', 'false'].includes(value),
       enable_logging: value => ['true', 'false'].includes(value),
-      enable_ssml_parsing: value => ['true', 'false'].includes(value),
+      ...(!dialogue && {enable_ssml_parsing: value => ['true', 'false'].includes(value)}),
       language_code: value => /^[a-z]{2}(-[A-Za-z]{2})?$/.test(value),
       apply_text_normalization: value => ['auto', 'on', 'off'].includes(value),
-      inactivity_timeout: value => /^\d{1,3}$/.test(value) && Number(value) >= 1 && Number(value) <= 180,
+      ...(!dialogue && {inactivity_timeout: value => /^\d{1,3}$/.test(value) && Number(value) >= 1 && Number(value) <= 180}),
       seed: value => /^\d{1,10}$/.test(value) && Number(value) <= 4294967295,
     };
     for (const [key, value] of query) {
@@ -91,19 +97,21 @@ export class DeepgramAdapter {
       if (query.getAll(key).length !== 1 || !allowed[key](value)) throw Error('Invalid TTS streaming option');
       url.searchParams.set(key, value);
     }
+    if (dialogue) url.searchParams.set('sync_alignment', 'true');
     return {url: url.href, headers: {'xi-api-key': this.config.ttsApiKey}};
   }
   connection() { return {url: SOCKET_URL, headers: {Authorization: `Token ${this.config.apiKey}`}}; }
   start() { return []; } // Welcome precedes Settings; SettingsApplied precedes audio.
   settings() {
     const c = this.config;
-    if ((c.ttsSpeed !== undefined || c.pronunciations !== undefined) && !c.speech) throw Error('ttsSpeed and pronunciations require the call-bound speech relay');
+    if ((c.ttsSpeed !== undefined || c.pronunciations !== undefined || DeepgramAdapter.dialogue(c.ttsModel)) && !c.speech) throw Error('ttsSpeed, pronunciations and a v4 voice require the call-bound speech relay');
     return {type: 'Settings', audio: {
       input: {encoding: 'mulaw', sample_rate: 8000},
       output: {encoding: 'mulaw', sample_rate: 8000, container: 'none'},
     }, agent: {
       // Flux's end of turn: Deepgram accepts eot_threshold 0.5..1 and eot_timeout_ms on the agent's listen provider (probed 2026-11-17).
-      listen: {provider: {type: 'deepgram', model: 'flux-general-en', version: 'v2', ...(c.eotThreshold !== undefined && {eot_threshold: c.eotThreshold}),
+      listen: {provider: {type: 'deepgram', version: 'v2', ...(!c.language || c.language === 'en' ? {model: 'flux-general-en'} :
+        {model: 'flux-general-multi', language_hints: [c.language, 'en']}), ...(c.eotThreshold !== undefined && {eot_threshold: c.eotThreshold}),
         ...(c.eotTimeoutMs !== undefined && {eot_timeout_ms: c.eotTimeoutMs})}},
       // A placed call's pre-rendered opener (phone-opener.mjs) is played by the bridge; the model starts with it already said.
       ...(c.opener && {context: {messages: [{type: 'History', role: 'assistant', content: c.opener}]}}),
@@ -114,7 +122,7 @@ export class DeepgramAdapter {
         ...(c.tools === false ? {} : {functions: toolDefinitions(c).map(({name, description, parameters}) =>
           ({name, description, parameters: geminiParameters(parameters), defer_until_eot: true}))}),
       },
-      speak: {provider: {type: 'eleven_labs', model_id: c.ttsModel ?? DeepgramAdapter.defaultTtsModel},
+      speak: {provider: {type: 'eleven_labs', model_id: DeepgramAdapter.dialogue(c.ttsModel) ? DeepgramAdapter.defaultTtsModel : c.ttsModel ?? DeepgramAdapter.defaultTtsModel},
         endpoint: c.speech ? {url: c.speech.url, headers: {'xi-api-key': c.speech.token}} :
           {url: `wss://api.elevenlabs.io/v1/text-to-speech/${c.voice}/multi-stream-input`, headers: {'xi-api-key': c.ttsApiKey}}},
     }};

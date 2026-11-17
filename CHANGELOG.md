@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Deepgram lines take the ElevenLabs v4 Turbo voice (`ttsModel: eleven_v4_turbo`). v4 speaks only on ElevenLabs' Text-to-Dialogue
+  socket, so Deepgram is told Flash v2.5 and the call's speech relay translates its TTS frames to that socket (the voice registered
+  per context, text as `inputs`) and the replies back, character timings included (Deepgram plays nothing without them). v4 takes
+  no speed: a v4 line speaks at the voice's own pace. Lab: replies 1.5 to 2.0 s, as on Flash v2.5.
+
+- Deepgram lines in another language than English (`language`: es, fr, de, hi, ru, pt, ja, it, nl) listen with Flux Multilingual
+  (`flux-general-multi`), hinted to that language and English, so a Spanish line follows an owner who switches.
+
 - A placed call's first line is its own setting, `openerFile` (or inline `opener`), on Deepgram and ElevenLabs Realtime lines; `greetingFile` stays
   the greeting of a call a Deepgram line answers. ElevenLabs Realtime lines take the pre-rendered opener too: played when the
   callee's hello ends, and added to the session as an assistant message (`output_text`), so the model goes on from it. A session
