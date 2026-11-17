@@ -138,6 +138,8 @@ export class DeepgramAdapter {
       case 'SettingsApplied':
         if (this.ready) return [];
         this.ready = true; return [{type: 'ready', id: this.id}];
+      // Deepgram's own split of each reply's wait, in seconds: think (to the model's first words), tts (to the voice's first audio).
+      case 'AgentStartedSpeaking': return [{type: 'latency', total: event.total_latency, think: event.ttt_latency, tts: event.tts_latency}];
       case 'UserStartedSpeaking': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
       case 'ConversationText':
         if (this.greetingInjected && event.role === 'user' && event.content === CONNECTED) {this.greetingInjected = false; return [];}

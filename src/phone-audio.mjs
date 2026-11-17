@@ -352,6 +352,11 @@ export class PhoneAudio {
         this.speakingUntil = this.playedUntil = this.soundUntil = 0;
         if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
         break;
+      case 'latency': {
+        const ms = x => typeof x === 'number' && Number.isFinite(x) ? Math.round(x * 1000) : undefined;
+        if ((this.stats.replyLatency ??= []).length < 64) this.stats.replyLatency.push({totalMs: ms(item.total), thinkMs: ms(item.think), ttsMs: ms(item.tts)});
+        break;
+      }
       case 'tool': this.tool(item); break;
       case 'warning':
         if ((this.stats.providerWarnings ??= []).length < 8) this.stats.providerWarnings.push({code: item.code,

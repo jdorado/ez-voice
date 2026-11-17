@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Deepgram receipts keep the provider's split of each reply's wait (`replyLatency`: `totalMs`, `thinkMs` to the model's first words,
+  `ttsMs` to the voice's first audio), from `AgentStartedSpeaking`.
+
 - Deepgram lines: a placed call's `greetingFile` is a pre-rendered opener. It is rendered once per voice, model, speed and text in
   the line's ElevenLabs voice, played to Twilio as soon as the callee's hello ends (100 ms of sound, then 400 ms of quiet) or after
   3 s of silence, and the session starts with it in its history (`agent.context.messages`). The provider hears silence until the
