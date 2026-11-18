@@ -13,6 +13,7 @@ import {PROVIDERS, DEFAULT_PROVIDER, providerClass, limitsFor} from './phone-pro
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
 import {MAX_FRAME} from './protocol.mjs';
 import {PhoneCalls, callOptions, servePhoneControl, phoneControl, LAST_CALL, withBrief} from './phone-calls.mjs';
+import {openerText, renderOpener} from './phone-opener.mjs';
 import {InstructionsError, instructionsDigest, inspectInstructions, instructionsFromFiles, greetingFromFile, relativePath, MAX_GREETING, validateInstructionsSource} from './phone-instructions.mjs';
 // Which way a call goes, for the model: the line's instructions are the same for both. An inbound call says it is incoming, and
 // whether the operator's backend knew the number (what it knows is background for the model, never read out; where it differs
@@ -198,14 +199,20 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
     const entry = warmups.get(requestId); if (!entry) return;
     warmups.delete(requestId); clearTimeout(entry.timer); entry.bridge.close('unanswered');
   };
+  // the placed call's first line for this brief (a template takes the brief's contact name), rendered at the dial so the clip is ready when they answer
+  const placedOpener = async (settings, brief) => {
+    const raw = settings.openerFile ? await greetingFromFile({...settings, greetingFile: settings.openerFile}, MAX_GREETING) : settings.opener;
+    return raw && openerText(raw, brief);
+  };
   const warm = async (requestId, {from, to, brief}) => {
     try {
       const settings = lineConfig(config, from ?? config.number);
+      if (settings && (settings.openerFile || settings.opener)) { const first = await placedOpener(settings, brief); if (first) renderOpener(settings, first, fetchImpl).catch(() => {}); }
       // a session opened at the dial carries none of the call's relays: only a line without them can use one (its opener it carries)
       if (unavailable || !settings || !providerClass(settings).warm || settings.advice || settings.thinking !== undefined || settings.ttsSpeed !== undefined || settings.pronunciations !== undefined || providerClass(settings).dialogue?.(settings.ttsModel)) return;
       wanted.add(requestId);
       const limits = limitsFor(settings.provider), text = withBrief(settings.instructionsFiles ? await instructionsFromFiles(settings, limits.instructions) : settings.instructions, brief);
-      const opener = settings.openerFile ? await greetingFromFile({...settings, greetingFile: settings.openerFile}, MAX_GREETING) : settings.opener;
+      const opener = await placedOpener(settings, brief);
       if (!wanted.delete(requestId) || unavailable || text.length > limits.session || warmups.has(requestId)) return; // the call was dropped, or the service stopped, while the files were read
       const bridge = new PhoneAudio(null, {...settings, instructions: text, greet: false, ...(opener && {opener}), call: {id: requestId, remote: to, line: settings.number, direction: 'out'},
         information: config.information, warmSeconds: WARM_SECONDS}, () => {}, {socketFactory, fetch: fetchImpl});
@@ -259,7 +266,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           const settings = lineConfig(config, line);
           if (settings) { ticket.limits = limitsFor(settings.provider); ticket.lineText = settings.instructionsFiles ? await instructionsFromFiles(settings, ticket.limits.instructions) : settings.instructions; ticket.instructionsSha256 = instructionsDigest(ticket.lineText); }
           // a fixed first line: a placed call's opener (deepgram, elevenlabs), or a Deepgram line's greeting of a call it answers
-          if (settings && outbound) ticket.greeting = settings.openerFile ? await greetingFromFile({...settings, greetingFile: settings.openerFile}, MAX_GREETING) : settings.opener;
+          if (settings && outbound) ticket.greeting = await placedOpener(settings, ticket.instructions);
           else if (settings?.provider === 'deepgram') ticket.greeting = settings.greetingFile ? await greetingFromFile(settings, MAX_GREETING) : settings.greeting;
           if (outbound && withBrief(ticket.lineText, ticket.instructions).length > ticket.limits.session)
             throw new InstructionsError('session', 'session_too_large');
