@@ -23,3 +23,13 @@ export function renderOpener(config, text, fetchImpl = fetch) {
   })().catch(error => { cache.delete(key); throw error; }));
   return cache.get(key);
 }
+
+// A placed call's first line from the opener file and the call's brief. A file of two or more lines is a template: the first line
+// names the callee with {name}, the last is said when the brief gives no name. The name is the brief's own fact line
+// `CONTACT FIRST NAME: Mike` (letters, apostrophe, hyphen and spaces only, up to 30), never a script: the persona decides nothing here.
+export function openerText(text, brief) {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2) return lines[0] ?? text.trim();
+  const name = /^CONTACT FIRST NAME:[ \t]*([\p{L}][\p{L}'\- ]{0,29})[ \t]*$/mu.exec(brief ?? '')?.[1];
+  return name ? lines[0].replaceAll('{name}', name) : lines.at(-1);
+}

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A placed call's opener can name the callee: an opener file of two lines is a template (`{name}`, then the fallback), filled from the brief's `CONTACT FIRST NAME:` line and rendered at the dial.
 - Deepgram lines take the ElevenLabs v4 Turbo voice (`ttsModel: eleven_v4_turbo`). v4 speaks only on ElevenLabs' Text-to-Dialogue
   socket, so Deepgram is told Flash v2.5 and the call's speech relay translates its TTS frames to that socket (the voice registered
   per context, text as `inputs`) and the replies back, character timings included (Deepgram plays nothing without them). v4 takes
