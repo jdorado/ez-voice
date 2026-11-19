@@ -262,6 +262,14 @@ outbound answer and terminal-status callbacks. Ringing is limited to forty-five
 seconds (long enough for a carrier voicemail to pick up) and the call to `maxCallSeconds`. Outbound calls are recorded at Twilio like
 inbound calls (see Recording).
 
+Outbound call creation omits Twilio Answering Machine Detection. A Deepgram line
+can set `skipVoicemail: true` to check its existing speech transcript for
+explicit mailbox wording before the first model request. A match closes the
+call silently and records `reason: "voicemail"`, `voicemailMs` and
+`modelRequests: 0` in the private receipt. Its fixed opener, if configured,
+waits for the opening turn or the silence timeout. Ambiguous greetings are
+handled by the call instructions.
+
 Use one stable request ID per intended call. Repeating it returns the original
 attempt and never dials again, including after a service restart. Reusing it with
 a different destination fails. Creation is durably recorded before the provider

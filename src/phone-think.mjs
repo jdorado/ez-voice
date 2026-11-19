@@ -1,6 +1,5 @@
-// The think relay of a line with a side coach: the managed speech provider sends its language-model requests to the
-// listener, which adds the call's latest coach note to that one request and streams the model's answer straight back.
-// The note never joins the standing prompt, nothing waits for a lookup, and the language-model key stays here.
+// The managed speech provider sends language-model requests to the listener. The call can handle the opening
+// turn locally, or pass the request upstream with its thinking level and latest coach note. The key stays here.
 import {once} from 'node:events';
 
 export const MAX_THINK_REQUEST = 4 * 1024 * 1024;
@@ -17,7 +16,13 @@ export async function relayThink(request, response, bridge, {fetch: fetchImpl = 
   response.on('close', () => { if (!response.writableFinished) abort.abort(); });
   let upstream;
   try {
-    const body = bridge.think(await json(request)), target = bridge.adapter.thinkTarget();
+    const body = bridge.think(await json(request));
+    if (body === undefined) {
+      response.writeHead(200, {'Content-Type': 'text/event-stream'});
+      response.end('data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}\n\n');
+      return;
+    }
+    const target = bridge.adapter.thinkTarget();
     upstream = await fetchImpl(target.url, {method: 'POST', redirect: 'error', signal: abort.signal,
       headers: {...target.headers, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   } catch { if (!response.headersSent) { response.writeHead(abort.signal.aborted ? 499 : 502); response.end(); } return; }

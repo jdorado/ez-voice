@@ -9,6 +9,7 @@ import {RING_CYCLE, audible, level} from './phone-providers/ringback.mjs';
 import {PhoneAdvice} from './phone-advice.mjs';
 import {renderOpener} from './phone-opener.mjs';
 import {Ambience} from './phone-ambience.mjs';
+import {latestCallerText, mailboxGreeting} from './phone-voicemail.mjs';
 
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
 const RING_AFTER_READY_MS = 5000;
@@ -32,11 +33,11 @@ const BARGE_RMS = 700, BARGE_MS = 300, ECHO_TAIL_MS = 600;
 const TRACED = new Set(['input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped', 'input_audio_buffer.committed', 'input_audio_buffer.commit',
   'response.created', 'response.done', 'response.cancel', 'response.create', 'response.output_audio.delta', 'output_audio_buffer.cleared',
   'conversation.item.truncate', 'conversation.item.truncated', 'error']);
-// A placed call's pre-rendered first line (`opener`, see phone-opener.mjs) plays once the callee's hello ends: OPENER_HELLO_MS of their
-// voice at speaking level (BARGE_RMS) followed by OPENER_QUIET_MS of quiet, or after silentAnswerMs with no hello. A pickup's click or
-// line noise is shorter or quieter (100 ms of plain audible sound started the opener before the callee's hello on a lab call). Until it
-// has played and its echo has passed, the provider hears silence, so it never answers the hello itself.
+// A placed call's fixed opener follows the callee's hello or the silence timeout. Lines that screen for voicemail
+// use the opening transcript. Other lines listen for OPENER_HELLO_MS at BARGE_RMS followed by OPENER_QUIET_MS
+// of quiet to distinguish a hello from pickup noise. The provider hears silence during the opener and its echo.
 const OPENER_HELLO_MS = 250, OPENER_QUIET_MS = 400, OPENER_ECHO_MS = 300;
+const OPENER_MAX_WAIT_MS = 12000;
 const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
@@ -54,6 +55,8 @@ export class PhoneAudio {
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
     this.createdAt = this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
+    this.screenVoicemail = config.skipVoicemail && config.call?.direction === 'out';
+    if (this.screenVoicemail) this.stats.modelRequests = 0;
     if (config.ttsSpeed !== undefined) this.stats.ttsSpeed = config.ttsSpeed;
     if (config.greeting) this.stats.greetingFixed = true;
     // A quiet office under the voice and in its pauses (`ambienceDb`, phone-ambience.mjs): the queue at Twilio is kept about 60 ms
@@ -62,7 +65,7 @@ export class PhoneAudio {
     if (config.opener && config.call?.direction === 'out') { // a placed call's first line only: an answered call keeps its own greeting
       this.opener = {state: 'waiting', heardMs: 0}; this.stats.openerFixed = true;
       this.openerClip = renderOpener(config, config.opener, fetchImpl); this.openerClip.catch(() => {});
-      if (twilio) this.openerTimer = setTimeout(() => this.playOpener('silence'), this.silentAnswerMs);
+      if (twilio) this.armOpener();
     }
     if (config.advisor) this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs, onReady: () => this.pushAdvice(),
       receipts: this.stats.advice = []});
@@ -132,7 +135,7 @@ export class PhoneAudio {
     else { clearTimeout(this.startTimer); this.startTimer = setTimeout(() => this.close('provider_start_timeout'), 15000); } // the call's own start allowance
     clearTimeout(this.duration); this.duration = setTimeout(() => this.close('duration_limit'), (this.config.maxCallSeconds ?? 180) * 1000);
     this.armSilentAnswer();
-    if (this.opener) { clearTimeout(this.openerTimer); this.openerTimer = setTimeout(() => this.playOpener('silence'), this.silentAnswerMs); }
+    if (this.opener) this.armOpener();
   }
   // A placed call, answered and ready, in which nobody has spoken after `silentAnswerMs` is greeted (`silentAnswer` in the receipt).
   armSilentAnswer() {
@@ -160,7 +163,9 @@ export class PhoneAudio {
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
     const sound = audible(payload);
     if (sound) this.soundHeardAt = Date.now();
-    if (this.opener && this.opener.state !== 'done') { this.listenOpener(level(payload) >= BARGE_RMS); payload = silenceLike(payload); }
+    if (this.opener && this.opener.state !== 'done' && !(this.screenVoicemail && this.opener.state === 'waiting')) {
+      this.listenOpener(level(payload) >= BARGE_RMS); payload = silenceLike(payload);
+    }
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready && !this.flushingInput) {
@@ -197,7 +202,18 @@ export class PhoneAudio {
     this.item = undefined;
     this.handle({type: 'interrupted'});
   }
-  // The callee's hello, as Twilio frames arrive (20 ms each): the opener plays once it has ended; after the opener, its echo's window.
+  armOpener() {
+    clearTimeout(this.openerTimer);
+    const check = () => {
+      // When screening a greeting, give the speech provider time to finish a turn already in progress.
+      const now = Date.now(), quietMs = (this.config.eotTimeoutMs ?? 1500) + 300;
+      if (this.screenVoicemail && now - this.startedAt < OPENER_MAX_WAIT_MS && now - (this.soundHeardAt ?? -Infinity) < quietMs) {
+        this.openerTimer = setTimeout(check, 200);
+      } else this.playOpener('silence');
+    };
+    this.openerTimer = setTimeout(check, this.silentAnswerMs);
+  }
+  // The callee's hello for a line without screening, or the echo window after the opener for either kind of line.
   listenOpener(sound) {
     const o = this.opener, now = Date.now();
     if (o.state === 'waiting') {
@@ -347,6 +363,7 @@ export class PhoneAudio {
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else this.callerSpeaking = false;
         this.activeAt = Date.now();
+        if (item.who === 'caller' && this.endOnMailbox(item.text)) break;
         if (this.advice) this.coach(item);
         this.transcript.add(item.who, item);
         break;
@@ -461,8 +478,27 @@ export class PhoneAudio {
     const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }
-  // One language-model request relayed through the listener (src/phone-think.mjs): the line's thinking level is set on it and the latest coach note rides on it.
+  endOnMailbox(text) {
+    if (!this.screenVoicemail || this.stats.modelRequests !== 0 || !mailboxGreeting(text)) return false;
+    const last = this.transcript.turns.at(-1);
+    if (last?.who !== 'caller' || !last.text.endsWith(text)) this.transcript.add('caller', {text});
+    this.stats.voicemailMs = Date.now() - this.startedAt;
+    this.close('voicemail');
+    return true;
+  }
+  // Check the transcript in the request as well as on the socket: Deepgram can request a reply before delivering ConversationText.
+  // The initial hello on a fixed-opener line needs playback only, so it need not reach the language model either.
   think(body) {
+    if (this.screenVoicemail) {
+      if (!this.usable) return;
+      const text = latestCallerText(body);
+      if (this.endOnMailbox(text)) return;
+      if (this.opener && this.opener.state !== 'done') {
+        this.playOpener('hello');
+        return;
+      }
+      this.stats.modelRequests++;
+    }
     const thinking = this.config.thinking !== undefined && this.adapter.withThinking ? this.adapter.withThinking(body, this.config.thinking) : body;
     const note = this.advice?.note(), out = note ? this.adapter.withAdvice(thinking, note.text) : thinking;
     if (out !== thinking) this.advice.attached(note);
