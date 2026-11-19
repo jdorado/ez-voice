@@ -218,7 +218,7 @@ test('a signed outbound mailbox call hangs up from the think relay before model 
   const {provider, calls} = await fixture(t);
   const line = {...config, provider: 'deepgram', model: 'gemini-3.6-flash', instructions: 'Synthetic test',
     llmApiKey: 'synthetic-key-that-is-long-enough', ttsApiKey: 'synthetic-tts-key-that-is-long-enough',
-    opener: 'Hi, do you have a second?', skipVoicemail: true};
+    opener: 'Hi, do you have a second?', skipVoicemail: true, ambienceDb: -60};
   let audio, receipt, ws, settings;
   const modelRequests = [];
   const web = await servePhone(line, {
@@ -248,6 +248,7 @@ test('a signed outbound mailbox call hangs up from the think relay before model 
     await wait(() => audio);
     audio.emit('message', Buffer.from(JSON.stringify({type: 'Welcome'})));
     const endpoint = settings.agent.think.endpoint, url = new URL(endpoint.url);
+    await new Promise(resolve => setTimeout(resolve, 40)); // room tone normally sends a frame within 20 ms
     const text = 'Your call has been forwarded to voicemail.';
     const reply = await fetch(`http://127.0.0.1:${web.port}${url.pathname}${url.search}`, {
       method: 'POST', headers: {...endpoint.headers, 'Content-Type': 'application/json'},

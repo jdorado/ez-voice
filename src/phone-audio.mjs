@@ -243,6 +243,7 @@ export class PhoneAudio {
   }
   fillAmbience() {
     if (this.twilio.readyState !== WebSocket.OPEN || this.ringing || this.closing || this.completed) return;
+    if (this.screenVoicemail && this.stats.firstSpeechMs === undefined) return;
     const now = Date.now();
     for (let n = 0; (this.playedUntil ?? 0) < now + 60 && n < 10; n++) {
       this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience.frame()}}));
