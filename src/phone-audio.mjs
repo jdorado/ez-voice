@@ -485,8 +485,7 @@ export class PhoneAudio {
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }
   endOnMailbox(text) {
-    if (!this.screenVoicemail || this.stats.modelRequests !== 0 ||
-      (this.opener && this.opener.state !== 'waiting') || !mailboxGreeting(text)) return false;
+    if (!this.screenVoicemail || this.stats.modelRequests !== 0 || this.openingTurnAccepted || !mailboxGreeting(text)) return false;
     const last = this.transcript.turns.at(-1);
     if (last?.who !== 'caller' || !last.text.endsWith(text)) this.transcript.add('caller', {text});
     this.stats.voicemailMs = Date.now() - this.startedAt;
@@ -501,6 +500,7 @@ export class PhoneAudio {
       const text = latestCallerText(body);
       if (this.endOnMailbox(text)) return;
       if (this.opener && this.opener.state !== 'done') {
+        if (text?.trim()) this.openingTurnAccepted = true;
         this.playOpener('hello');
         return;
       }

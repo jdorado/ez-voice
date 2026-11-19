@@ -204,7 +204,9 @@ test('mailbox detection needs an explicit greeting rather than a long or ambiguo
     'Your call has been forwarded to an automated voice messaging system.',
     'Hi, this is Morgan. Please leave a message after the beep.',
     'Hi. This is Morgan. Please leave your message.',
+    'Hi this is Morgan please leave your message',
     'The mailbox is currently full.',
+    "We're sorry. The mailbox is full and cannot accept messages.",
     'Por favor, deje su mensaje de voz después del tono.',
   ]) assert.equal(mailboxGreeting(text), true, text);
   for (const text of [
@@ -213,6 +215,7 @@ test('mailbox detection needs an explicit greeting rather than a long or ambiguo
     'Leave a message with my assistant.',
     'Morgan is not here. Could you please leave a message?',
     'Hi. This is Morgan. Could you please leave a message?',
+    'Hi this is Morgan could you please leave a message',
     'Her mailbox is full. I can take a message.',
     'Can you tell me if his voicemail is working?',
   ]) assert.equal(mailboxGreeting(text), false, text);
