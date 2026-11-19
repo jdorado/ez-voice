@@ -203,6 +203,7 @@ test('mailbox detection needs an explicit greeting rather than a long or ambiguo
   for (const text of [
     'Your call has been forwarded to an automated voice messaging system.',
     'Hi, this is Morgan. Please leave a message after the beep.',
+    'Hi. This is Morgan. Please leave your message.',
     'The mailbox is currently full.',
     'Por favor, deje su mensaje de voz después del tono.',
   ]) assert.equal(mailboxGreeting(text), true, text);
@@ -249,7 +250,7 @@ test('a signed outbound mailbox call hangs up from the think relay before model 
     audio.emit('message', Buffer.from(JSON.stringify({type: 'Welcome'})));
     const endpoint = settings.agent.think.endpoint, url = new URL(endpoint.url);
     await new Promise(resolve => setTimeout(resolve, 40)); // room tone normally sends a frame within 20 ms
-    const text = 'Your call has been forwarded to voicemail.';
+    const text = 'Hi. This is Morgan. Please leave your message.';
     const reply = await fetch(`http://127.0.0.1:${web.port}${url.pathname}${url.search}`, {
       method: 'POST', headers: {...endpoint.headers, 'Content-Type': 'application/json'},
       body: JSON.stringify({contents: [{role: 'user', parts: [{text}]}]}),

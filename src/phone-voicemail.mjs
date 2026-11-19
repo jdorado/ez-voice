@@ -3,6 +3,7 @@
 const MAILBOX = [
   /\b(?:your |this )?call (?:has been |is being )forwarded to (?:the |an? )?(?:automatic |automated )?(?:voice ?mail|voice messag(?:e|ing) system)\b/,
   /\b(?:voice ?mail(?: box)?|mailbox) (?:is (?:currently |now )?|has been )(?:full|not (?:yet )?set up)\b/,
+  /\bplease leave (?:a|your) message\s*$/,
   /\b(?:leave|record) (?:a |your )(?:(?:voice |recorded )?message|name and number) (?:after|at|following) (?:the )?(?:beep|tone|signal)\b/,
   /\b(?:after|at|following) the (?:beep|tone|signal) (?:please )?(?:leave|record) (?:a |your )?message\b/,
   /\b(?:please leave|leave me) (?:a |your )?message (?:and i(?:'ll| will) (?:call|get) (?:you )?back|and i(?:'ll| will) return your call)\b/,

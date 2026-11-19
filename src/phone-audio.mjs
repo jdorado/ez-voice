@@ -37,6 +37,7 @@ const TRACED = new Set(['input_audio_buffer.speech_started', 'input_audio_buffer
 // use the opening transcript. Other lines listen for OPENER_HELLO_MS at BARGE_RMS followed by OPENER_QUIET_MS
 // of quiet to distinguish a hello from pickup noise. The provider hears silence during the opener and its echo.
 const OPENER_HELLO_MS = 250, OPENER_QUIET_MS = 400, OPENER_ECHO_MS = 300;
+const VOICEMAIL_SILENT_ANSWER_MS = 5000; // the lab's carrier mailbox began its greeting 3.4 s after connecting
 const OPENER_MAX_WAIT_MS = 12000;
 const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
@@ -211,7 +212,8 @@ export class PhoneAudio {
         this.openerTimer = setTimeout(check, 200);
       } else this.playOpener('silence');
     };
-    this.openerTimer = setTimeout(check, this.silentAnswerMs);
+    const waitMs = this.screenVoicemail ? Math.max(this.silentAnswerMs, VOICEMAIL_SILENT_ANSWER_MS) : this.silentAnswerMs;
+    this.openerTimer = setTimeout(check, waitMs);
   }
   // The callee's hello for a line without screening, or the echo window after the opener for either kind of line.
   listenOpener(sound) {
