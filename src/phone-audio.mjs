@@ -142,16 +142,20 @@ export class PhoneAudio {
   armSilentAnswer() {
     if (this.config.greet || this.opener || this.config.call?.direction !== 'out' || !this.ready || this.twilio === DETACHED || this.silentAnswer) return;
     const armedAt = Date.now();
+    const quietMs = this.screenVoicemail ? this.voicemailQuietMs : 800;
+    const maxWaitMs = this.screenVoicemail ? OPENER_MAX_WAIT_MS : 2 * this.silentAnswerMs;
     const check = () => {
       if (this.stats.inputTranscriptEvents || this.conversationStarted) return; // the callee spoke: the provider answers them
       // Sound on the line may be a callee mid-hello that the provider has not called speech yet (an owner's "This is Dave" met the
       // greeting at 3 s): wait for a quiet moment, at most another silentAnswerMs, so a noisy line is still greeted.
-      if (Date.now() - (this.soundHeardAt ?? -Infinity) < 800 && Date.now() - armedAt < 2 * this.silentAnswerMs) return void (this.silentAnswer = setTimeout(check, 200));
+      if (Date.now() - (this.soundHeardAt ?? -Infinity) < quietMs && Date.now() - armedAt < maxWaitMs) return void (this.silentAnswer = setTimeout(check, 200));
       this.greetSilent = true; this.stats.silentAnswer = true; this.greet();
     };
-    this.silentAnswer = setTimeout(check, this.silentAnswerMs);
+    this.silentAnswer = setTimeout(check, this.outboundSilenceMs);
   }
   get usable() { return !this.closing && !this.completed; }
+  get outboundSilenceMs() { return this.screenVoicemail ? Math.max(this.silentAnswerMs, VOICEMAIL_SILENT_ANSWER_MS) : this.silentAnswerMs; }
+  get voicemailQuietMs() { return (this.config.eotTimeoutMs ?? 1500) + 300; }
   send(message) {
     if (this.provider?.readyState !== WebSocket.OPEN) return false;
     if (this.provider.bufferedAmount > 256000) { this.close('provider_backpressure'); return false; }
@@ -207,13 +211,12 @@ export class PhoneAudio {
     clearTimeout(this.openerTimer);
     const check = () => {
       // When screening a greeting, give the speech provider time to finish a turn already in progress.
-      const now = Date.now(), quietMs = (this.config.eotTimeoutMs ?? 1500) + 300;
-      if (this.screenVoicemail && now - this.startedAt < OPENER_MAX_WAIT_MS && now - (this.soundHeardAt ?? -Infinity) < quietMs) {
+      const now = Date.now();
+      if (this.screenVoicemail && now - this.startedAt < OPENER_MAX_WAIT_MS && now - (this.soundHeardAt ?? -Infinity) < this.voicemailQuietMs) {
         this.openerTimer = setTimeout(check, 200);
       } else this.playOpener('silence');
     };
-    const waitMs = this.screenVoicemail ? Math.max(this.silentAnswerMs, VOICEMAIL_SILENT_ANSWER_MS) : this.silentAnswerMs;
-    this.openerTimer = setTimeout(check, waitMs);
+    this.openerTimer = setTimeout(check, this.outboundSilenceMs);
   }
   // The callee's hello for a line without screening, or the echo window after the opener for either kind of line.
   listenOpener(sound) {
@@ -482,7 +485,8 @@ export class PhoneAudio {
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }
   endOnMailbox(text) {
-    if (!this.screenVoicemail || this.stats.modelRequests !== 0 || !mailboxGreeting(text)) return false;
+    if (!this.screenVoicemail || this.stats.modelRequests !== 0 ||
+      (this.opener && this.opener.state !== 'waiting') || !mailboxGreeting(text)) return false;
     const last = this.transcript.turns.at(-1);
     if (last?.who !== 'caller' || !last.text.endsWith(text)) this.transcript.add('caller', {text});
     this.stats.voicemailMs = Date.now() - this.startedAt;
