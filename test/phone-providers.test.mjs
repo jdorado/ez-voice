@@ -1200,6 +1200,60 @@ test('deepgram: a placed call answered in silence gets the pre-rendered opener a
   } finally { c.audio.close(); await c.audio.done; }
 });
 
+test('deepgram: a human hello ends mailbox screening when the fixed opener plays', async () => {
+  const fetch = async () => new Response(Buffer.alloc(800, 0x55), {status: 200});
+  const c = await call('deepgram', {...deepgramKeys, opener: 'Hi, is this Morgan?', skipVoicemail: true,
+    call: {id: 'CA5', direction: 'out'}}, {fetch});
+  const turn = text => ({contents: [{role: 'user', parts: [{text}]}]});
+  try {
+    assert.equal(c.audio.think(turn('Hello?')), undefined);
+    await wait(() => c.twilio.sent.some(m => m.event === 'media'));
+    const reply = 'Your call has been forwarded to voicemail before. I can help now.';
+    c.socket().receive({type: 'ConversationText', role: 'user', content: reply});
+    assert.equal(c.audio.usable, true);
+    await sleep(450);
+    c.audio.input('//8=');
+    const request = turn(reply);
+    assert.equal(c.audio.think(request), request);
+    assert.equal(c.audio.stats.modelRequests, 1);
+  } finally { await c.audio.close(); }
+});
+
+test('deepgram: a line without a fixed opener listens for late voicemail before generating a greeting', async t => {
+  t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+  const c = await call('deepgram', {...deepgramKeys, skipVoicemail: true, call: {id: 'CA6', direction: 'out'}});
+  try {
+    c.socket().receive({type: 'SettingsApplied'});
+    t.mock.timers.tick(3400);
+    assert.equal(c.audio.stats.silentAnswer, undefined);
+    c.audio.input(loudFrame());
+    t.mock.timers.tick(1600);
+    assert.equal(c.audio.stats.silentAnswer, undefined);
+    c.socket().receive({type: 'ConversationText', role: 'user', content: 'Please leave a message after the tone.'});
+    const receipt = await c.audio.done;
+    assert.equal(receipt.reason, 'voicemail');
+    assert.equal(receipt.modelRequests, 0);
+    assert.equal(receipt.outputBytes, 0);
+  } finally { await c.audio.close(); }
+});
+
+test('deepgram: a silence-triggered opener still screens the first caller turn', async t => {
+  t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+  const fetch = async () => new Response(Buffer.alloc(800, 0x55), {status: 200});
+  const c = await call('deepgram', {...deepgramKeys, opener: 'Hi there.', skipVoicemail: true,
+    call: {id: 'CA7', direction: 'out'}}, {fetch});
+  try {
+    t.mock.timers.tick(5000);
+    await c.audio.openerClip;
+    assert.equal(c.audio.stats.openerOn, 'silence');
+    assert(c.twilio.sent.some(m => m.event === 'media'));
+    c.socket().receive({type: 'ConversationText', role: 'user', content: 'Hi this is Morgan please leave your message'});
+    const receipt = await c.audio.done;
+    assert.equal(receipt.reason, 'voicemail');
+    assert.equal(receipt.modelRequests, 0);
+  } finally { await c.audio.close(); }
+});
+
 test('a greeting is a Deepgram line\'s; an opener (a placed call\'s first line) is a Deepgram or ElevenLabs line\'s', () => {
   const line = {...base, apiKey: keys.deepgram, provider: 'deepgram', ...deepgramKeys};
   assert.equal(validatePhoneConfig({...line, greeting: 'Thanks for calling back.', opener: 'Hi, do you have a second?'}).provider, 'deepgram');

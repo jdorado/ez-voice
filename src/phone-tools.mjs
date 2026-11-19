@@ -12,7 +12,7 @@ export const PHONE_TOOLS = {
   // (a live call showed a second goodbye three seconds after the first when it was asked to).
   end_call: {
     final: true,
-    description: 'Hang up the phone call. Use it when the conversation is finished, or once a voicemail message has been left.',
+    description: 'Hang up the phone call. Follow the call instructions on when to hang up and whether to say anything first.',
     parameters: {type: 'object', properties: {}, additionalProperties: false},
     run: call => call.endSoon(),
   },

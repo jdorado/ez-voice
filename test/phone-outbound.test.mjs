@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import {PhoneCalls,phoneControl,servePhoneControl,callOptions,LAST_CALL} from '../src/phone-calls.mjs';
 import {PhoneNumber} from '../src/phone-provider.mjs';
 import {servePhone,twilioSignature} from '../src/phone.mjs';
+import {mailboxGreeting} from '../src/phone-voicemail.mjs';
 
 const config={apiKey:'sk-synthetic123456789',accountSid:'AC'+'1'.repeat(32),authToken:'2'.repeat(32),number:'+15551230001',origin:'https://phone.example.com',instructions:'Synthetic test'};
 const id='outbound-synthetic',to='+15551230002',callSid='CA'+'3'.repeat(32),streamSid='MZ'+'4'.repeat(32),recordingSid='RE'+'8'.repeat(32);
@@ -194,6 +195,86 @@ test('Twilio create request pins caller ID, existing signed endpoint, Record=fal
   assert.equal(form.get('To'),to);assert.equal(form.get('From'),config.number);assert.equal(form.get('Url'),config.origin+'/incoming?outbound='+id);
   assert.equal(form.get('StatusCallback'),form.get('Url')+'&status=1');assert.equal(form.get('TimeLimit'),'195');assert.equal(form.get('Timeout'),'45');assert.equal(form.get('Record'),'false');
   assert.equal(form.has('SmsUrl'),false);
+  assert.equal(form.has('MachineDetection'),false);
+  assert.equal(form.has('AsyncAmd'),false);
+});
+
+test('mailbox detection needs an explicit greeting rather than a long or ambiguous answer', () => {
+  for (const text of [
+    'Your call has been forwarded to an automated voice messaging system.',
+    'Hi, this is Morgan. Please leave a message after the beep.',
+    'Hi. This is Morgan. Please leave your message.',
+    'Hi this is Morgan please leave your message',
+    'You have reached the North County Medical Center. Please leave a message.',
+    'Hi, this is Dr. Morgan. Please leave a message.',
+    'The mailbox is currently full.',
+    "We're sorry. The mailbox is full and cannot accept messages.",
+    'Por favor, deje su mensaje de voz después del tono.',
+  ]) assert.equal(mailboxGreeting(text), true, text);
+  for (const text of [
+    'Hello, this is Morgan.',
+    'Hello? I was expecting someone else to call you back.',
+    'Leave a message with my assistant.',
+    'Morgan is not here. Could you please leave a message?',
+    'Hi. This is Morgan. Could you please leave a message?',
+    'Hi this is Morgan could you please leave a message',
+    'Hi, this is Morgan. If needed, please leave a message.',
+    'This is not a good time to talk. Please leave a message.',
+    'Her mailbox is full. I can take a message.',
+    'Can you tell me if his voicemail is working?',
+  ]) assert.equal(mailboxGreeting(text), false, text);
+});
+
+test('a signed outbound mailbox call hangs up from the think relay before model fetch or opener playback', async t => {
+  const {provider, calls} = await fixture(t);
+  const line = {...config, provider: 'deepgram', model: 'gemini-3.6-flash', instructions: 'Synthetic test',
+    llmApiKey: 'synthetic-key-that-is-long-enough', ttsApiKey: 'synthetic-tts-key-that-is-long-enough',
+    opener: 'Hi, do you have a second?', skipVoicemail: true, ambienceDb: -60};
+  let audio, receipt, ws, settings;
+  const modelRequests = [];
+  const web = await servePhone(line, {
+    port: 0, host: '127.0.0.1', calls, provider: recorder().provider,
+    socketFactory: () => {
+      audio = new AudioProvider();
+      audio.send = raw => { if (!Buffer.isBuffer(raw)) settings = JSON.parse(raw); };
+      return audio;
+    },
+    fetch: async url => {
+      if (String(url).includes('generativelanguage.googleapis.com')) modelRequests.push(url);
+      return new Response(new Uint8Array(160).fill(0xff));
+    },
+    record: async value => { receipt = value; },
+  });
+  try {
+    await calls.call({requestId: id, to}, web.busy);
+    provider.value.status = 'in-progress';
+    const response = await post(web.port, '/incoming?outbound=' + id, params());
+    const ticket = (await response.text()).match(/value="([a-f0-9]+)"/)[1];
+    ws = new WebSocket(`ws://127.0.0.1:${web.port}/media`, {headers: {'x-twilio-signature': twilioSignature(config.authToken, config.origin + '/media')}});
+    const media = [];
+    ws.on('message', raw => media.push(JSON.parse(raw)));
+    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    ws.send(JSON.stringify({event: 'start', start: {accountSid: config.accountSid, callSid, streamSid,
+      customParameters: {ticket}, mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
+    await wait(() => audio);
+    audio.emit('message', Buffer.from(JSON.stringify({type: 'Welcome'})));
+    const endpoint = settings.agent.think.endpoint, url = new URL(endpoint.url);
+    await new Promise(resolve => setTimeout(resolve, 40)); // room tone normally sends a frame within 20 ms
+    const text = 'Hi. This is Morgan. Please leave your message.';
+    const reply = await fetch(`http://127.0.0.1:${web.port}${url.pathname}${url.search}`, {
+      method: 'POST', headers: {...endpoint.headers, 'Content-Type': 'application/json'},
+      body: JSON.stringify({contents: [{role: 'user', parts: [{text}]}]}),
+    });
+    assert.equal(reply.status, 200);
+    assert.match(await reply.text(), /"finishReason":"STOP"/);
+    await wait(() => receipt && ws.readyState === WebSocket.CLOSED);
+    assert.equal(receipt.reason, 'voicemail');
+    assert.equal(receipt.modelRequests, 0);
+    assert.equal(receipt.outputBytes, 0);
+    assert.equal(receipt.transcript[0].text, text);
+    assert.equal(modelRequests.length, 0);
+    assert.equal(media.filter(event => event.event === 'media').length, 0);
+  } finally { ws?.terminate(); await web.close(); }
 });
 
 test('control shutdown rejects late frames from existing idle clients and waits for admitted work',async t=>{
