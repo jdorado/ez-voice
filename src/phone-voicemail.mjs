@@ -10,9 +10,9 @@ const MAILBOX = [
   /\b(?:su|esta) llamada (?:ha sido|fue|se ha) (?:transferida|enviada|desviada) al buzon de voz\b/,
 ];
 // The carrier test used this compact personal greeting with no mention of a tone.
-const SHORT_GREETING = /^(?:this is|you(?:'ve| have) reached) [^,.!?;:]{1,80}[,.:!]\s*please leave (?:a|your) message[.!]?$/iu;
-const SHORT_GREETING_WITHOUT_PUNCTUATION = /^(?:this is|you(?:'ve| have) reached) (?:[a-z][a-z'-]* ){1,4}please leave (?:a|your) message$/;
-const POLITE_QUESTION = /\b(?:can|could|will|would) you please leave\b/;
+const SHORT_GREETING = /^(?:this is|you(?:'ve| have) reached) (.{1,80})[,.:!]\s*please leave (?:a|your) message[.!]?$/iu;
+const NAME_OR_ORGANIZATION = /^\p{Lu}[\p{L}\p{M}'-]*(?: (?:\p{Lu}[\p{L}\p{M}'-]*|and|of|the|&))*$/u;
+const SHORT_GREETING_WITHOUT_PUNCTUATION = /^(?:this is|you(?:'ve| have) reached) (?:[a-z][a-z'-]* ){1,2}please leave your message$/;
 
 export function mailboxGreeting(text) {
   if (typeof text !== 'string') return false;
@@ -20,9 +20,10 @@ export function mailboxGreeting(text) {
     .replace(/[^a-z0-9' ]/g, ' ').replace(/\s+/g, ' ').trim();
   if (MAILBOX.some(pattern => pattern.test(words))) return true;
   const greeting = text.trim().replace(/[’‘]/g, "'").replace(/^(?:hi|hello)[,.!\s]+/i, '');
-  if (SHORT_GREETING.test(greeting)) return true;
+  const identity = SHORT_GREETING.exec(greeting)?.[1].replace(/^(?:the|dr\.?|mr\.?|ms\.?|mrs\.?)\s+/i, '');
+  if (identity && NAME_OR_ORGANIZATION.test(identity)) return true;
   if (/[,.!?;:]/.test(greeting.replace(/[.!]$/, ''))) return false;
-  return !POLITE_QUESTION.test(words) && SHORT_GREETING_WITHOUT_PUNCTUATION.test(words.replace(/^(?:hi|hello) /, ''));
+  return SHORT_GREETING_WITHOUT_PUNCTUATION.test(words.replace(/^(?:hi|hello) /, ''));
 }
 
 export function latestCallerText(body) {
