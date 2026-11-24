@@ -228,7 +228,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
   if (calls) calls.hooks = {warm, drop: dropWarm};
   // Live transfers and `phone connect` (src/phone-transfer.mjs), with the install's transferBinding; a deepgram line's model gets transfer_call.
   const transfers = config.transfer ? new Transfers(config, {provider, backend: config.transfer, calls, directory: calls?.directory}) : undefined;
-  const transferPaths = new Map(['whisper', 'confirm', 'status'].map(kind => [prefix + '/transfer/' + kind, kind]));
+  const transferPaths = new Map(['whisper', 'confirm', 'status', 'after', 'hold', 'quiet'].map(kind => [prefix + '/transfer/' + kind, kind]));
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.loaded && ticket.expires<Date.now())tickets.delete(token);};
   // Calls in progress or reserved, up to maxCalls at once: an outbound request counts from creation to its end
   // (its answer ticket and audio are the same call), an inbound call from its ticket to its end.
@@ -249,7 +249,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
       if (transfers && request.method === 'POST' && url.origin === config.origin && transferPaths.has(url.pathname) && request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) {
         const params = new URLSearchParams(await body(request));
         const twiml = authentic(config, request.headers['x-twilio-signature'], request.url, params) && params.get('AccountSid') === config.accountSid && sid(params.get('CallSid'), 'CA')
-          && [...url.searchParams.keys()].join() === 't' ? transfers.route(transferPaths.get(url.pathname), url.searchParams.get('t'), params) : null;
+          && [...url.searchParams.keys()].join() === 't' ? await transfers.route(transferPaths.get(url.pathname), url.searchParams.get('t'), params) : null;
         if (twiml === null) { response.writeHead(403); return response.end(); }
         if (!twiml) { response.writeHead(204); return response.end(); }
         response.setHeader('Content-Type', 'text/xml'); return response.end(twiml);

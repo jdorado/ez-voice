@@ -19,6 +19,7 @@ const line = {accountSid, authToken, origin, number, instructions: 'Synthetic li
   llmApiKey: 'AIza' + 'b'.repeat(35), ttsApiKey: 'sk_' + 'a'.repeat(24), idleSeconds: 0, answerTone: 'none', handoverMaxMs: 2000};
 const binding = {url: 'https://ops.example.com/transfer', token: 't'.repeat(24), deadlineMs: 1000};
 const wait = async fn => {for (let i = 0; i < 300; i++) {if (fn()) return; await new Promise(r => setTimeout(r, 10));} throw Error('Timed out');};
+const conferenceSid = name => 'CF' + Buffer.from(name).toString('hex').padEnd(32, '0').slice(0, 32);
 const available = {status: 'available', claim_id: 'claim-1', person: 'Juan', number: personNumber, caller_id: callerId};
 
 class Deepgram extends EventEmitter {
@@ -31,7 +32,7 @@ class Deepgram extends EventEmitter {
 }
 
 // A listener on a deepgram line with a transfer backend (`answer` decides each backend reply) and a synthetic Twilio REST API.
-async function listener(t, {answer = () => ({ok: true}), calls, settings = {}} = {}) {
+async function listener(t, {answer = () => ({ok: true}), calls, settings = {}, callStatus = {}} = {}) {
   const backend = [], twilio = [], receipts = [], sockets = [];
   const transfer = httpTransfer(binding, async (url, init) => {
     assert.equal(url, binding.url); assert.equal(init.headers.authorization, 'Bearer ' + binding.token);
@@ -42,6 +43,9 @@ async function listener(t, {answer = () => ({ok: true}), calls, settings = {}} =
     const form = Object.fromEntries(new URLSearchParams(options.body ?? ''));
     twilio.push({path: url.replace(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}`, ''), form});
     if (url.endsWith('/Recordings.json')) return new Response(JSON.stringify({sid: 'RE' + '8'.repeat(32)}), {status: 201});
+    if (url.includes('/Conferences.json?')) { const name = new URL(url).searchParams.get('FriendlyName'); return new Response(JSON.stringify({conferences: [{sid: conferenceSid(name), friendly_name: name}]})); }
+    const call = url.match(/\/Calls\/(CA[0-9a-f]{32})\.json$/)?.[1];
+    if (call && !options.body) return new Response(JSON.stringify({sid: call, status: callStatus[call] ?? 'in-progress'}));
     return new Response(JSON.stringify({sid: url.endsWith('/Calls.json') ? personSid : url.match(/(CA[0-9a-f]{32})/)[1]}), {status: 201});
   });
   const web = await servePhone({...line, ...settings, transfer}, {port: 0, host: '127.0.0.1', provider, calls,
@@ -70,6 +74,8 @@ const askTransfer = (dg, whisper = '12 Main St: the owner <Ann> wants to talk pr
 const notes = dg => dg.events.filter(e => e.type === 'InjectUserMessage').map(e => e.content).slice(1); // after the greeting
 const personToken = twilio => new URL(twilio.find(r => r.path === '/Calls.json').form.Url).searchParams.get('t');
 const personParams = (extra = {}) => new URLSearchParams({AccountSid: accountSid, CallSid: personSid, From: callerId, To: personNumber, ...extra});
+const personDial = (room, token) => `<Dial action="https://phone.example.com/transfer/after?t=${token}" method="POST"><Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="false" waitUrl="">${room}</Conference></Dial>`;
+const ownerDial = room => `<Response><Dial><Conference beep="false" endConferenceOnExit="true">${room}</Conference></Dial></Response>`;
 const callback = (heard, kind, extra) => signed(heard.web.port, `/transfer/${kind}?t=${personToken(heard.twilio)}`, personParams(extra));
 
 test('transferBinding is a validated shared setting, and only a deepgram line with it declares transfer_call', () => {
@@ -127,7 +133,7 @@ test('a person who does not answer is released no_answer and the model is told t
     assert.equal((await callback(heard, 'status', {CallStatus: 'no-answer'})).status, 204);
     await wait(() => notes(dg).length === 1);
     assert.equal(notes(dg)[0], `(${NOTES.missed})`);
-    assert.deepEqual(heard.backend.at(-1), {action: 'release', claim_id: 'claim-1', result: 'no_answer', person_call_sid: personSid});
+    assert.deepEqual(heard.backend.at(-1), {action: 'release', claim_id: 'claim-1', result: 'no_answer', person_call_sid: personSid, person_ended: true});
     assert.equal((await callback(heard, 'status', {CallStatus: 'no-answer'})).status, 403); // settled and forgotten
     assert.equal(heard.backend.filter(b => b.action === 'release').length, 1);
   } finally {ws.terminate();}
@@ -159,9 +165,9 @@ test('a person who presses 1 joins a conference, the model hands over, and the c
     await callback(heard, 'whisper', {CallStatus: 'in-progress'});
     const joined = await (await callback(heard, 'confirm', {Digits: '1'})).text();
     const room = joined.match(/>(transfer-[a-f0-9]{24})</)[1];
-    assert.equal(joined, `<Response><Dial><Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="true" waitUrl="">${room}</Conference></Dial></Response>`);
+    assert.equal(joined, `<Response>${personDial(room, personToken(heard.twilio))}</Response>`);
     await wait(() => heard.backend.some(b => b.action === 'joined'));
-    assert.deepEqual(heard.backend.find(b => b.action === 'joined'), {action: 'joined', claim_id: 'claim-1', person_call_sid: personSid});
+    assert.deepEqual(heard.backend.find(b => b.action === 'joined'), {action: 'joined', claim_id: 'claim-1', person_call_sid: personSid, room});
     await wait(() => notes(dg).length === 1);
     assert.equal(notes(dg)[0], `(${NOTES.joined})`);
     // the model's earlier reply finishing is not the handover; its reply to the note is
@@ -176,7 +182,7 @@ test('a person who presses 1 joins a conference, the model hands over, and the c
     ws.send(JSON.stringify({event: 'mark', mark: {name: 'transfer'}}));
     await wait(() => heard.receipts.length);
     const redirect = heard.twilio.find(r => r.path === `/Calls/${callerSid}.json`).form;
-    assert.deepEqual(redirect, {Twiml: `<Response><Dial><Conference beep="false" endConferenceOnExit="true">${room}</Conference></Dial></Response>`, TimeLimit: '14400'});
+    assert.deepEqual(redirect, {Twiml: ownerDial(room), TimeLimit: '14400'});
     const receipt = heard.receipts[0];
     assert.equal(receipt.reason, 'transferred'); assert.equal(receipt.handover, 'played');
     assert.equal(receipt.transfer.person, 'Juan'); assert.equal(receipt.transfer.personCallSid, personSid); assert.ok(Date.parse(receipt.transfer.at));
@@ -185,7 +191,7 @@ test('a person who presses 1 joins a conference, the model hands over, and the c
     assert(!heard.backend.some(b => b.action === 'release'));
     await callback(heard, 'status', {CallStatus: 'completed', CallDuration: '42'});
     await wait(() => heard.backend.some(b => b.action === 'release'));
-    assert.deepEqual(heard.backend.find(b => b.action === 'release'), {action: 'release', claim_id: 'claim-1', result: 'completed', person_call_sid: personSid, seconds: 42});
+    assert.deepEqual(heard.backend.find(b => b.action === 'release'), {action: 'release', claim_id: 'claim-1', result: 'completed', person_call_sid: personSid, seconds: 42, person_ended: true});
   } finally {ws.terminate();}
 });
 
@@ -240,9 +246,170 @@ test('phone connect rings the person, dials the party on 1, reports each status,
   await wait(() => heard.backend.some(b => b.action === 'joined'));
   await callback(heard, 'status', {CallStatus: 'completed', CallDuration: '120'});
   await wait(() => heard.backend.some(b => b.action === 'release'));
-  assert.deepEqual(heard.backend.find(b => b.action === 'release'), {action: 'release', claim_id: 'claim-1', result: 'completed', person_call_sid: personSid, seconds: 120});
+  assert.deepEqual(heard.backend.find(b => b.action === 'release'), {action: 'release', claim_id: 'claim-1', result: 'completed', person_call_sid: personSid, seconds: 120, person_ended: true});
   const done = heard.web.transfers.status('c1');
   assert.equal(done.status, 'completed'); assert.equal(done.seconds, 120);
   await assert.rejects(() => heard.web.transfers.connect({requestId: 'c2', to: party, from: '+15551230005', whisper}), /--from one of the configured lines/);
   await assert.rejects(() => heard.web.transfers.connect({requestId: 'c2', to: party, from: number, whisper: 'x'.repeat(301)}), /1\.\.300/);
+});
+
+// A person holding several owners: queued claims, take, back and the `after` return (src/phone-transfer.mjs).
+const legSid = 'CA' + '9'.repeat(32), heldSid = 'CA' + '7'.repeat(32), otherSid = 'CA' + '3'.repeat(32);
+const queued = {status: 'queued', claim_id: 'claim-1'};
+const settle = ms => new Promise(r => setTimeout(r, ms));
+// The model's reply to the handover note plays at Twilio and its mark comes back.
+async function handOverPlayed({ws, media, dg}) {
+  await wait(() => notes(dg).at(-1) === `(${NOTES.joined})`);
+  dg.receive({type: 'ConversationText', role: 'user', content: notes(dg).at(-1)});
+  dg.receive({type: 'ConversationText', role: 'assistant', content: 'Here is Juan now.'});
+  dg.emit('message', Buffer.alloc(160, 10), true);
+  dg.receive({type: 'AgentAudioDone'});
+  await wait(() => media.some(m => m.event === 'mark' && m.mark.name === 'transfer'));
+  ws.send(JSON.stringify({event: 'mark', mark: {name: 'transfer'}}));
+}
+// An available claim through 1 and the handover: the caller sits in the person's room; resolves to that room.
+async function transferredCall(heard, call) {
+  askTransfer(call.dg);
+  await wait(() => heard.twilio.some(r => r.path === '/Calls.json'));
+  await callback(heard, 'whisper', {CallStatus: 'in-progress'});
+  const room = (await (await callback(heard, 'confirm', {Digits: '1'})).text()).match(/>(transfer-[a-f0-9]{24})</)[1];
+  await handOverPlayed(call);
+  await wait(() => heard.receipts.length);
+  return room;
+}
+const participant = (heard, room, callSid) => heard.twilio.filter(r => r.path === `/Conferences/${conferenceSid(room)}/Participants/${callSid}.json`).map(r => r.form);
+const redirectOf = (heard, callSid) => heard.twilio.find(r => r.path === `/Calls/${callSid}.json` && r.form.Twiml)?.form;
+
+test('a queued claim keeps the caller company, polls, and rings the person with the whisper once they are free', async t => {
+  let next = {status: 'wait'};
+  const heard = await listener(t, {settings: {transferPollMs: 20}, answer: body => body.action === 'claim' ? queued : body.action === 'poll' ? next : {ok: true}});
+  const call = await answered(heard);
+  try {
+    askTransfer(call.dg);
+    await wait(() => notes(call.dg).length === 1);
+    assert.equal(notes(call.dg)[0], `(${NOTES.queued})`);
+    await wait(() => heard.backend.filter(b => b.action === 'poll').length >= 2);
+    assert.deepEqual(heard.backend.find(b => b.action === 'poll'), {action: 'poll', claim_id: 'claim-1'});
+    assert(!heard.twilio.some(r => r.path === '/Calls.json'));
+    next = {status: 'ring', person: 'Juan', number: personNumber, caller_id: callerId};
+    await wait(() => heard.twilio.some(r => r.path === '/Calls.json'));
+    const create = heard.twilio.find(r => r.path === '/Calls.json').form;
+    assert.equal(create.To, personNumber); assert.equal(create.From, callerId);
+    const polls = heard.backend.filter(b => b.action === 'poll').length;
+    await settle(100);
+    assert.equal(heard.backend.filter(b => b.action === 'poll').length, polls, 'a ringing claim stops polling');
+    assert.match(await (await callback(heard, 'whisper', {CallStatus: 'in-progress'})).text(), /Press 1 to join\./);
+    await callback(heard, 'confirm', {Digits: '1'});
+    await wait(() => heard.backend.some(b => b.action === 'joined'));
+    assert.equal(heard.backend.find(b => b.action === 'joined').claim_id, 'claim-1');
+  } finally {call.ws.terminate();}
+});
+
+test('a queued claim the person takes holds their current owner, hands over, and moves the caller and the person into a new room', async t => {
+  let next = {status: 'wait'};
+  const heard = await listener(t, {settings: {transferPollMs: 20}, answer: body => body.action === 'claim' ? queued : body.action === 'poll' ? next : {ok: true}});
+  const call = await answered(heard);
+  try {
+    askTransfer(call.dg);
+    await wait(() => heard.backend.some(b => b.action === 'poll'));
+    next = {status: 'take', person: 'Juan', person_call_sid: legSid, hold: {room: 'transfer-held', call_sid: heldSid}};
+    await wait(() => participant(heard, 'transfer-held', heldSid).length);
+    next = {status: 'wait'};
+    const hold = participant(heard, 'transfer-held', heldSid)[0];
+    assert.equal(hold.Hold, 'true'); assert.equal(hold.HoldMethod, 'POST');
+    const token = new URL(hold.HoldUrl).searchParams.get('t');
+    assert.equal(hold.HoldUrl, `https://phone.example.com/transfer/hold?t=${token}`);
+    const heldParams = new URLSearchParams({AccountSid: accountSid, CallSid: heldSid});
+    const music = await (await signed(heard.web.port, `/transfer/hold?t=${token}`, heldParams)).text();
+    assert.equal(music, `<Response><Say>One moment please, they will be right back.</Say><Redirect method="POST">https://phone.example.com/transfer/quiet?t=${token}</Redirect></Response>`);
+    assert.match(await (await signed(heard.web.port, `/transfer/quiet?t=${token}`, heldParams)).text(), /^<Response><Pause length="30"\/><Redirect/);
+    assert(!redirectOf(heard, callerSid), 'the caller stays with the model until the handover played');
+    await handOverPlayed(call);
+    await wait(() => heard.backend.some(b => b.action === 'taken'));
+    const room = redirectOf(heard, callerSid).Twiml.match(/>(transfer-[a-f0-9]{24})</)[1];
+    assert.notEqual(room, 'transfer-held');
+    assert.equal(redirectOf(heard, callerSid).Twiml, ownerDial(room));
+    assert.equal(redirectOf(heard, legSid).Twiml, `<Response>${personDial(room, token)}</Response>`);
+    assert.deepEqual(heard.backend.find(b => b.action === 'taken'), {action: 'taken', claim_id: 'claim-1', room, person_call_sid: legSid});
+    await wait(() => heard.receipts.length);
+    assert.equal(heard.receipts[0].reason, 'transferred'); assert.equal(heard.receipts[0].transfer.personCallSid, legSid);
+    assert(!heard.twilio.some(r => r.path === '/Calls.json'), 'nobody is rung: the person is already on the line');
+    assert(!heard.twilio.some(r => r.path === `/Calls/${legSid}.json` && r.form.Status), 'the person\'s leg is never hung up from here');
+  } finally {call.ws.terminate();}
+});
+
+test('a queued claim the backend drops tells the model to book a callback and stops polling', async t => {
+  let next = {status: 'wait'};
+  const heard = await listener(t, {settings: {transferPollMs: 20}, answer: body => body.action === 'claim' ? queued : body.action === 'poll' ? next : {ok: true}});
+  const call = await answered(heard);
+  try {
+    askTransfer(call.dg);
+    await wait(() => heard.backend.some(b => b.action === 'poll'));
+    next = {status: 'drop'};
+    await wait(() => notes(call.dg).length === 2);
+    assert.equal(notes(call.dg)[1], `(${NOTES.missed})`);
+    const polls = heard.backend.filter(b => b.action === 'poll').length;
+    await settle(100);
+    assert.equal(heard.backend.filter(b => b.action === 'poll').length, polls);
+    assert(!heard.backend.some(b => b.action === 'release'), 'the backend released it already');
+  } finally {call.ws.terminate();}
+});
+
+test('a held owner\'s back resumes them, brings the person\'s leg into their room, and hangs up what the backend lists', async t => {
+  let next = {status: 'wait'};
+  const callStatus = {};
+  const heard = await listener(t, {settings: {transferPollMs: 20}, callStatus, answer: body => body.action === 'claim' ? available : body.action === 'poll' ? next : {ok: true}});
+  const call = await answered(heard);
+  try {
+    const room = await transferredCall(heard, call);
+    await wait(() => heard.backend.some(b => b.action === 'poll'));
+    next = {status: 'back', person_call_sid: personSid, end: [otherSid]};
+    await wait(() => heard.backend.some(b => b.action === 'returned'));
+    next = {status: 'wait'};
+    assert.deepEqual(participant(heard, room, callerSid), [{Hold: 'false'}]);
+    assert.equal(redirectOf(heard, personSid).Twiml, `<Response>${personDial(room, personToken(heard.twilio))}</Response>`);
+    assert.deepEqual(heard.twilio.find(r => r.path === `/Calls/${otherSid}.json`).form, {Status: 'completed'});
+    assert.deepEqual(heard.backend.find(b => b.action === 'returned'), {action: 'returned', claim_id: 'claim-1'});
+    // the owner hangs up (while held, say): their claim closes, without person_ended
+    callStatus[callerSid] = 'completed';
+    await wait(() => heard.backend.some(b => b.action === 'release'));
+    assert.deepEqual(heard.backend.find(b => b.action === 'release'), {action: 'release', claim_id: 'claim-1', result: 'completed', person_call_sid: personSid});
+    // the person's leg ends later: the backend hears it, to end the person's other claims
+    await callback(heard, 'status', {CallStatus: 'completed', CallDuration: '80'});
+    await wait(() => heard.backend.filter(b => b.action === 'release').length === 2);
+    assert.equal(heard.backend.at(-1).person_ended, true);
+  } finally {call.ws.terminate();}
+});
+
+test('the person\'s conference ending sends them back to a held owner when the backend says so, else hangs up', async t => {
+  let after = {status: 'back', claim_id: 'claim-0', room: 'transfer-held', call_sid: heldSid};
+  const heard = await listener(t, {answer: body => body.action === 'claim' ? available : body.action === 'after' ? after : {ok: true}});
+  const call = await answered(heard);
+  try {
+    await transferredCall(heard, call);
+    const token = personToken(heard.twilio);
+    assert.equal(await (await callback(heard, 'after', {CallStatus: 'in-progress', DialCallStatus: 'completed'})).text(), `<Response>${personDial('transfer-held', token)}</Response>`);
+    assert.deepEqual(heard.backend.find(b => b.action === 'after'), {action: 'after', person_call_sid: personSid});
+    assert.deepEqual(participant(heard, 'transfer-held', heldSid), [{Hold: 'false'}]);
+    await wait(() => heard.backend.some(b => b.action === 'returned'));
+    assert.deepEqual(heard.backend.find(b => b.action === 'returned'), {action: 'returned', claim_id: 'claim-0'});
+    after = {status: 'none'};
+    assert.equal(await (await callback(heard, 'after', {CallStatus: 'in-progress'})).text(), '<Response><Hangup/></Response>');
+    const asked = heard.backend.filter(b => b.action === 'after').length;
+    assert.equal(await (await callback(heard, 'after', {CallStatus: 'completed'})).text(), '<Response><Hangup/></Response>');
+    assert.equal(heard.backend.filter(b => b.action === 'after').length, asked, 'a person who hung up is not sent anywhere');
+  } finally {call.ws.terminate();}
+});
+
+test('a release that lists owner calls hangs each of them up', async t => {
+  const heard = await listener(t, {answer: body => body.action === 'claim' ? available : body.action === 'release' ? {ok: true, end: [otherSid, heldSid, 'nope']} : {ok: true}});
+  const call = await answered(heard);
+  try {
+    askTransfer(call.dg);
+    await wait(() => heard.twilio.some(r => r.path === '/Calls.json'));
+    await callback(heard, 'status', {CallStatus: 'no-answer'});
+    await wait(() => heard.twilio.some(r => r.path === `/Calls/${heldSid}.json`));
+    assert.deepEqual(heard.twilio.find(r => r.path === `/Calls/${otherSid}.json`).form, {Status: 'completed'});
+    assert.deepEqual(heard.twilio.find(r => r.path === `/Calls/${heldSid}.json`).form, {Status: 'completed'});
+  } finally {call.ws.terminate();}
 });

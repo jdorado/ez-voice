@@ -66,7 +66,9 @@ model then has `transfer_call({whisper})` (1..300 characters the person hears be
 moves into a conference with the person only after the 1 and the model's handover sentence, and the call ends `transferred`
 (`call-status` reports it with `transfer {person, personCallSid, at}`). `phone connect --to NUMBER --from LINE --request-id ID
 --whisper - < whisper.txt` rings that person, then dials NUMBER on their 1; exit 3 means the backend refused the claim;
-`call-status` reports `ringing_person`, `joined`, `completed`, `no_answer`, `declined` or `failed`. See docs/phone.md, "Live transfer and connect".
+`call-status` reports `ringing_person`, `joined`, `completed`, `no_answer`, `declined` or `failed`. A person on another call can be
+`queued` for: the caller waits with the model while the backend is polled, and the person may take them (the current owner held)
+or go back to a held owner. See docs/phone.md, "Live transfer and connect".
 
 
 For an explicitly authorized recipient, `ez voice phone call --to E.164 --request-id ID [--from LINE]

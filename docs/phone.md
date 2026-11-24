@@ -332,16 +332,29 @@ Each step is one bounded `POST` of JSON to `url` with `Authorization: Bearer <to
 - `{"action": "claim", "call": {"id", "call_sid", "line", "number", "direction"}, "whisper"}`: `line` is our Twilio number,
   `number` the other party, `direction` `outbound`, `inbound` or `connect`; `id` is the `phone call` request ID of a placed call,
   otherwise its Call SID. Answer `{status: "available", claim_id, person, number, caller_id}` (`number` and `caller_id` E.164,
-  `claim_id` 1..200 of letters, digits, `_ . : -`) or `{status: "busy" | "off" | "none" | "unavailable"}`. A failure, a timeout or
-  an invalid answer counts as `unavailable`.
-- `{"action": "joined", "claim_id", "person_call_sid"}` once the person pressed 1; answer `{ok: true}`.
-- `{"action": "release", "claim_id", "result", "person_call_sid"?, "seconds"?}`, exactly once per claim, `result` one of
+  `claim_id` 1..200 of letters, digits, `_ . : -`), `{status: "queued", claim_id}` (the person is on another call; the caller
+  waits) or `{status: "busy" | "off" | "none" | "unavailable"}`. A failure, a timeout or an invalid answer counts as `unavailable`.
+- `{"action": "joined", "claim_id", "person_call_sid", "room"}` once the person pressed 1 (`room`: the conference name); answer `{ok: true}`.
+- `{"action": "release", "claim_id", "result", "person_call_sid"?, "seconds"?, "person_ended"?}`, once per claim, `result` one of
   `no_answer`, `declined`, `failed`, `abandoned`, `completed` (`seconds`: Twilio's duration of the person's call, on `completed`).
+  `person_ended: true` when the person's own leg ended (sent again for a claim whose owner hung up first, so the backend can end the
+  person's other claims). Answer `{ok: true, end?: [Call SID]}`: owner calls the listener hangs up.
+- `{"action": "poll", "claim_id"}` every 2 s for a queued claim while its caller is on the line, and for a joined or taken claim
+  while it is open. Answer `{status: "wait"}`, `{status: "ring", person, number, caller_id}` (ring them as for `available`),
+  `{status: "take", person, person_call_sid, hold: {room, call_sid} | null}` (hold that owner, hand over, move this caller and the
+  person's existing leg into a new room), `{status: "back", person_call_sid, end}` (resume this held owner, bring the person's leg
+  into their room, hang up `end`), `{status: "drop"}` (released by the backend; the model books a callback) or `{status: "ended"}`.
+  While polling a joined or taken claim the listener also reads its owner's call at Twilio; one that ended releases `completed`.
+- `{"action": "taken", "claim_id", "room", "person_call_sid"}` after a take, `{"action": "returned", "claim_id"}` after a back
+  or an `after` return; answer `{ok: true}`.
+- `{"action": "after", "person_call_sid"}` when the person's conference ended under them (their `<Dial>` action, `/transfer/after`):
+  answer `{status: "back", claim_id, room, call_sid}` (that held owner is resumed and the person put into `room`) or `{status: "none"}` (their leg ends).
 
 A refused claim: the model is told the colleague cannot join right now (with the status) and to agree a time for a call back.
 An available one: Twilio rings `number` from `caller_id` for 20 s, recording both channels; when the person answers they hear
 the whisper and "Press 1 to join" (8 s). The person's callbacks are `origin + pathPrefix + /transfer/whisper|confirm|status`, each
-signed by Twilio and checked like `/incoming`. The caller stays on the stream with the model the whole time: Twilio drops a
+signed by Twilio and checked like `/incoming`; so are `/transfer/after` and `/transfer/hold|quiet` (a held owner hears
+"One moment please, they will be right back." once, then quiet). The person always joins with `endConferenceOnExit` false. The caller stays on the stream with the model the whole time: Twilio drops a
 `<Connect><Stream>` the moment its call is redirected, so the caller moves only after the person confirmed.
 
 - Pressed 1: the backend gets `joined`, the person waits in a conference of their own, the model is told the colleague is on the

@@ -52,6 +52,14 @@ export class PhoneNumber {
     if (!sid(callSid, 'CA')) throw Error('Invalid Call SID');
     return this.request(`/Calls/${callSid}.json`, {Twiml: twiml, TimeLimit: '14400'});
   }
+  // Holds or resumes one participant of a transfer conference, found by its room name (src/phone-transfer.mjs).
+  async holdParticipant(room, callSid, hold, holdUrl) {
+    if (!sid(callSid, 'CA') || typeof room !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(room)) throw Error('Invalid conference participant');
+    const found = await this.request('/Conferences.json?' + new URLSearchParams({FriendlyName: room, Status: 'in-progress'}));
+    const conference = found.conferences?.find(c => c.friendly_name === room && sid(c.sid, 'CF'));
+    if (!conference) throw Error('No conference in progress for that room');
+    return this.request(`/Conferences/${conference.sid}/Participants/${callSid}.json`, hold ? {Hold: 'true', HoldUrl: holdUrl, HoldMethod: 'POST'} : {Hold: 'false'});
+  }
   async set(numberSid, form) {
     if (!sid(numberSid, 'PN')) throw Error('Invalid phone number SID');
     await this.request(`/IncomingPhoneNumbers/${numberSid}.json`, form);
