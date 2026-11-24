@@ -45,7 +45,7 @@ const STATUS = {ringing: 'ringing_person', joined: 'joined'};
 export class Transfers {
   constructor(config, {provider, backend, calls, directory}) {
     this.config = config; this.provider = provider; this.backend = backend; this.calls = calls;
-    this.entries = new Map(); this.work = new Set(); this.timers = new Set(); this.pollMs = config.transferPollMs ?? 2000;
+    this.entries = new Map(); this.moving = new Set(); this.work = new Set(); this.timers = new Set(); this.pollMs = config.transferPollMs ?? 2000;
     this.base = config.origin + (config.pathPrefix || '') + '/transfer/';
     if (!directory) return; // connect requests are kept with the running service's calls
     mkdirSync(directory, {recursive: true, mode: 0o700});
@@ -173,6 +173,7 @@ export class Transfers {
   }
   // The person's conference ended under them (the owner they talked to hung up): back to a held owner, or the end of their leg.
   async after(token, callSid, status) {
+    if (this.moving.delete(callSid)) return '<Response/>'; // the callback of a move take()/back() made: the person is not leaving a conference
     if (status !== 'in-progress') return HANGUP; // the person hung up themselves; the status callback releases
     const next = await this.backend.after(callSid);
     if (next.status !== 'back') return HANGUP;
@@ -253,8 +254,10 @@ export class Transfers {
     entry.state = 'redirecting'; bridge.stats.transfer = transfer; bridge.closeReason = 'transferred';
     try { await this.provider.redirectCall(owner, ownerDial(entry.room)); }
     catch { if (bridge.usable) { delete bridge.stats.transfer; bridge.closeReason = undefined; } return fail(); }
+    this.moving.add(person_call_sid); // added first: Twilio's `after` callback for the move may beat the REST answer
     try { await this.provider.redirectCall(person_call_sid, `<Response>${this.personDial(entry.room, entry.token)}</Response>`); }
     catch { // the caller already left the stream: nobody can talk with them now
+      this.moving.delete(person_call_sid);
       await this.provider.endCall(owner, 'completed').catch(() => {});
       await unhold(); entry.state = 'ended'; await this.release(entry, 'failed'); return this.forget(entry);
     }
@@ -269,8 +272,9 @@ export class Transfers {
   async back(entry, {person_call_sid, end}) {
     try {
       await this.provider.holdParticipant(entry.room, entry.bridge.config.call.id, false);
+      this.moving.add(person_call_sid);
       await this.provider.redirectCall(person_call_sid, `<Response>${this.personDial(entry.room, entry.token)}</Response>`);
-    } catch { return; } // not reported: the backend still sees the person where they were
+    } catch { this.moving.delete(person_call_sid); return; } // not reported: the backend still sees the person where they were
     await this.endCalls(end);
     this.track(this.backend.returned(entry.claim.claim_id));
   }

@@ -338,6 +338,32 @@ test('a queued claim the person takes holds their current owner, hands over, and
   } finally {call.ws.terminate();}
 });
 
+test('the person\'s own move into a taken owner\'s room is not their conference ending; the taken owner hanging up is', async t => {
+  let next = {status: 'wait'};
+  const heard = await listener(t, {settings: {transferPollMs: 20}, answer: body => body.action === 'claim' ? queued : body.action === 'poll' ? next
+    : body.action === 'after' ? {status: 'back', claim_id: 'claim-0', room: 'transfer-held', call_sid: heldSid} : {ok: true}});
+  const call = await answered(heard);
+  try {
+    askTransfer(call.dg);
+    await wait(() => heard.backend.some(b => b.action === 'poll'));
+    next = {status: 'take', person: 'Juan', person_call_sid: legSid, hold: {room: 'transfer-held', call_sid: heldSid}};
+    await wait(() => participant(heard, 'transfer-held', heldSid).length);
+    next = {status: 'wait'};
+    const token = new URL(participant(heard, 'transfer-held', heldSid)[0].HoldUrl).searchParams.get('t');
+    await handOverPlayed(call);
+    await wait(() => heard.backend.some(b => b.action === 'taken'));
+    const after = status => signed(heard.web.port, `/transfer/after?t=${token}`, new URLSearchParams({AccountSid: accountSid, CallSid: legSid, CallStatus: status}));
+    assert.equal(await (await after('in-progress')).text(), '<Response/>'); // the redirect's own callback
+    assert(!heard.backend.some(b => b.action === 'after' || b.action === 'returned'));
+    assert.equal(participant(heard, 'transfer-held', heldSid).length, 1, 'the held owner stays on hold');
+    // the taken owner hangs up: the person goes back to the held owner
+    assert.equal(await (await after('in-progress')).text(), `<Response>${personDial('transfer-held', token)}</Response>`);
+    assert.deepEqual(participant(heard, 'transfer-held', heldSid).at(-1), {Hold: 'false'});
+    await wait(() => heard.backend.some(b => b.action === 'returned'));
+    assert.deepEqual(heard.backend.find(b => b.action === 'returned'), {action: 'returned', claim_id: 'claim-0'});
+  } finally {call.ws.terminate();}
+});
+
 test('a queued claim the backend drops tells the model to book a callback and stops polling', async t => {
   let next = {status: 'wait'};
   const heard = await listener(t, {settings: {transferPollMs: 20}, answer: body => body.action === 'claim' ? queued : body.action === 'poll' ? next : {ok: true}});
@@ -370,6 +396,10 @@ test('a held owner\'s back resumes them, brings the person\'s leg into their roo
     assert.equal(redirectOf(heard, personSid).Twiml, `<Response>${personDial(room, personToken(heard.twilio))}</Response>`);
     assert.deepEqual(heard.twilio.find(r => r.path === `/Calls/${otherSid}.json`).form, {Status: 'completed'});
     assert.deepEqual(heard.backend.find(b => b.action === 'returned'), {action: 'returned', claim_id: 'claim-1'});
+    // Twilio's `after` callback for that very move is not the person's conference ending
+    assert.equal(await (await callback(heard, 'after', {CallStatus: 'in-progress'})).text(), '<Response/>');
+    assert(!heard.backend.some(b => b.action === 'after'));
+    assert.equal(heard.backend.filter(b => b.action === 'returned').length, 1);
     // the owner hangs up (while held, say): their claim closes, without person_ended
     callStatus[callerSid] = 'completed';
     await wait(() => heard.backend.some(b => b.action === 'release'));
