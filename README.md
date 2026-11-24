@@ -5,7 +5,7 @@ Twilio number directly to GPT-Live, ElevenLabs Realtime, Gemini Live or Deepgram
 configuration) for inbound and outbound calls with
 `voice phone --help`. This is an
 audio-only phone channel with several lines in one install, a per-call brief, a caller context asked of the operator's backend as an inbound call arrives and a ringback
-while the session starts; callers receive no native-agent tools (the model's only tool is `end_call`). Every phone call is recorded at Twilio; this plugin stores no audio, and each call's receipt keeps
+while the session starts; callers receive no native-agent tools (the model's tools are `end_call` and, on a Deepgram line with a `transferBinding`, `transfer_call`, which hands an agreeing caller to a person the operator's backend names; `phone connect` rings such a person, then dials a party: [docs/phone.md](docs/phone.md#live-transfer-and-connect)). Every phone call is recorded at Twilio; this plugin stores no audio, and each call's receipt keeps
 its transcript as the provider heard it. A line's persona can instead be kept in files (`instructionsFiles` under
 `instructionsRoot`), read fresh at the start of every call so a change needs no restart; an unreadable file refuses the call.
 

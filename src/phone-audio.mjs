@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import {PHONE_TOOLS} from './phone-tools.mjs';
+import {PHONE_TOOLS, TRANSFER_TOOL, MAX_WHISPER} from './phone-tools.mjs';
 
 // A tool call's arguments arrive as a JSON string (ElevenLabs, GPT-Live) or an object (Gemini).
 const parseArgs = value => { try { const args = typeof value === 'string' ? JSON.parse(value) : value; return args && typeof args === 'object' && !Array.isArray(args) ? args : {}; } catch { return {}; } };
@@ -39,6 +39,11 @@ const TRACED = new Set(['input_audio_buffer.speech_started', 'input_audio_buffer
 const OPENER_HELLO_MS = 250, OPENER_QUIET_MS = 400, OPENER_ECHO_MS = 300;
 const VOICEMAIL_SILENT_ANSWER_MS = 5000; // the lab's carrier mailbox began its greeting 3.4 s after connecting
 const OPENER_MAX_WAIT_MS = 12000;
+// A live transfer (src/phone-transfer.mjs): the immediate answer to transfer_call, and the longest the model's handover sentence may
+// take, from the colleague confirming, before the caller is moved to the conference anyway. A note the provider refuses because
+// somebody is speaking is sent again every NOTE_RETRY_MS, at most NOTE_TRIES times.
+export const TRANSFER_RINGING = 'Ringing your colleague now. Keep the caller company; do not say goodbye.';
+const HANDOVER_MAX_MS = 10000, NOTE_RETRY_MS = 500, NOTE_TRIES = 20;
 const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
@@ -86,7 +91,7 @@ export class PhoneAudio {
         // A managed final response has no correlated audio-completion ID. An earlier
         // utterance's AudioDone cannot end that wait; use the existing bounded window.
         else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (!this.adapter.constructor.expectsFinalResponse && now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
-      } else if (!this.pendingTools.size && this.idleMs > 0 && (this.stats.inputTranscriptEvents || this.conversationStarted) && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
+      } else if (!this.pendingTools.size && !this.transfer && this.idleMs > 0 && (this.stats.inputTranscriptEvents || this.conversationStarted) && now - Math.max(this.activeAt, this.speakingUntil ?? 0) > this.idleMs) this.close('idle_timeout');
     }, Math.min(1000, this.idleMs > 0 ? this.idleMs / 4 : 1000, (config.endCallQuietMs ?? 2000) / 2));
     // Some providers need a request before the socket (ElevenLabs mints a client secret); the rest connect at once.
     try {
@@ -367,13 +372,25 @@ export class PhoneAudio {
           }
           if (item.start) { this.cancelTools(true); this.turn++; }
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
-        } else this.callerSpeaking = false;
+        } else { this.callerSpeaking = false; if (this.handover?.heard && String(item.text ?? item.delta ?? '').trim()) this.handover.spoke = true; }
         this.activeAt = Date.now();
         if (item.who === 'caller' && this.endOnMailbox(item.text)) break;
         if (this.advice) this.coach(item);
         this.transcript.add(item.who, item);
         break;
       case 'advice_ack': this.advice?.acknowledged(); break;
+      case 'note_heard':
+        if (item.text === this.noteAwaiting?.text) { clearTimeout(this.noteAwaiting.timer); this.noteAwaiting = undefined; }
+        if (this.handover && item.text === this.handover.text) this.handover.heard = true;
+        break;
+      case 'audio_done':
+        // the reply to the handover note has been sent: once Twilio has played it, the caller is moved
+        if (this.handover?.spoke && !this.handover.marked) {
+          this.handover.marked = true;
+          if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'mark', streamSid: this.config.streamSid, mark: {name: 'transfer'}}));
+          else this.handedOver('played');
+        }
+        break;
       case 'turn':
         if (item.request !== this.request) { this.cancelTools(true); this.turn++; this.request = item.request; this.stats.delegations = (this.stats.delegations ?? 0) + 1; }
         this.delegating = item.request; this.delegatingAt = Date.now();
@@ -396,6 +413,7 @@ export class PhoneAudio {
       }
       case 'tool': this.tool(item); break;
       case 'warning':
+        if (item.code === 'injection_refused' && this.noteAwaiting) this.retryNote();
         if ((this.stats.providerWarnings ??= []).length < 8) this.stats.providerWarnings.push({code: item.code,
           ...(item.upstreamStatus && {upstreamStatus: item.upstreamStatus}), ...(item.category && {category: item.category}), ...(item.endpointHints && {endpointHints: item.endpointHints})});
         break;
@@ -413,7 +431,7 @@ export class PhoneAudio {
         || this.seenTools.has(item.id) || this.seenTools.size >= 64) return;
     this.seenTools.add(item.id);
     if (item.request && this.request && item.request !== this.request) return;
-    const tool = Object.hasOwn(PHONE_TOOLS, item.name) ? PHONE_TOOLS[item.name] : null;
+    const tool = Object.hasOwn(PHONE_TOOLS, item.name) ? PHONE_TOOLS[item.name] : item.name === 'transfer_call' && this.config.transfer ? TRANSFER_TOOL : null;
     const external = !tool && this.config.information?.tools.some(t => t.name === item.name);
     (this.stats.tools ??= []).length < 64 && this.stats.tools.push(tool || external ? item.name : 'unknown');
     if (!external) {
@@ -512,6 +530,52 @@ export class PhoneAudio {
     return out;
   }
   endSoon() { this.endingAt ??= Date.now(); return {status: 'ending'}; }
+  // transfer_call: one transfer at a time, handed to the install's transfers (src/phone-transfer.mjs), which report back through
+  // note(), handOver() and transferEnded(). The model is answered at once so it keeps talking while the colleague's phone rings.
+  transferSoon(args) {
+    const whisper = typeof args.whisper === 'string' ? args.whisper.trim() : '';
+    if (!whisper || whisper.length > MAX_WHISPER) return {status: 'invalid', error: `whisper must be 1..${MAX_WHISPER} characters`};
+    if (this.transfer || this.endingAt) return {status: 'unavailable', error: this.transfer ? 'transfer_in_progress' : 'call_ending'};
+    this.transfer = {at: Date.now()};
+    Promise.resolve().then(() => this.config.transfer.start(this, whisper)).catch(() => this.transferEnded());
+    return {status: 'ringing', note: TRANSFER_RINGING};
+  }
+  transferEnded(entry) {
+    this.transfer = undefined;
+    if (entry && (this.stats.transfers ??= []).length < 8) this.stats.transfers.push(entry);
+  }
+  // A message to the model from the call itself, answered like a caller's turn; a provider that refuses it while somebody speaks
+  // gets it again shortly (the provider says only that an injection was refused, so the latest note is the one resent).
+  note(text) {
+    if (!this.usable || !this.adapter.injectNote) return;
+    clearTimeout(this.noteAwaiting?.timer);
+    this.noteAwaiting = {text, tries: 1};
+    for (const message of this.adapter.injectNote(text)) this.send(message);
+  }
+  retryNote() {
+    const awaiting = this.noteAwaiting;
+    if (awaiting.timer || awaiting.tries >= NOTE_TRIES) return;
+    awaiting.timer = setTimeout(() => {
+      if (this.noteAwaiting !== awaiting || !this.usable) return;
+      awaiting.timer = undefined; awaiting.tries++;
+      for (const message of this.adapter.injectNote(awaiting.text)) this.send(message);
+    }, NOTE_RETRY_MS);
+  }
+  // The colleague confirmed: the model says one handover sentence, and the promise resolves once Twilio has played it (its mark comes
+  // back), or after handoverMaxMs at most; false when the call ended first.
+  handOver(text) {
+    return new Promise(resolve => {
+      if (!this.usable) return resolve(false);
+      this.handover = {text, resolve, cap: setTimeout(() => this.handedOver('cap'), this.config.handoverMaxMs ?? HANDOVER_MAX_MS)};
+      this.note(text);
+    });
+  }
+  handedOver(how) {
+    const handover = this.handover; if (!handover) return;
+    this.handover = undefined; clearTimeout(handover.cap);
+    this.stats.handover = how;
+    handover.resolve(this.usable);
+  }
   // Audio a provider sent faster than realtime is still queued at Twilio, and closing the stream drops it (a voicemail message
   // was cut after one sentence). A mark queued behind that audio comes back from Twilio once everything before it has played.
   drain() {
@@ -519,7 +583,10 @@ export class PhoneAudio {
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'mark', streamSid: this.config.streamSid, mark: {name: 'end_call'}}));
     else this.close('end_call');
   }
-  mark(name) { if (name === 'end_call' && this.drainingAt) this.close('end_call'); }
+  mark(name) {
+    if (name === 'end_call' && this.drainingAt) this.close('end_call');
+    if (name === 'transfer' && this.handover?.marked) this.handedOver('played');
+  }
   // Paced by elapsed time and kept a little ahead: Twilio plays what it is sent in order, and a clear drops what is queued.
   ring() {
     const began = Date.now(); let sent = 0;
@@ -544,7 +611,8 @@ export class PhoneAudio {
     this.stopRing('close');
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
-    this.closing = true; this.stats.reason = reason;
+    this.closing = true; this.stats.reason = this.closeReason ?? reason; // closeReason: the call was moved on (a transfer) and its stream ends for that
+    clearTimeout(this.noteAwaiting?.timer); this.handedOver('closed');
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
     clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearInterval(this.ringing);
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.close();
@@ -560,7 +628,7 @@ export class PhoneAudio {
     if (this.completed) return this.done;
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
-    this.completed = true; clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
+    this.completed = true; clearTimeout(this.noteAwaiting?.timer); this.handedOver('closed'); clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
     // A provider with no close handshake may still have reported usage along the way.
     if (this.stats.usage === undefined && this.adapter.usage !== undefined) this.stats.usage = this.adapter.usage;

@@ -316,6 +316,59 @@ Caller ID is whatever Twilio reports and can be spoofed: the backend decides wha
 instructions with its context are cut to the provider's session limit, the context's end first; an outbound brief that would take the call
 past that is refused before dialing.
 
+## Live transfer and connect
+
+`transferBinding: {url, token, deadlineMs}` (shared, `deadlineMs` 500..5000; the URL and token rules of `contextBinding`) names
+the operator's backend that decides who a caller is handed to. Voice knows only that URL, the numbers the backend returns and
+the whisper; it holds no roster. With it, a `deepgram` line's model gets one more tool (other providers do not declare it):
+
+`transfer_call({whisper})`: `whisper` is 1..300 characters, what the person hears before joining (the address and the gist).
+The model should call it only once the caller agreed to be connected. It returns at once with
+`{status: "ringing", note: "Ringing your colleague now. Keep the caller company; do not say goodbye."}`, because a tool call the
+model waits on silences it; every outcome reaches the model later as a message it answers. One transfer runs per call at a time.
+
+Each step is one bounded `POST` of JSON to `url` with `Authorization: Bearer <token>`, answered within `deadlineMs`, never retried:
+
+- `{"action": "claim", "call": {"id", "call_sid", "line", "number", "direction"}, "whisper"}`: `line` is our Twilio number,
+  `number` the other party, `direction` `outbound`, `inbound` or `connect`; `id` is the `phone call` request ID of a placed call,
+  otherwise its Call SID. Answer `{status: "available", claim_id, person, number, caller_id}` (`number` and `caller_id` E.164,
+  `claim_id` 1..200 of letters, digits, `_ . : -`) or `{status: "busy" | "off" | "none" | "unavailable"}`. A failure, a timeout or
+  an invalid answer counts as `unavailable`.
+- `{"action": "joined", "claim_id", "person_call_sid"}` once the person pressed 1; answer `{ok: true}`.
+- `{"action": "release", "claim_id", "result", "person_call_sid"?, "seconds"?}`, exactly once per claim, `result` one of
+  `no_answer`, `declined`, `failed`, `abandoned`, `completed` (`seconds`: Twilio's duration of the person's call, on `completed`).
+
+A refused claim: the model is told the colleague cannot join right now (with the status) and to agree a time for a call back.
+An available one: Twilio rings `number` from `caller_id` for 20 s, recording both channels; when the person answers they hear
+the whisper and "Press 1 to join" (8 s). The person's callbacks are `origin + pathPrefix + /transfer/whisper|confirm|status`, each
+signed by Twilio and checked like `/incoming`. The caller stays on the stream with the model the whole time: Twilio drops a
+`<Connect><Stream>` the moment its call is redirected, so the caller moves only after the person confirmed.
+
+- Pressed 1: the backend gets `joined`, the person waits in a conference of their own, the model is told the colleague is on the
+  line and to say one short sentence handing over. Once that reply has played at Twilio (its mark), or 10 s after the 1 at most,
+  the caller's call is redirected into the conference (its Twilio time limit lifted to 4 hours: no model is on it any more). The
+  model's call ends with reason `transferred` and `transfer: {person, personCallSid, at}` on its receipt (`call-status` reports
+  `transferred`, terminal, for a placed call); it frees its `maxCalls` place, and `maxCallSeconds` and `idleSeconds` stop
+  applying. The receipt's transcript is what was said up to the handover. Either side leaving ends the conference; the person's
+  call ending is released `completed` with `seconds`.
+- No answer, busy, a failed call, another key, or no key (a mailbox never presses 1): released `no_answer`, `declined` or `failed`,
+  and the model is told the colleague did not pick up. A person who pressed 1 and hung up before the caller arrived is
+  `declined` and the caller is not moved; a failed redirect is `failed`.
+- The model's call ends while the person rings (the caller hangs up, `end_call`, the time limit): the person's call is cancelled
+  and the claim released `abandoned`.
+
+Receipts keep `transfers` (each attempt's status, person and the person's Call SID), `handover` (`played`, `cap` or `closed`)
+and `transferReleaseFailed` when a release went unacknowledged. The whisper is spoken to the person by Twilio's `<Say>`.
+
+`phone connect --to NUMBER --from LINE --request-id ID --whisper - < whisper.txt` (the whisper on stdin, 1..300 characters)
+rings a person before dialing a party: it claims with `{id: ID, call_sid: null, line: LINE, number: NUMBER, direction: "connect"}`.
+A refused claim exits 3 with `{requestId, status, refused: true}` on stdout and keeps nothing, so the same ID may ask again later.
+Otherwise the person is rung as above, and on 1 the backend gets `joined` and the person's call dials `NUMBER` from `LINE`
+(30 s, recorded from answer on both channels). `phone call-status --request-id ID` reports `ringing_person`, `joined`,
+`completed` (with `seconds`), `no_answer`, `declined` or `failed`. The request ID is idempotent like `phone call`, one ID names
+one call or one connect request, and connect requests outlive a service restart (`transfers.sqlite`). A connect takes no
+`maxCalls` place: no speech session is involved.
+
 ## Updating a live listener
 
 Two listeners may run on one stable host behind its existing ingress. Optional private
@@ -371,7 +424,7 @@ that apply to recording; the phone `instructions` can state the notice.
 
 Phone callers are external callers, not authenticated Ez owners. This channel has
 no native-agent delegation, owner history, workspace access or external-action
-tools. Its only tool is `end_call` (see Tools); a legacy
+tools. Its tools are `end_call` and, on a deepgram line with a `transferBinding`, `transfer_call` (see Tools, Live transfer); a legacy
 client delegation (`tools: false`) receives a fixed capability-unavailable result. This plugin stores no audio; Twilio
 holds the call recording. What it keeps, all in its private volume (mode 0600, readable by the operator only): each call's
 receipt (call and provider IDs, the digest of the line instructions, input/output byte counts, provider error code, final usage, the recording outcome, the

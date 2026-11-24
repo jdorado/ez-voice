@@ -41,6 +41,17 @@ export class PhoneNumber {
     if (!sid(callSid, 'CA') || !['canceled','completed'].includes(status)) throw Error('Invalid call termination');
     return this.request(`/Calls/${callSid}.json`, {Status: status});
   }
+  // A transfer's call to the person (src/phone-transfer.mjs): rings 20 s, recorded on both channels, answered by the whisper URL.
+  async createPersonCall({to, from, url, statusCallback}) {
+    return this.request('/Calls.json', {To: to, From: from, Url: url, Method: 'POST', StatusCallback: statusCallback, StatusCallbackMethod: 'POST',
+      Timeout: '20', Record: 'true', RecordingChannels: 'dual'});
+  }
+  // New TwiML for a call in progress (a transferred caller into the conference). The call's own time limit is lifted to Twilio's
+  // maximum: a placed call was created with maxCallSeconds, which binds a model, not a person.
+  async redirectCall(callSid, twiml) {
+    if (!sid(callSid, 'CA')) throw Error('Invalid Call SID');
+    return this.request(`/Calls/${callSid}.json`, {Twiml: twiml, TimeLimit: '14400'});
+  }
   async set(numberSid, form) {
     if (!sid(numberSid, 'PN')) throw Error('Invalid phone number SID');
     await this.request(`/IncomingPhoneNumbers/${numberSid}.json`, form);

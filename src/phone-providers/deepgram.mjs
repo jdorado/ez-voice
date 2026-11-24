@@ -58,7 +58,7 @@ export class DeepgramAdapter {
   static expectsFinalResponse = true;
   static supportsTools() { return true; }
 
-  constructor(config) { this.config = config; this.signatures = new Map(); }
+  constructor(config) { this.config = config; this.signatures = new Map(); this.notes = new Set(); }
   // A line with a side coach sends its model requests through the listener's think relay (src/phone-think.mjs), which
   // adds the latest note to that one request and holds the Google key; other lines call Google directly.
   thinkTarget() {
@@ -134,6 +134,8 @@ export class DeepgramAdapter {
     this.greetingInjected = true; return [{type: 'InjectUserMessage', content: CONNECTED}];
   }
   injectAgentMessage(message) { return [{type: 'InjectAgentMessage', message}]; }
+  // A note to the model from the call itself (a transfer's outcome): a user turn it answers, kept out of the transcript like CONNECTED.
+  injectNote(text) { const content = `(${text})`; this.notes.add(content); return [{type: 'InjectUserMessage', content}]; }
   audioIn(payload) { return [Buffer.from(payload, 'base64')]; }
   parse(event) {
     if (Buffer.isBuffer(event)) return event.length ? [{type: 'audio', audio: event.toString('base64')}] : [];
@@ -148,9 +150,12 @@ export class DeepgramAdapter {
         this.ready = true; return [{type: 'ready', id: this.id}];
       // Deepgram's own split of each reply's wait, in seconds: think (to the model's first words), tts (to the voice's first audio).
       case 'AgentStartedSpeaking': return [{type: 'latency', total: event.total_latency, think: event.ttt_latency, tts: event.tts_latency}];
+      // The agent has sent all of its reply's audio (Twilio may still be playing it); no reply ID, so the bridge correlates it itself.
+      case 'AgentAudioDone': return [{type: 'audio_done'}];
       case 'UserStartedSpeaking': return [{type: 'speech', who: 'caller', start: true}, {type: 'interrupted'}];
       case 'ConversationText':
         if (this.greetingInjected && event.role === 'user' && event.content === CONNECTED) {this.greetingInjected = false; return [];}
+        if (event.role === 'user' && this.notes.delete(event.content)) return [{type: 'note_heard', text: event.content.slice(1, -1)}];
         return ['user', 'assistant'].includes(event.role) && typeof event.content === 'string'
           ? [{type: 'speech', who: event.role === 'user' ? 'caller' : 'model',
             ...(event.role === 'user' ? {text: words(event.content)} : {delta: words(event.content)})}] : [];

@@ -7,7 +7,9 @@ import {DatabaseSync} from 'node:sqlite';
 import {PhoneAudio} from './phone-audio.mjs';
 import {relayThink} from './phone-think.mjs';
 import {relaySpeech} from './phone-speech.mjs';
-import {phonePlugins, validateBinding, validateAdviceBinding, validateContextBinding, liveContext} from './phone-plugin-tools.mjs';
+import {phonePlugins, validateBinding, validateAdviceBinding, validateContextBinding, validateTransferBinding, liveContext} from './phone-plugin-tools.mjs';
+import {Transfers} from './phone-transfer.mjs';
+import {MAX_WHISPER} from './phone-tools.mjs';
 import {PROVIDERS, DEFAULT_PROVIDER, providerClass, limitsFor} from './phone-providers/index.mjs';
 
 import {PhoneNumber, sid, phone} from './phone-provider.mjs';
@@ -48,7 +50,7 @@ async function save(path, value) {
 // A line is one Twilio number with its own speech provider, voice, key and instructions. One install serves
 // several lines (`lines`); the old single-line form (the line's fields at the top level) is one line.
 const LINE_KEYS = ['provider','model','voice','language','thinking','apiKey','llmApiKey','ttsApiKey','ttsModel','ttsSpeed','pronunciations','eotThreshold','eotTimeoutMs','greetingFile','greeting','openerFile','opener','ambienceDb','number','instructions','tools','toolModel','toolEffort','answerTone','instructionsFiles','instructionsRoot','advice','skipVoicemail'];
-const SHARED_KEYS = ['accountSid','authToken','origin','maxCallSeconds','idleSeconds','pathPrefix','maxCalls','lines','toolBinding','adviceBinding','contextBinding'];
+const SHARED_KEYS = ['accountSid','authToken','origin','maxCallSeconds','idleSeconds','pathPrefix','maxCalls','lines','toolBinding','adviceBinding','contextBinding','transferBinding'];
 function validateLine(line) {
   if (!line || typeof line !== 'object' || Array.isArray(line) || Object.keys(line).some(k => !LINE_KEYS.includes(k))) throw Error('Invalid phone line fields');
   if (line.provider !== undefined && !Object.hasOwn(PROVIDERS, line.provider)) throw Error(`provider must be one of ${Object.keys(PROVIDERS).join(', ')}`);
@@ -105,6 +107,7 @@ export function validatePhoneConfig(config) {
   if (config.toolBinding !== undefined) validateBinding(config.toolBinding);
   if (config.adviceBinding !== undefined) validateAdviceBinding(config.adviceBinding);
   if (config.contextBinding !== undefined) validateContextBinding(config.contextBinding);
+  if (config.transferBinding !== undefined) validateTransferBinding(config.transferBinding);
   const given = config.lines ?? [Object.fromEntries(LINE_KEYS.filter(k => config[k] !== undefined).map(k => [k, config[k]]))];
   if (!Array.isArray(given) || !given.length || given.length > 8) throw Error('lines must list 1..8 phone lines');
   // a top-level instructionsRoot is the default for the lines that read their instructions from files; a line's own wins
@@ -123,6 +126,7 @@ export function validatePhoneConfig(config) {
     ...(config.toolBinding && {toolBinding: config.toolBinding}),
     ...(config.adviceBinding && {adviceBinding: config.adviceBinding}),
     ...(config.contextBinding && {contextBinding: config.contextBinding}),
+    ...(config.transferBinding && {transferBinding: config.transferBinding}),
     ...(config.pathPrefix !== undefined && {pathPrefix: config.pathPrefix})};
   return {...shared, ...lines[0], lines};
 }
@@ -222,6 +226,9 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
     } catch { wanted.delete(requestId); /* the call is answered without a pre-opened session */ }
   };
   if (calls) calls.hooks = {warm, drop: dropWarm};
+  // Live transfers and `phone connect` (src/phone-transfer.mjs), with the install's transferBinding; a deepgram line's model gets transfer_call.
+  const transfers = config.transfer ? new Transfers(config, {provider, backend: config.transfer, calls, directory: calls?.directory}) : undefined;
+  const transferPaths = new Map(['whisper', 'confirm', 'status'].map(kind => [prefix + '/transfer/' + kind, kind]));
   const pruneTickets=()=>{for(const [token,ticket] of tickets)if(ticket.loaded && ticket.expires<Date.now())tickets.delete(token);};
   // Calls in progress or reserved, up to maxCalls at once: an outbound request counts from creation to its end
   // (its answer ticket and audio are the same call), an inbound call from its ticket to its end.
@@ -237,6 +244,15 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
         const bridge = thinkers.get(/^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization ?? '')?.[1]);
         if (!bridge) { response.writeHead(403); return response.end(); }
         return await relayThink(request, response, bridge, {fetch: fetchImpl});
+      }
+      // Twilio's callbacks for a transfer's call to the person: signed like /incoming, matched to their transfer by its token.
+      if (transfers && request.method === 'POST' && url.origin === config.origin && transferPaths.has(url.pathname) && request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) {
+        const params = new URLSearchParams(await body(request));
+        const twiml = authentic(config, request.headers['x-twilio-signature'], request.url, params) && params.get('AccountSid') === config.accountSid && sid(params.get('CallSid'), 'CA')
+          && [...url.searchParams.keys()].join() === 't' ? transfers.route(transferPaths.get(url.pathname), url.searchParams.get('t'), params) : null;
+        if (twiml === null) { response.writeHead(403); return response.end(); }
+        if (!twiml) { response.writeHead(204); return response.end(); }
+        response.setHeader('Content-Type', 'text/xml'); return response.end(twiml);
       }
       if (request.method !== 'POST' || url.origin!==config.origin || !['/incoming',prefix+'/incoming'].includes(url.pathname) || !request.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) { response.writeHead(404); return response.end(); }
       const params = new URLSearchParams(await body(request));
@@ -365,7 +381,7 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
           else {
             preopened?.bridge.close('unused');
             bridge = new PhoneAudio(ws, {...line, ...(speechToken && {speech: {token: speechToken, url: `${config.origin.replace('https:', 'wss:')}${prefix}/speak/multi-stream-input`}}), ...(thinkToken && {think: {token: thinkToken, url: `${config.origin}${prefix}/think/v1beta/models/${line.model}:streamGenerateContent?alt=sse`}}), instructions, streamSid: start.streamSid,
-              greet: !ticket.outbound, ...(ticket.greeting && (ticket.outbound ? {opener: ticket.greeting} : {greeting: ticket.greeting})), call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined}, finish, {socketFactory, fetch: fetchImpl});
+              greet: !ticket.outbound, ...(ticket.requestId && {requestId: ticket.requestId}), ...(transfers && line.provider === 'deepgram' && {transfer: transfers}), ...(ticket.greeting && (ticket.outbound ? {opener: ticket.greeting} : {greeting: ticket.greeting})), call: ticket.call, information: config.information, advisor: line.advice ? config.advisor : undefined}, finish, {socketFactory, fetch: fetchImpl});
           }
           actives.set(start.callSid, {bridge, outbound: ticket.outbound});
           if (thinkToken) thinkers.set(thinkToken, bridge);
@@ -379,13 +395,14 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000;
   await new Promise((resolve,reject) => { server.once('error',reject); server.listen(port, host, resolve); });
-  return {port: server.address().port, capacity, drain:()=>{draining=true;return capacity();}, resume:()=>{draining=false;return capacity();}, busy:()=>unavailable || draining || load() >= (config.maxCalls ?? 1), close: () => closing ??= (async () => {
+  return {port: server.address().port, capacity, transfers, drain:()=>{draining=true;return capacity();}, resume:()=>{draining=false;return capacity();}, busy:()=>unavailable || draining || load() >= (config.maxCalls ?? 1), close: () => closing ??= (async () => {
     unavailable = true;
     const stopped = new Promise(resolve => server.close(resolve));
     server.closeAllConnections();
     for (const requestId of [...warmups.keys()]) dropWarm(requestId);
     await Promise.allSettled([...tickets.values()].map(ticket => ticket.loading));
     await Promise.allSettled([...actives.values()].map(a => a.bridge.close('service_stopped')));
+    await transfers?.settled(); transfers?.close(); // a person still ringing for a call that ended is cancelled and released
     for (const ws of sockets.clients) ws.terminate(); sockets.close();
     for (const ws of speechSockets.clients) ws.terminate(); speechSockets.close();
     await stopped;
@@ -396,8 +413,12 @@ export async function servePhone(config, {port = 8080, host = '0.0.0.0', startDr
 export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   const directory = join(state, 'phone');
   const path = join(directory, 'config.json'), [command, ...rest] = args;
-  if (['call','call-status','hangup'].includes(command)) {
+  if (['call','call-status','hangup','connect'].includes(command)) {
     const options = callOptions(command,rest);
+    if (options.whisper === '-') {
+      let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > MAX_WHISPER + 2) throw Error(`The whisper must contain 1..${MAX_WHISPER} characters`); }
+      options.whisper = raw.trim();
+    }
     if (options.instructions === '-') {
       const largestBrief = Math.max(...Object.values(PROVIDERS).map(p => p.limits.instructions)); // the line's own limit is checked when the call is placed
       let raw = ''; for await (const chunk of stdin) { raw += chunk; if (raw.length > largestBrief) throw Error(`Call instructions must contain 1..${largestBrief} characters`); }
@@ -411,14 +432,15 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
     return read(join(directory, 'receipts', rest[1] + '.json'));
   }
   if (['capacity','drain','resume'].includes(command) && !rest.length) return phoneControl(directory,command,{});
-  if (rest.length) throw Error('Only call, call-status and hangup accept flags; credentials and configuration use private stdin');
+  if (rest.length) throw Error('Only call, connect, call-status and hangup accept flags; credentials and configuration use private stdin');
   if (!command || command === '--help') return {commands: ['phone configure < private-phone.json', 'phone doctor', 'phone probe', 'phone preview',
     'phone route', 'phone status', 'phone restore', 'phone receipt [--call-sid CA...]', 'phone call --to +15551230002 --request-id UNIQUE_ID [--from LINE] [--instructions - < brief.txt]',
-    'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'tools serve 8793:8080 voice phone serve'],
+    'phone connect --to +15551230002 --from LINE --request-id UNIQUE_ID --whisper - < whisper.txt', 'phone call-status --request-id ID', 'phone hangup --request-id ID', 'phone capacity', 'phone drain', 'phone resume', 'tools serve 8793:8080 voice phone serve'],
     configuration: {required: ['apiKey (the provider key)','accountSid','authToken','number','origin'], lines: 'lines: [{number, apiKey, provider?, model?, voice?, language?, instructions? or instructionsFiles?, tools?, ...}] serves several numbers from one install (instead of number/apiKey/provider... at the top level); an inbound call takes the line of the number called, an outbound call --from LINE (default the first)', optional: ['maxCalls (1..8, default 1: calls at once across all lines)',`provider (${Object.keys(PROVIDERS).join(', ')}; default ${DEFAULT_PROVIDER})`,
-      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for its configured Gemini/ElevenLabs stack)', 'ttsModel (deepgram only: eleven_flash_v2_5, default, or eleven_v4_turbo, spoken through the call-bound relay on ElevenLabs\' Text-to-Dialogue socket; v4 takes no ttsSpeed)', 'ttsSpeed (deepgram only: 0.7..1.2, 1 is normal; applies ElevenLabs voice_settings.speed through a call-bound TTS relay; unset inherits the provider rate)', 'greetingFile (deepgram only: a workspace file under instructionsRoot with the fixed greeting of a call the line answers, read at each call\'s start and spoken at once, without a language-model request; the model writes the greeting when unset)', 'openerFile (deepgram, elevenlabs: a workspace file with a placed call\'s fixed first line, pre-rendered in the line\'s voice and played as soon as the callee\'s hello ends, or after 3 s of silence; the model starts with it in its history)', 'opener (the same, inline, for a line with inline instructions)', 'skipVoicemail (deepgram only, default false: hang up an outbound call on an explicit mailbox greeting before the first model request)', 'ambienceDb (-60..-30, unset off: a quiet synthetic office, room tone and soft keyboard clicks, mixed under the voice and played in its pauses at this RMS level in dBFS; -46 is the bench\'s level)', 'greeting (deepgram only: the same greeting as greetingFile, inline)', 'eotThreshold and eotTimeoutMs (deepgram only: Flux end of turn, the confidence 0.5..1 it needs to end the caller\'s turn and the most it waits after they stop, 500..10000 ms; unset keeps Deepgram\'s defaults. Higher waits longer before answering, so a caller who pauses mid-sentence is not talked over)', 'pronunciations (deepgram only: {word: text to speak instead}, matched as whole words in any case and replaced in the speech text through the same relay, for a brand or street name the voice says wrongly)', 'voice (a provider voice name or id)','language (transcription language code, default en; deepgram: en is Flux English, any other of en, es, fr, de, hi, ru, pt, ja, it, nl is Flux Multilingual hinted to that language and English, so the caller may switch)','thinking (gemini-3.8-live-extended-thinking: low, medium or high, default low; deepgram: the Gemini model\'s thinking level, low, medium or high, set on every language-model request through the listener, default the model\'s own, which is slow on a phone line; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)','advice (default false; deepgram, openai): a side coach, the shared adviceBinding {alias, invoke, deadlineMs: 500..5000}: each finished caller utterance goes to that installed command; on deepgram its latest note rides on each of the model\'s language-model requests, relayed through this listener (origin + pathPrefix + /think/), on openai it joins the session context when the caller next speaks; no reply waits for it']},
-    limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime, gemini Live or deepgram Flux/Gemini Flash/ElevenLabs TTS); no native-agent delegation or Retell/Vapi; tools are end_call and the information tools of an operator-bound backend (toolBinding, over HTTP) when configured (with openai they run on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio (each receipt keeps the transcript of its call); an inbound call rings on until the first words of the model (answerTone); the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
+      ...Object.values(PROVIDERS).map(p => `model for ${p.id}: ${p.models.join(', ')} (default ${p.defaultModel}; voice default ${p.defaultVoice})`),'llmApiKey and ttsApiKey (deepgram only: private Google AI Studio and ElevenLabs keys, passed to Deepgram for its configured Gemini/ElevenLabs stack)', 'ttsModel (deepgram only: eleven_flash_v2_5, default, or eleven_v4_turbo, spoken through the call-bound relay on ElevenLabs\' Text-to-Dialogue socket; v4 takes no ttsSpeed)', 'ttsSpeed (deepgram only: 0.7..1.2, 1 is normal; applies ElevenLabs voice_settings.speed through a call-bound TTS relay; unset inherits the provider rate)', 'greetingFile (deepgram only: a workspace file under instructionsRoot with the fixed greeting of a call the line answers, read at each call\'s start and spoken at once, without a language-model request; the model writes the greeting when unset)', 'openerFile (deepgram, elevenlabs: a workspace file with a placed call\'s fixed first line, pre-rendered in the line\'s voice and played as soon as the callee\'s hello ends, or after 3 s of silence; the model starts with it in its history)', 'opener (the same, inline, for a line with inline instructions)', 'skipVoicemail (deepgram only, default false: hang up an outbound call on an explicit mailbox greeting before the first model request)', 'ambienceDb (-60..-30, unset off: a quiet synthetic office, room tone and soft keyboard clicks, mixed under the voice and played in its pauses at this RMS level in dBFS; -46 is the bench\'s level)', 'greeting (deepgram only: the same greeting as greetingFile, inline)', 'eotThreshold and eotTimeoutMs (deepgram only: Flux end of turn, the confidence 0.5..1 it needs to end the caller\'s turn and the most it waits after they stop, 500..10000 ms; unset keeps Deepgram\'s defaults. Higher waits longer before answering, so a caller who pauses mid-sentence is not talked over)', 'pronunciations (deepgram only: {word: text to speak instead}, matched as whole words in any case and replaced in the speech text through the same relay, for a brand or street name the voice says wrongly)', 'voice (a provider voice name or id)','language (transcription language code, default en; deepgram: en is Flux English, any other of en, es, fr, de, hi, ru, pt, ja, it, nl is Flux Multilingual hinted to that language and English, so the caller may switch)','thinking (gemini-3.8-live-extended-thinking: low, medium or high, default low; deepgram: the Gemini model\'s thinking level, low, medium or high, set on every language-model request through the listener, default the model\'s own, which is slow on a phone line; more thinking is more delay)','instructions','instructionsFiles (instead of instructions: 1..8 relative paths under instructionsRoot, read fresh at the start of every call; unavailable or oversized files refuse the call)','instructionsRoot (absolute directory bound read-only by the operator, at the top level or on a line)','maxCallSeconds (30..3600, default 180)','idleSeconds (0 off or 5..300, default 20)','tools (default true: the model can call end_call; with openai it goes through GPT-Live Responses delegation, false keeps client delegation, elsewhere false declares no tools)','toolModel (openai only, default gpt-6.1-sol)','toolEffort (openai only: reasoning effort of that model, default low)','answerTone (ringback, default: an inbound call rings on until the model speaks; none)','transferBinding (shared {url, token, deadlineMs: 500..5000}: the operator backend that names the person a caller is handed to; deepgram lines then give the model transfer_call({whisper}), 1..300 characters the person hears before pressing 1, and phone connect rings a person, then dials a party; see transfer)','advice (default false; deepgram, openai): a side coach, the shared adviceBinding {alias, invoke, deadlineMs: 500..5000}: each finished caller utterance goes to that installed command; on deepgram its latest note rides on each of the model\'s language-model requests, relayed through this listener (origin + pathPrefix + /think/), on openai it joins the session context when the caller next speaks; no reply waits for it']},
+    limits: 'Direct Twilio Media Streams to one speech provider (openai gpt-live-1, elevenlabs Realtime, gemini Live or deepgram Flux/Gemini Flash/ElevenLabs TTS); no native-agent delegation or Retell/Vapi; tools are end_call, transfer_call (deepgram lines with a transferBinding) and the information tools of an operator-bound backend (toolBinding, over HTTP) when configured (with openai they run on the GPT-Live Responses backend); every call is recorded at Twilio (dual-channel, retrievable by Call SID through the account) and this plugin stores no audio (each receipt keeps the transcript of its call); an inbound call rings on until the first words of the model (answerTone); the operator is responsible for any recording notice to callers; maxCalls calls at once across its lines (default 1), 3 minutes each by default (maxCallSeconds); a call ends after idleSeconds (default 20) with nobody speaking once the provider streams transcripts; listener stays available until stopped',
     outbound: 'Requires the running phone service and owner-authorized recipient; caller ID is the configured number. --instructions - reads a per-call brief (1..12000 characters) on stdin, added to the configured instructions for that call only (the brief wins where they differ). Reuse the same request ID to inspect an attempt without redialing. Never automatically retry an uncertain creation.',
+    transfer: 'transfer_call returns at once and the model keeps talking; the backend is POSTed {action: claim, call: {id, call_sid, line, number, direction}, whisper} and answers {status: available, claim_id, person, number, caller_id} or busy|off|none|unavailable (a failure or a timeout is unavailable). Available: Twilio rings number from caller_id for 20 s, recorded dual-channel; the person hears the whisper and presses 1 (Twilio-signed callbacks under origin + pathPrefix + /transfer/). On 1 the backend gets {action: joined, claim_id, person_call_sid}, the model says one handover sentence, and the caller is moved into a conference with the person (at most 10 s after the 1): the model\'s call ends with reason transferred, its receipt and call-status keep transfer {person, personCallSid, at}, and the call no longer counts against maxCalls, maxCallSeconds or idleSeconds. Otherwise the model is told the colleague cannot join or did not pick up. The backend gets {action: release, claim_id, result: no_answer|declined|failed|abandoned|completed, person_call_sid?, seconds?} once per claim; a caller who hangs up while the person rings cancels that call (abandoned). phone connect claims with direction connect and call_sid null, rings the person the same way and on 1 dials --to from --from; call-status reports ringing_person, joined, completed, no_answer, declined or failed. A refused claim exits 3 with {requestId, status, refused: true} on stdout and keeps nothing, so the same request ID may ask again; otherwise the request ID is idempotent like phone call.',
     routing: 'preview is read-only; route saves the prior voice route before changing it; status reads Twilio; restore refuses unrelated route changes; SMS routing is never updated'};
   if (command === 'configure') {
     let raw = ''; for await (const chunk of stdin) { raw += chunk; if (Buffer.byteLength(raw) > MAX_FRAME) throw Error('Phone configuration too large'); }
@@ -430,7 +452,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (!stored && command === 'doctor') return {configured: false, providers: Object.keys(PROVIDERS), model: 'gpt-live-1', nativeTools: false, liveVerified: false};
   if (!stored) throw Error('Phone is not configured; use phone configure with private stdin');
   const config = validatePhoneConfig(stored);
-  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, lines: await Promise.all(config.lines.map(async l => ({number: l.number, provider: l.provider, model: l.model, ...(l.ttsModel && {ttsModel: l.ttsModel}), ...(l.ttsSpeed !== undefined && {ttsSpeed: l.ttsSpeed}), ...(l.pronunciations && {pronunciations: l.pronunciations}), ...(l.eotThreshold !== undefined && {eotThreshold: l.eotThreshold}), ...(l.eotTimeoutMs !== undefined && {eotTimeoutMs: l.eotTimeoutMs}), ...(l.greetingFile && {greetingFile: l.greetingFile}), ...(l.advice && {advice: true}), limits: limitsFor(l.provider), ...(l.instructionsFiles && await inspectInstructions(l, limitsFor(l.provider).instructions))}))), maxCalls: config.maxCalls, outbound: true, nativeTools: false, liveVerified: false};
+  if (command === 'doctor') return {configured: true, provider: config.provider, model: config.model, transfer: Boolean(config.transferBinding), tools: config.tools !== false && providerClass(config).supportsTools(config.model), origin: config.origin, number: config.number, lines: await Promise.all(config.lines.map(async l => ({number: l.number, provider: l.provider, model: l.model, ...(l.ttsModel && {ttsModel: l.ttsModel}), ...(l.ttsSpeed !== undefined && {ttsSpeed: l.ttsSpeed}), ...(l.pronunciations && {pronunciations: l.pronunciations}), ...(l.eotThreshold !== undefined && {eotThreshold: l.eotThreshold}), ...(l.eotTimeoutMs !== undefined && {eotTimeoutMs: l.eotTimeoutMs}), ...(l.greetingFile && {greetingFile: l.greetingFile}), ...(l.advice && {advice: true}), limits: limitsFor(l.provider), ...(l.instructionsFiles && await inspectInstructions(l, limitsFor(l.provider).instructions))}))), maxCalls: config.maxCalls, outbound: true, nativeTools: false, liveVerified: false};
   if (command === 'probe') {
     // Every line's provider session, the first line's result at the top level as before.
     const probes = [];
@@ -454,7 +476,7 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
   if (command === 'serve') {
     const provider=new PhoneNumber(config),calls=new PhoneCalls(directory,config,provider);let web,control;
     try {
-      Object.assign(config, await phonePlugins(config.toolBinding, config.adviceBinding, config.contextBinding));
+      Object.assign(config, await phonePlugins(config.toolBinding, config.adviceBinding, config.contextBinding, config.transferBinding));
       await calls.recover();
       const admission=await read(join(directory,'admission.json')).catch(error=>{if(error.code==='ENOENT')return {draining:false};throw error;});
       if (typeof admission.draining!=='boolean') throw Error('Invalid saved phone admission state');
@@ -468,7 +490,10 @@ export async function phoneCommand(state, args, {stdin = process.stdin} = {}) {
           if (action!=='capacity') await save(join(directory,'admission.json'),{draining:action==='drain'});
           return web[action]();
         }
-        if (!['call','call-status','hangup'].includes(action) || Object.keys(options).some(key=>!['requestId',...(action==='call'?['to','from','instructions']:[])].includes(key))) throw Error('Invalid phone control command');
+        if (!['call','call-status','hangup','connect'].includes(action) || Object.keys(options).some(key=>!['requestId',...(action==='call'?['to','from','instructions']:action==='connect'?['to','from','whisper']:[])].includes(key))) throw Error('Invalid phone control command');
+        if (action==='connect') { if (!web.transfers) throw Error('phone connect needs the installed transferBinding'); return web.transfers.connect(options); }
+        // one request ID names one call or one connect request
+        if (web.transfers?.row(options.requestId)) { if (action==='call-status') return web.transfers.status(options.requestId); throw Error(action==='call'?'Request ID was already used for phone connect':'hangup applies to phone call requests'); }
         return action==='call'?calls.call(options,web.busy):action==='call-status'?calls.status(options.requestId):calls.hangup(options.requestId);
       });
     } catch (error) { await web?.close();calls.close();throw error; }

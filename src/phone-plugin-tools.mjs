@@ -37,7 +37,7 @@ export async function httpTools(binding, fetchImpl = fetch) {
   if (!Array.isArray(tools) || tools.length > 12 || !tools.length
       || new Set(tools.map(t => t.name)).size !== tools.length
       || tools.some(t => t.type !== 'function' || !/^[a-z][a-z0-9_]{0,63}$/.test(t.name)
-        || t.name === 'end_call' || typeof t.description !== 'string'
+        || ['end_call', 'transfer_call'].includes(t.name) || typeof t.description !== 'string'
         || t.description.length > 2000 || t.parameters?.type !== 'object')) throw Error('Invalid phone tool schemas');
   return {tools, deadlineMs: binding.deadlineMs, async run(call, turn, name, args, signal) {
     if (!tools.some(t => t.name === name)) return {status: 'unavailable', error: 'unknown_tool'};
@@ -121,13 +121,40 @@ export function liveContext(provider, call, maxChars) {
   return Promise.race([attempt, timeout]).then(answer => ({...answer, ms: Date.now() - began})).finally(() => clearTimeout(timer));
 }
 
-export async function phonePlugins(binding, adviceBinding, contextBinding, fetchImpl = fetch) {
-  // the context and the information tools ask the backend directly; only the side coach goes through the Ez connection
+// The live transfer: the operator's backend decides who the person is. One POST per step with a bearer token, bounded like the
+// context ask: `claim` {call, whisper} answers {status: available, claim_id, person, number, caller_id} or busy|off|none|unavailable;
+// `joined` {claim_id, person_call_sid} and `release` {claim_id, result, person_call_sid?, seconds?} answer {ok: true}. A failed,
+// late or invalid claim is `unavailable`; a failed joined or release is reported to the caller of `report` and never repeated.
+export const validateTransferBinding = value => validateHttpBinding(value, 'transferBinding', 5000);
+export const TRANSFER_RESULTS = ['no_answer', 'declined', 'failed', 'abandoned', 'completed'];
+const claimId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(value);
+const e164 = value => typeof value === 'string' && /^\+[1-9]\d{6,14}$/.test(value);
+export function httpTransfer(binding, fetchImpl = fetch) {
+  validateTransferBinding(binding);
+  const post = body => exchange(binding, fetchImpl, {method: 'POST', body: JSON.stringify(body)}, AbortSignal.timeout(binding.deadlineMs));
+  const acknowledged = async body => { try { return (await post(body))?.ok === true; } catch { return false; } };
+  return {deadlineMs: binding.deadlineMs,
+    async claim(call, whisper) {
+      let out;
+      try { out = await post({action: 'claim', call, whisper}); } catch { return {status: 'unavailable'}; }
+      if (['busy', 'off', 'none', 'unavailable'].includes(out?.status)) return {status: out.status};
+      if (out?.status !== 'available' || !claimId(out.claim_id) || typeof out.person !== 'string' || !/^[^\u0000-\u001f]{1,200}$/.test(out.person)
+          || !e164(out.number) || !e164(out.caller_id)) return {status: 'unavailable'};
+      return {status: 'available', claim_id: out.claim_id, person: out.person, number: out.number, caller_id: out.caller_id};
+    },
+    joined: (claim_id, person_call_sid) => acknowledged({action: 'joined', claim_id, person_call_sid}),
+    release: (claim_id, result, extra = {}) => acknowledged({action: 'release', claim_id, result, ...extra}),
+  };
+}
+
+export async function phonePlugins(binding, adviceBinding, contextBinding, transferBinding, fetchImpl = fetch) {
+  // the context, the information tools and the transfer ask the backend directly; only the side coach goes through the Ez connection
   const contextProvider = contextBinding ? httpContext(contextBinding, fetchImpl) : undefined;
+  const transfer = transferBinding ? httpTransfer(transferBinding, fetchImpl) : undefined;
   const information = binding ? await httpTools(binding, fetchImpl) : undefined;
-  if (!adviceBinding) return {information, contextProvider};
+  if (!adviceBinding) return {information, contextProvider, transfer};
   const core = new CoreTools(process.stdout);
   frames(process.stdin, frame => core.receive(frame), () => core.close());
   process.stdin.on('end', () => core.close());
-  return {information, advisor: installedAdvice(adviceBinding, core), contextProvider};
+  return {information, advisor: installedAdvice(adviceBinding, core), contextProvider, transfer};
 }
