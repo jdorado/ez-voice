@@ -62,7 +62,7 @@ keeps the call's transcript as the provider heard it. The operator is responsibl
 `contextBinding {url, token, deadlineMs}` asks the operator's backend what it knows of an inbound caller as the call arrives
 (see docs/phone.md, "Caller context"). The caller ID it is asked about can be spoofed.
 `transferBinding {url, token, deadlineMs <= 5000}` names the backend that decides who a caller is handed to: a deepgram line's
-model then has `transfer_call({whisper})` (1..300 characters the person hears before pressing 1). It returns at once; the caller
+model then has `transfer_call({whisper})` (1..300 characters the colleague reads on their panel before joining; their phone says only "Quarre call for you. Press 1 to join."; the call's words stream to the backend as `words` posts). It returns at once; the caller
 moves into a conference with the person only after the 1 and the model's handover sentence, and the call ends `transferred`
 (`call-status` reports it with `transfer {person, personCallSid, at}`). `phone connect --to NUMBER --from LINE --request-id ID
 --whisper - < whisper.txt` rings that person, then dials NUMBER on their 1; exit 3 means the backend refused the claim;

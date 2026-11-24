@@ -41,11 +41,15 @@ const missedResult = (status, entry) => status === 'no-answer' ? 'no_answer' : s
   : status === 'completed' ? 'no_answer' : 'failed';
 // `phone call-status` for a connect request: its row's status while ringing or joined, the release result once it ended.
 const STATUS = {ringing: 'ringing_person', joined: 'joined'};
+// The person's phone says only who calls: the brief is on their panel. A connect request has no panel, so it still says its whisper.
+const JOIN_LIVE = 'Quarre call for you. Press 1 to join.';
+// The call's words go to the backend at most this often, the last WORDS_TURNS turns each time.
+const WORDS_MS = 1500, WORDS_TURNS = 40;
 
 export class Transfers {
   constructor(config, {provider, backend, calls, directory}) {
     this.config = config; this.provider = provider; this.backend = backend; this.calls = calls;
-    this.entries = new Map(); this.moving = new Set(); this.work = new Set(); this.timers = new Set(); this.pollMs = config.transferPollMs ?? 2000;
+    this.streams = new WeakMap(); this.entries = new Map(); this.moving = new Set(); this.work = new Set(); this.timers = new Set(); this.pollMs = config.transferPollMs ?? 2000;
     this.base = config.origin + (config.pathPrefix || '') + '/transfer/';
     if (!directory) return; // connect requests are kept with the running service's calls
     mkdirSync(directory, {recursive: true, mode: 0o700});
@@ -82,6 +86,25 @@ export class Transfers {
     if (entry.state === 'ringing') return this.ring(entry);
     bridge.note(NOTES.queued);
     this.watch(entry);
+  }
+  // The call's words for the person's panel (PhoneAudio: each transcript change, and `ended` once when the bridge closes). One POST in flight
+  // per call, at most one per WORDS_MS while the transcript changed (a trailing one sends the last words), a failed one never repeated.
+  words(bridge, ended = false) {
+    const call = bridge.config.call, stream = this.streams.get(bridge) ?? this.streams.set(bridge, {chars: -1, at: 0, final: false}).get(bridge);
+    if (!call || stream.done || this.closed) return;
+    if (ended) stream.final = true;
+    this.pump(bridge, call, stream);
+  }
+  pump(bridge, call, stream) {
+    if (stream.busy || stream.done || this.closed) return;
+    const chars = bridge.transcript.chars;
+    if (!stream.final && (stream.waiting || chars === stream.chars)) return;
+    const wait = stream.final ? 0 : stream.at + WORDS_MS - Date.now();
+    if (wait > 0) { stream.waiting = true; return this.later(() => { stream.waiting = false; this.pump(bridge, call, stream); }, wait); }
+    stream.busy = true; stream.chars = chars; stream.at = Date.now(); stream.done = stream.final;
+    const turns = (bridge.transcript.receipt().transcript ?? []).slice(-WORDS_TURNS);
+    this.track(this.backend.words({call_sid: call.id, line: call.line, number: call.remote}, turns, stream.final)
+      .finally(() => { stream.busy = false; this.pump(bridge, call, stream); }));
   }
   // `phone connect`: idempotent on its request ID; a refused claim keeps nothing, so the same ID may ask again later.
   async connect({requestId: id, to, from, whisper}) {
@@ -162,7 +185,8 @@ export class Transfers {
     if (entry.state !== 'ringing') return HANGUP;
     if (kind === 'whisper') {
       entry.answered = true;
-      return `<Response><Gather input="dtmf" numDigits="1" timeout="8" method="POST" action="${xml(this.url('confirm', token))}"><Say>${xml(entry.whisper)} Press 1 to join.</Say></Gather><Hangup/></Response>`;
+      const say = entry.kind === 'live' ? JOIN_LIVE : `${entry.whisper} Press 1 to join.`;
+      return `<Response><Gather input="dtmf" numDigits="1" timeout="8" method="POST" action="${xml(this.url('confirm', token))}"><Say>${xml(say)}</Say></Gather><Hangup/></Response>`;
     }
     if (params.get('Digits') !== '1') { entry.declined = true; return HANGUP; }
     entry.state = 'joined'; this.persist(entry);

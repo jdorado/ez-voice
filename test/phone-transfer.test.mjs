@@ -32,7 +32,7 @@ class Deepgram extends EventEmitter {
 }
 
 // A listener on a deepgram line with a transfer backend (`answer` decides each backend reply) and a synthetic Twilio REST API.
-async function listener(t, {answer = () => ({ok: true}), calls, settings = {}, callStatus = {}} = {}) {
+async function listener(t, {answer = () => ({ok: true}), calls, settings = {}, callStatus = {}, bound = true} = {}) {
   const backend = [], twilio = [], receipts = [], sockets = [];
   const transfer = httpTransfer(binding, async (url, init) => {
     assert.equal(url, binding.url); assert.equal(init.headers.authorization, 'Bearer ' + binding.token);
@@ -48,7 +48,7 @@ async function listener(t, {answer = () => ({ok: true}), calls, settings = {}, c
     if (call && !options.body) return new Response(JSON.stringify({sid: call, status: callStatus[call] ?? 'in-progress'}));
     return new Response(JSON.stringify({sid: url.endsWith('/Calls.json') ? personSid : url.match(/(CA[0-9a-f]{32})/)[1]}), {status: 201});
   });
-  const web = await servePhone({...line, ...settings, transfer}, {port: 0, host: '127.0.0.1', provider, calls,
+  const web = await servePhone({...line, ...settings, ...(bound && {transfer})}, {port: 0, host: '127.0.0.1', provider, calls,
     socketFactory: () => sockets[sockets.length] = new Deepgram(), record: async r => {receipts.push(r);}});
   t.after(() => web.close());
   return {web, backend, twilio, receipts, sockets};
@@ -113,6 +113,61 @@ test('a refused claim answers the model at once, rings nobody, and tells the mod
   } finally {ws.terminate();}
 });
 
+const said = (dg, role, content) => dg.receive({type: 'ConversationText', role, content});
+const wordsPosts = heard => heard.backend.filter(b => b.action === 'words');
+
+test('the call\'s words stream to the backend throttled, with one final ended post when the call closes', async t => {
+  const heard = await listener(t);
+  const {ws, dg} = await answered(heard);
+  try {
+    said(dg, 'user', 'Hi, who is this?');
+    await wait(() => wordsPosts(heard).length === 1);
+    const call = {call_sid: callerSid, line: number, number: caller};
+    const first = wordsPosts(heard)[0];
+    assert.deepEqual({...first, turns: first.turns.map(({who, text}) => ({who, text}))}, {action: 'words', call, turns: [{who: 'caller', text: 'Hi, who is this?'}], ended: false});
+    assert(Number.isInteger(first.turns[0].atMs));
+    said(dg, 'assistant', 'This is Quarre.'); said(dg, 'user', 'Okay.'); // inside the window: one trailing post carries both
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(wordsPosts(heard).length, 1);
+    await wait(() => wordsPosts(heard).length === 2);
+    assert.deepEqual(wordsPosts(heard)[1].turns.map(x => x.text), ['Hi, who is this?', 'This is Quarre.', 'Okay.']); assert.equal(wordsPosts(heard)[1].ended, false);
+    said(dg, 'assistant', 'Let me connect you.');
+    ws.close(); await wait(() => heard.receipts.length);
+    await wait(() => wordsPosts(heard).at(-1).ended);
+    assert.equal(wordsPosts(heard).length, 3);
+    assert.equal(wordsPosts(heard)[2].turns.at(-1).text, 'Let me connect you.');
+  } finally {ws.terminate();}
+});
+
+test('the words post keeps the last 40 turns', async t => {
+  const heard = await listener(t);
+  const {ws, dg} = await answered(heard);
+  try {
+    for (let i = 0; i < 25; i++) { said(dg, 'user', `caller ${i}`); said(dg, 'assistant', `model ${i}`); }
+    ws.close(); await wait(() => wordsPosts(heard).some(b => b.ended));
+    const turns = wordsPosts(heard).at(-1).turns;
+    assert.equal(turns.length, 40); assert.equal(turns.at(-1).text, 'model 24');
+  } finally {ws.terminate();}
+});
+
+test('nothing is streamed without a transfer binding, and a failing backend does not touch the call', async t => {
+  const unbound = await listener(t, {bound: false});
+  const a = await answered(unbound);
+  try {
+    said(a.dg, 'user', 'Hello'); a.ws.close(); await wait(() => unbound.receipts.length);
+    assert.deepEqual(unbound.backend, []); assert.equal(unbound.receipts[0].transcript[0].text, 'Hello');
+  } finally {a.ws.terminate();}
+  const failing = await listener(t, {answer: body => { if (body.action === 'words') throw Error('down'); return {ok: true}; }});
+  const b = await answered(failing);
+  try {
+    said(b.dg, 'user', 'Hello'); said(b.dg, 'assistant', 'Hi there.');
+    await wait(() => wordsPosts(failing).length === 1);
+    b.ws.close(); await wait(() => failing.receipts.length);
+    await wait(() => wordsPosts(failing).at(-1).ended);
+    assert.equal(failing.receipts[0].reason, 'caller_hangup'); assert.deepEqual(failing.receipts[0].transcript.map(x => x.text), ['Hello', 'Hi there.']);
+  } finally {b.ws.terminate();}
+});
+
 test('a person who does not answer is released no_answer and the model is told they did not pick up', async t => {
   const heard = await listener(t, {answer: body => body.action === 'claim' ? available : {ok: true}});
   const {ws, dg} = await answered(heard);
@@ -146,7 +201,7 @@ test('a person who hears the whisper and presses another key declined', async t 
     askTransfer(dg);
     await wait(() => heard.twilio.some(r => r.path === '/Calls.json'));
     const whisper = await (await callback(heard, 'whisper', {CallStatus: 'in-progress'})).text();
-    assert.match(whisper, /^<Response><Gather input="dtmf" numDigits="1" timeout="8" method="POST" action="https:\/\/phone\.example\.com\/transfer\/confirm\?t=[a-f0-9]{48}"><Say>12 Main St: the owner &lt;Ann&gt; wants to talk price\. Press 1 to join\.<\/Say><\/Gather><Hangup\/><\/Response>$/);
+    assert.match(whisper, /^<Response><Gather input="dtmf" numDigits="1" timeout="8" method="POST" action="https:\/\/phone\.example\.com\/transfer\/confirm\?t=[a-f0-9]{48}"><Say>Quarre call for you\. Press 1 to join\.<\/Say><\/Gather><Hangup\/><\/Response>$/);
     assert.equal(await (await callback(heard, 'confirm', {Digits: '2'})).text(), '<Response><Hangup/></Response>');
     await callback(heard, 'status', {CallStatus: 'completed', CallDuration: '9'});
     await wait(() => heard.backend.some(b => b.action === 'release'));

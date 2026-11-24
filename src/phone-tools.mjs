@@ -24,7 +24,7 @@ export const MAX_WHISPER = 300;
 export const TRANSFER_TOOL = {
   description: 'Connect the caller to the colleague your instructions name, only after the caller agreed to be connected. It returns at once: keep talking with the caller; you will be told whether the colleague joined.',
   parameters: {type: 'object', properties: {whisper: {type: 'string', maxLength: MAX_WHISPER,
-    description: 'What the colleague hears before joining: the address and the gist of the call, in one or two sentences.'}}, required: ['whisper'], additionalProperties: false},
+    description: 'What the colleague reads on their screen before joining: the address, what the owner wants and the gist, in one or two sentences.'}}, required: ['whisper'], additionalProperties: false},
   run: (call, args) => call.transferSoon(args),
 };
 

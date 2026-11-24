@@ -243,7 +243,7 @@ export class PhoneAudio {
       this.conversationStarted = true; this.activeAt = now; this.stats.outputBytes += bytes;
       this.stats.firstSpeechMs ??= now - this.startedAt; this.stats.firstAudioMs ??= now - this.startedAt;
       Object.assign(this.stats, {openerMs: now - this.startedAt, openerWaitMs: now - asked});
-      this.transcript.add('model', {text: this.config.opener});
+      this.transcript.add('model', {text: this.config.opener}); this.config.transfer?.words(this);
       this.opener.state = 'playing';
     }, () => {
       // No clip (the render failed): the provider speaks the same line, which is already the first entry of its history.
@@ -377,6 +377,7 @@ export class PhoneAudio {
         if (item.who === 'caller' && this.endOnMailbox(item.text)) break;
         if (this.advice) this.coach(item);
         this.transcript.add(item.who, item);
+        this.config.transfer?.words(this);
         break;
       case 'advice_ack': this.advice?.acknowledged(); break;
       case 'note_heard':
@@ -611,6 +612,7 @@ export class PhoneAudio {
     this.stopRing('close');
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
+    this.config.transfer?.words(this, true);
     this.closing = true; this.stats.reason = this.closeReason ?? reason; // closeReason: the call was moved on (a transfer) and its stream ends for that
     clearTimeout(this.noteAwaiting?.timer); this.handedOver('closed');
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
@@ -628,6 +630,7 @@ export class PhoneAudio {
     if (this.completed) return this.done;
     this.advice?.close(); clearTimeout(this.adviceTimer);
     this.cancelTools();
+    this.config.transfer?.words(this, true); // a provider that closed its own socket never went through close()
     this.completed = true; clearTimeout(this.noteAwaiting?.timer); this.handedOver('closed'); clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);
     clearTimeout(this.inputFlush); clearTimeout(this.greetingTimer); clearTimeout(this.greetingBound); clearTimeout(this.silentAnswer); clearTimeout(this.openerTimer); clearInterval(this.ambienceTick);
     // A provider with no close handshake may still have reported usage along the way.

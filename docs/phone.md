@@ -322,7 +322,7 @@ past that is refused before dialing.
 the operator's backend that decides who a caller is handed to. Voice knows only that URL, the numbers the backend returns and
 the whisper; it holds no roster. With it, a `deepgram` line's model gets one more tool (other providers do not declare it):
 
-`transfer_call({whisper})`: `whisper` is 1..300 characters, what the person hears before joining (the address and the gist).
+`transfer_call({whisper})`: `whisper` is 1..300 characters, the brief the colleague reads on their screen before joining (the address, what the owner wants and the gist); the person's phone does not read it.
 The model should call it only once the caller agreed to be connected. It returns at once with
 `{status: "ringing", note: "Ringing your colleague now. Keep the caller company; do not say goodbye."}`, because a tool call the
 model waits on silences it; every outcome reaches the model later as a message it answers. One transfer runs per call at a time.
@@ -334,6 +334,11 @@ Each step is one bounded `POST` of JSON to `url` with `Authorization: Bearer <to
   otherwise its Call SID. Answer `{status: "available", claim_id, person, number, caller_id}` (`number` and `caller_id` E.164,
   `claim_id` 1..200 of letters, digits, `_ . : -`), `{status: "queued", claim_id}` (the person is on another call; the caller
   waits) or `{status: "busy" | "off" | "none" | "unavailable"}`. A failure, a timeout or an invalid answer counts as `unavailable`.
+- `{"action": "words", "call": {"call_sid", "line", "number"}, "turns": [{"who": "caller" | "model", "text", "atMs"}], "ended": bool}`: the
+  call's words for the person's live panel, sent on any call of a line with this binding: at most one POST per 1.5 s while the
+  transcript changed (a trailing one carries the last words), one in flight per call, the last 40 turns each time, and one final
+  with `ended: true` when the call closes (also when a transfer ends the persona's stream). Answer `{ok: true}`, ignored; a failed
+  one is never repeated and never touches the call.
 - `{"action": "joined", "claim_id", "person_call_sid", "room"}` once the person pressed 1 (`room`: the conference name); answer `{ok: true}`.
 - `{"action": "release", "claim_id", "result", "person_call_sid"?, "seconds"?, "person_ended"?}`, once per claim, `result` one of
   `no_answer`, `declined`, `failed`, `abandoned`, `completed` (`seconds`: Twilio's duration of the person's call, on `completed`).
@@ -352,7 +357,7 @@ Each step is one bounded `POST` of JSON to `url` with `Authorization: Bearer <to
 
 A refused claim: the model is told the colleague cannot join right now (with the status) and to agree a time for a call back.
 An available one: Twilio rings `number` from `caller_id` for 20 s, recording both channels; when the person answers they hear
-the whisper and "Press 1 to join" (8 s). The person's callbacks are `origin + pathPrefix + /transfer/whisper|confirm|status`, each
+"Quarre call for you. Press 1 to join." (8 s; the brief is on their panel); a `phone connect` request has no panel, so its person hears the whisper, then "Press 1 to join.". The person's callbacks are `origin + pathPrefix + /transfer/whisper|confirm|status`, each
 signed by Twilio and checked like `/incoming`; so are `/transfer/after` and `/transfer/hold|quiet` (a held owner hears
 "One moment please, they will be right back." once, then quiet). The person always joins with `endConferenceOnExit` false. The caller stays on the stream with the model the whole time: Twilio drops a
 `<Connect><Stream>` the moment its call is redirected, so the caller moves only after the person confirmed.
@@ -371,7 +376,7 @@ signed by Twilio and checked like `/incoming`; so are `/transfer/after` and `/tr
   and the claim released `abandoned`.
 
 Receipts keep `transfers` (each attempt's status, person and the person's Call SID), `handover` (`played`, `cap` or `closed`)
-and `transferReleaseFailed` when a release went unacknowledged. The whisper is spoken to the person by Twilio's `<Say>`.
+and `transferReleaseFailed` when a release went unacknowledged. The fixed line (and a connect's whisper) is spoken to the person by Twilio's `<Say>`.
 
 `phone connect --to NUMBER --from LINE --request-id ID --whisper - < whisper.txt` (the whisper on stdin, 1..300 characters)
 rings a person before dialing a party: it claims with `{id: ID, call_sid: null, line: LINE, number: NUMBER, direction: "connect"}`.
