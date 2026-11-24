@@ -44,7 +44,7 @@ One browser call can be active per Voice runtime. End it before another begins.
 
 `ez voice phone --help` describes the separate inbound/outbound Twilio audio channel. It
 connects directly to a speech provider (GPT-Live by default; ElevenLabs Realtime, Gemini Live or Deepgram Voice Agent by `provider` in its private configuration) and has no native-agent delegation, owner history,
-workspace access or action tools: its only tool is `end_call`. Its private configuration needs the provider key, Twilio Account SID and account Auth Token, voice-capable
+workspace access or action tools: its tools are `end_call` and, on a deepgram line with `transferBinding`, `transfer_call`. Its private configuration needs the provider key, Twilio Account SID and account Auth Token, voice-capable
 number(s) and HTTPS origin; `lines` serves several numbers from one install, `maxCalls` calls at once. A line's persona is
 `instructions` (a string) or `instructionsFiles` (1..8 relative paths) with `instructionsRoot` (an absolute folder, top level or per
 line), never both: the files are read fresh at the start of every call, and a missing, empty, oversized or out-of-root file
@@ -61,6 +61,14 @@ account); the plugin stores no audio. The private call receipt (`phone receipt -
 keeps the call's transcript as the provider heard it. The operator is responsible for any recording notice to callers.
 `contextBinding {url, token, deadlineMs}` asks the operator's backend what it knows of an inbound caller as the call arrives
 (see docs/phone.md, "Caller context"). The caller ID it is asked about can be spoofed.
+`transferBinding {url, token, deadlineMs <= 5000}` names the backend that decides who a caller is handed to: a deepgram line's
+model then has `transfer_call({whisper})` (1..300 characters the colleague reads on their panel before joining; their phone says only "Quarre call for you. Press 1 to join."; the call's words stream to the backend as `words` posts). It returns at once; the caller
+moves into a conference with the person only after the 1 and the model's handover sentence, and the call ends `transferred`
+(`call-status` reports it with `transfer {person, personCallSid, at}`). `phone connect --to NUMBER --from LINE --request-id ID
+--whisper - < whisper.txt` rings that person, then dials NUMBER on their 1; exit 3 means the backend refused the claim;
+`call-status` reports `ringing_person`, `joined`, `completed`, `no_answer`, `declined` or `failed`. A person on another call can be
+`queued` for: the caller waits with the model while the backend is polled, and the person may take them (the current owner held)
+or go back to a held owner. See docs/phone.md, "Live transfer and connect".
 
 
 For an explicitly authorized recipient, `ez voice phone call --to E.164 --request-id ID [--from LINE]

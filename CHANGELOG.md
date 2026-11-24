@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Live transfer (`transferBinding {url, token, deadlineMs}`, Deepgram lines): the model's `transfer_call({whisper})` returns at
+  once; the operator's backend claims a person, Twilio rings them ("Quarre call for you. Press 1 to join."; the whisper is the brief on their panel), and only after the 1 and
+  the model's handover sentence is the caller redirected into the person's conference (a redirect drops the media stream). The
+  call ends `transferred` with `transfer {person, personCallSid, at}` on its receipt and `call-status`. Refused, unanswered and
+  declined attempts reach the model as a note; a caller who hangs up while the person rings cancels that call. The backend gets
+  claim, joined and one release per claim. `phone connect` rings a person, then dials a party on their 1 (exit 3 when refused).
+  One person can hold several owners: a `queued` claim waits with the model while it is polled (`ring`, `take` with the current
+  owner on hold, `drop`), a held owner's `back` and the person's `<Dial>` action (`after`) bring them back, and a release's `end`
+  lists owner calls to hang up. Each call's words stream to the backend (`words`: the last 40 turns, at most one POST per 1.5 s, a
+  final one with `ended: true`) for the person's live panel.
+
 - A placed call's opener can name the callee: an opener file of two lines is a template (`{name}`, then the fallback), filled from the brief's `CONTACT FIRST NAME:` line and rendered at the dial.
 - Deepgram lines take the ElevenLabs v4 Turbo voice (`ttsModel: eleven_v4_turbo`). v4 speaks only on ElevenLabs' Text-to-Dialogue
   socket, so Deepgram is told Flash v2.5 and the call's speech relay translates its TTS frames to that socket (the voice registered

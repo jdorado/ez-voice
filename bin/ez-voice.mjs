@@ -20,12 +20,13 @@ try {
   phone --help        Direct inbound/outbound Twilio phone audio (no native tools)
 Use the agent-bound ez voice command. Start/stop through ez plugins.
 Credentials live in /state/config.json (0600), never browser or model context.
-Exit 0 success, 2 invalid input/unavailable. No automatic provider retries.
+Exit 0 success, 2 invalid input/unavailable, 3 phone connect refused by the backend. No automatic provider retries.
 Web: ez tools serve 8791:8080 voice web --origin http://127.0.0.1:8791
 For HTTPS Telegram access add --bot-id ID; see README.`);
   else if (command === 'phone') {
     const result = await (await import('../src/phone.mjs')).phoneCommand(state, process.argv.slice(3));
     if (result) console.log(JSON.stringify(result));
+    if (result?.refused) process.exitCode = 3; // phone connect: the backend said the person cannot join
   }
   else if (command === 'configure') {
     let raw = '';

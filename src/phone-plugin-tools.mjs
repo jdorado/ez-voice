@@ -4,6 +4,7 @@
 // container for each one (about 2.5 s on a live host), and a speech provider gives up on a turn that waits for a few.
 import {CoreTools} from './plugin-tools.mjs';
 import {frames} from './protocol.mjs';
+import {sid} from './phone-provider.mjs';
 
 function validateHttpBinding(value, name, maxMs) { // name: contextBinding or toolBinding
   const invalid = `Invalid phone ${name.replace('Binding', '')} binding`;
@@ -37,7 +38,7 @@ export async function httpTools(binding, fetchImpl = fetch) {
   if (!Array.isArray(tools) || tools.length > 12 || !tools.length
       || new Set(tools.map(t => t.name)).size !== tools.length
       || tools.some(t => t.type !== 'function' || !/^[a-z][a-z0-9_]{0,63}$/.test(t.name)
-        || t.name === 'end_call' || typeof t.description !== 'string'
+        || ['end_call', 'transfer_call'].includes(t.name) || typeof t.description !== 'string'
         || t.description.length > 2000 || t.parameters?.type !== 'object')) throw Error('Invalid phone tool schemas');
   return {tools, deadlineMs: binding.deadlineMs, async run(call, turn, name, args, signal) {
     if (!tools.some(t => t.name === name)) return {status: 'unavailable', error: 'unknown_tool'};
@@ -121,13 +122,69 @@ export function liveContext(provider, call, maxChars) {
   return Promise.race([attempt, timeout]).then(answer => ({...answer, ms: Date.now() - began})).finally(() => clearTimeout(timer));
 }
 
-export async function phonePlugins(binding, adviceBinding, contextBinding, fetchImpl = fetch) {
-  // the context and the information tools ask the backend directly; only the side coach goes through the Ez connection
+// The live transfer: the operator's backend decides who the person is. One POST per step with a bearer token, bounded like the
+// context ask: `claim` {call, whisper} answers {status: available, claim_id, person, number, caller_id}, {status: queued, claim_id}
+// (the person is on another call) or busy|off|none|unavailable; `poll` {claim_id} answers what a queued, joined or held claim does
+// next (wait|ring|take|back|drop|ended); `after` {person_call_sid} answers whether the person goes back to a held owner once their
+// conference ended; `joined`, `taken`, `returned` answer {ok: true}; `release` answers {ok: true, end?: [Call SID]}, the owner calls
+// to hang up; `words` {call: {call_sid, line, number}, turns: [{who: caller|model, text, atMs}] (the last 40), ended} streams the call's
+// words to the person's panel while it runs, and once more with ended: true when it closes (answers {ok: true}, ignored). A failed, late or invalid claim is `unavailable`, a failed poll is `wait`; a failed report is never repeated.
+export const validateTransferBinding = value => validateHttpBinding(value, 'transferBinding', 5000);
+export const TRANSFER_RESULTS = ['no_answer', 'declined', 'failed', 'abandoned', 'completed'];
+const claimId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(value);
+const e164 = value => typeof value === 'string' && /^\+[1-9]\d{6,14}$/.test(value);
+const person = value => typeof value === 'string' && /^[^\u0000-\u001f]{1,200}$/.test(value);
+const room = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value);
+const callSids = value => Array.isArray(value) ? value.filter(v => sid(v, 'CA')).slice(0, 50) : [];
+export function httpTransfer(binding, fetchImpl = fetch) {
+  validateTransferBinding(binding);
+  const post = body => exchange(binding, fetchImpl, {method: 'POST', body: JSON.stringify(body)}, AbortSignal.timeout(binding.deadlineMs));
+  const acknowledged = async body => { try { return (await post(body))?.ok === true; } catch { return false; } };
+  return {deadlineMs: binding.deadlineMs,
+    async claim(call, whisper) {
+      let out;
+      try { out = await post({action: 'claim', call, whisper}); } catch { return {status: 'unavailable'}; }
+      if (['busy', 'off', 'none', 'unavailable'].includes(out?.status)) return {status: out.status};
+      if (out?.status === 'queued' && claimId(out.claim_id)) return {status: 'queued', claim_id: out.claim_id};
+      if (out?.status !== 'available' || !claimId(out.claim_id) || !person(out.person)
+          || !e164(out.number) || !e164(out.caller_id)) return {status: 'unavailable'};
+      return {status: 'available', claim_id: out.claim_id, person: out.person, number: out.number, caller_id: out.caller_id};
+    },
+    joined: (claim_id, person_call_sid, room) => acknowledged({action: 'joined', claim_id, person_call_sid, room}),
+    taken: (claim_id, room, person_call_sid) => acknowledged({action: 'taken', claim_id, room, person_call_sid}),
+    returned: claim_id => acknowledged({action: 'returned', claim_id}),
+    words: (call, turns, ended) => acknowledged({action: 'words', call, turns, ended}),
+    async release(claim_id, result, extra = {}) {
+      let out;
+      try { out = await post({action: 'release', claim_id, result, ...extra}); } catch { return {ok: false, end: []}; }
+      return {ok: out?.ok === true, end: callSids(out?.end)};
+    },
+    async poll(claim_id) {
+      let out;
+      try { out = await post({action: 'poll', claim_id}); } catch { return {status: 'wait'}; }
+      if (['drop', 'ended'].includes(out?.status)) return {status: out.status};
+      if (out?.status === 'ring' && person(out.person) && e164(out.number) && e164(out.caller_id)) return {status: 'ring', person: out.person, number: out.number, caller_id: out.caller_id};
+      if (out?.status === 'take' && person(out.person) && sid(out.person_call_sid, 'CA') && (out.hold === null || out.hold === undefined || (room(out.hold?.room) && sid(out.hold?.call_sid, 'CA'))))
+        return {status: 'take', person: out.person, person_call_sid: out.person_call_sid, hold: out.hold ? {room: out.hold.room, call_sid: out.hold.call_sid} : null};
+      if (out?.status === 'back' && sid(out.person_call_sid, 'CA')) return {status: 'back', person_call_sid: out.person_call_sid, end: callSids(out.end)};
+      return {status: 'wait'};
+    },
+    async after(person_call_sid) {
+      let out;
+      try { out = await post({action: 'after', person_call_sid}); } catch { return {status: 'none'}; }
+      return out?.status === 'back' && claimId(out.claim_id) && room(out.room) && sid(out.call_sid, 'CA') ? {status: 'back', claim_id: out.claim_id, room: out.room, call_sid: out.call_sid} : {status: 'none'};
+    },
+  };
+}
+
+export async function phonePlugins(binding, adviceBinding, contextBinding, transferBinding, fetchImpl = fetch) {
+  // the context, the information tools and the transfer ask the backend directly; only the side coach goes through the Ez connection
   const contextProvider = contextBinding ? httpContext(contextBinding, fetchImpl) : undefined;
+  const transfer = transferBinding ? httpTransfer(transferBinding, fetchImpl) : undefined;
   const information = binding ? await httpTools(binding, fetchImpl) : undefined;
-  if (!adviceBinding) return {information, contextProvider};
+  if (!adviceBinding) return {information, contextProvider, transfer};
   const core = new CoreTools(process.stdout);
   frames(process.stdin, frame => core.receive(frame), () => core.close());
   process.stdin.on('end', () => core.close());
-  return {information, advisor: installedAdvice(adviceBinding, core), contextProvider};
+  return {information, advisor: installedAdvice(adviceBinding, core), contextProvider, transfer};
 }

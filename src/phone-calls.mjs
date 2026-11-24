@@ -9,7 +9,8 @@ import {instructionsFromFiles} from './phone-instructions.mjs';
 import {limitsFor} from './phone-providers/index.mjs';
 
 export const LAST_CALL = 'last-call.json';
-const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected']);
+// `transferred`: the call was handed to a person (src/phone-transfer.mjs); it outranks Twilio's later `completed` for the same call.
+const terminal = new Set(['completed','busy','failed','no-answer','canceled','rejected','transferred']);
 const statuses = new Set(['queued','initiated','ringing','in-progress',...terminal]);
 const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
 // A per-call brief is added to the configured instructions (the line's identity and conduct) for that
@@ -18,16 +19,18 @@ const requestId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_
 // starts with (the instructions with a brief or a caller context), so a call never starts with more than its provider takes.
 export const withBrief = (instructions, brief) => brief ? `${instructions}\n\nBrief for this call (where it differs from the instructions above, it wins):\n${brief}` : instructions;
 const brief = (value, limit) => value === undefined || (typeof value === 'string' && value.trim().length > 0 && value.length <= limit);
-const rank = value => terminal.has(value) ? 4 : value === 'in-progress' ? 3 : value === 'ringing' ? 2 : value === 'queued' || value === 'initiated' ? 1 : 0;
+const rank = value => value === 'transferred' ? 5 : terminal.has(value) ? 4 : value === 'in-progress' ? 3 : value === 'ringing' ? 2 : value === 'queued' || value === 'initiated' ? 1 : 0;
 
 export function callOptions(action, args) {
-  const result = {};
+  const result = {}, dials = ['call','connect'].includes(action);
   for (let i=0; i<args.length; i+=2) {
-    const key = args[i] === '--request-id' ? 'requestId' : args[i] === '--to' && action === 'call' ? 'to' : args[i] === '--from' && action === 'call' ? 'from' : args[i] === '--instructions' && action === 'call' ? 'instructions' : null;
-    if (!key || result[key] !== undefined || !args[i+1] || (key === 'instructions' && args[i+1] !== '-')) throw Error('Use phone call --to E.164 --request-id ID [--from LINE] [--instructions - < brief.txt]; call-status/hangup require --request-id ID');
+    const key = args[i] === '--request-id' ? 'requestId' : args[i] === '--to' && dials ? 'to' : args[i] === '--from' && dials ? 'from'
+      : args[i] === '--instructions' && action === 'call' ? 'instructions' : args[i] === '--whisper' && action === 'connect' ? 'whisper' : null;
+    if (!key || result[key] !== undefined || !args[i+1] || (['instructions','whisper'].includes(key) && args[i+1] !== '-')) throw Error('Use phone call --to E.164 --request-id ID [--from LINE] [--instructions - < brief.txt]; phone connect --to E.164 --from LINE --request-id ID --whisper - < whisper.txt; call-status/hangup require --request-id ID');
     result[key] = args[i+1];
   }
-  if (!requestId(result.requestId) || (action === 'call' && (!phone(result.to) || (result.from !== undefined && !phone(result.from))))) throw Error('Supply an E.164 destination (and line) and a stable request ID (1..100 letters, digits, _ or -)');
+  if (!requestId(result.requestId) || (dials && (!phone(result.to) || (result.from !== undefined && !phone(result.from))))) throw Error('Supply an E.164 destination (and line) and a stable request ID (1..100 letters, digits, _ or -)');
+  if (action === 'connect' && (!result.from || result.whisper !== '-')) throw Error('phone connect needs --from LINE and --whisper - (the whisper on stdin)');
   return result;
 }
 
@@ -42,14 +45,17 @@ export class PhoneCalls {
     if (!columns.includes('instructions')) this.db.exec('ALTER TABLE requests ADD COLUMN instructions TEXT');
     // the line a call went out from; a row from before several lines is the install's first line
     if (!columns.includes('sender')) this.db.exec('ALTER TABLE requests ADD COLUMN sender TEXT');
+    if (!columns.includes('transfer')) this.db.exec('ALTER TABLE requests ADD COLUMN transfer TEXT');
   }
   row(id) { if (!requestId(id)) throw Error('Invalid request ID'); return this.db.prepare('SELECT * FROM requests WHERE id=?').get(id); }
-  receipt(row) { if (!row) throw Error('Unknown outbound request ID'); return {requestId:row.id,to:row.recipient,from:this.from(row),callSid:row.call_sid,status:row.status,at:row.at,brief:Boolean(row.instructions)}; }
+  receipt(row) { if (!row) throw Error('Unknown outbound request ID'); return {requestId:row.id,to:row.recipient,from:this.from(row),callSid:row.call_sid,status:row.status,at:row.at,brief:Boolean(row.instructions),...(row.transfer && {transfer:JSON.parse(row.transfer)})}; }
   from(row) { return row.sender || this.config.number; }
   numbers() { return (this.config.lines ?? [this.config]).map(line=>line.number); }
   instructions(id) { return requestId(id) ? this.row(id)?.instructions ?? undefined : undefined; }
   sender(id) { const row=requestId(id) ? this.row(id) : undefined; return row ? this.from(row) : undefined; }
-  pendingAll() { return this.db.prepare("SELECT * FROM requests WHERE status NOT IN ('completed','busy','failed','no-answer','canceled','rejected')").all(); }
+  pendingAll() { return this.db.prepare("SELECT * FROM requests WHERE status NOT IN ('completed','busy','failed','no-answer','canceled','rejected','transferred')").all(); }
+  // A placed call handed to a person: terminal for the caller of `phone call`, whatever Twilio reports of the call afterwards.
+  transferred(callSid, transfer) { if (sid(callSid,'CA')) this.db.prepare("UPDATE requests SET status='transferred',transfer=? WHERE call_sid=?").run(JSON.stringify(transfer),callSid); }
   pending() { return this.pendingAll()[0]; }
   pendingCount() { return this.pendingAll().length; }
   update(row, callSid, status) {

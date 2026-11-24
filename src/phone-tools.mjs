@@ -18,5 +18,15 @@ export const PHONE_TOOLS = {
   },
 };
 
-export const toolDefinitions = (config = {}) => Object.entries(PHONE_TOOLS)
+// Declared only on a call that can transfer (`config.transfer`: the install's transferBinding, on a deepgram line). It returns at once,
+// because a waiting tool call silences the model; whether the colleague joined arrives later as a message (src/phone-transfer.mjs).
+export const MAX_WHISPER = 300;
+export const TRANSFER_TOOL = {
+  description: 'Connect the caller to the colleague your instructions name, only after the caller agreed to be connected. It returns at once: keep talking with the caller; you will be told whether the colleague joined.',
+  parameters: {type: 'object', properties: {whisper: {type: 'string', maxLength: MAX_WHISPER,
+    description: 'What the colleague reads on their screen before joining: the address, what the owner wants and the gist, in one or two sentences.'}}, required: ['whisper'], additionalProperties: false},
+  run: (call, args) => call.transferSoon(args),
+};
+
+export const toolDefinitions = (config = {}) => Object.entries({...PHONE_TOOLS, ...(config.transfer && {transfer_call: TRANSFER_TOOL})})
   .map(([name, {description, parameters}]) => ({type: 'function', name, description, parameters})).concat(config.information?.tools ?? []);
