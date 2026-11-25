@@ -498,3 +498,30 @@ test('a release that lists owner calls hangs each of them up', async t => {
     assert.deepEqual(heard.twilio.find(r => r.path === `/Calls/${heldSid}.json`).form, {Status: 'completed'});
   } finally {call.ws.terminate();}
 });
+
+test('a joined person passes the call: the other person the backend claimed is rung into the same room and joins without a handover', async t => {
+  let next = {status: 'wait'};
+  const other = '+15551230006';
+  const heard = await listener(t, {settings: {transferPollMs: 20}, answer: body => body.action === 'claim' ? available : body.action === 'poll' ? next : {ok: true}});
+  const call = await answered(heard);
+  try {
+    const room = await transferredCall(heard, call);
+    await wait(() => heard.backend.some(b => b.action === 'poll'));
+    next = {status: 'pass', claim_id: 'claim-2', person: 'Milan', number: other, caller_id: callerId, room};
+    await wait(() => heard.twilio.filter(r => r.path === '/Calls.json').length === 2);
+    next = {status: 'wait'};
+    const create = heard.twilio.filter(r => r.path === '/Calls.json')[1].form;
+    assert.equal(create.To, other); assert.equal(create.From, callerId);
+    const token = new URL(create.Url).searchParams.get('t');
+    const hit = (kind, extra) => signed(heard.web.port, `/transfer/${kind}?t=${token}`, personParams(extra));
+    assert.match(await (await hit('whisper', {CallStatus: 'in-progress'})).text(), /Quarre call for you\. Press 1 to join\./);
+    assert.equal(await (await hit('confirm', {Digits: '1'})).text(), `<Response>${personDial(room, token)}</Response>`);
+    await wait(() => heard.backend.some(b => b.action === 'joined' && b.claim_id === 'claim-2'));
+    assert.deepEqual(heard.backend.find(b => b.claim_id === 'claim-2' && b.action === 'joined'), {action: 'joined', claim_id: 'claim-2', person_call_sid: personSid, room});
+    assert.equal(heard.twilio.filter(r => r.form.Twiml).length, 1, 'nobody is moved: the owner and the first person stay in the room');
+    await hit('status', {CallStatus: 'completed', CallDuration: '40'});
+    await wait(() => heard.backend.some(b => b.action === 'release' && b.claim_id === 'claim-2'));
+    assert.deepEqual(heard.backend.find(b => b.action === 'release' && b.claim_id === 'claim-2'),
+      {action: 'release', claim_id: 'claim-2', result: 'completed', person_call_sid: personSid, seconds: 40, person_ended: true});
+  } finally {call.ws.terminate();}
+});
