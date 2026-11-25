@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Live transfer: a person on a joined or taken call can pass it. The backend answers the claim's poll `pass` with another person
+  it claimed; they are rung ("call for you, press 1") and on 1 join the same room, no handover and nobody moved. The first person
+  stays until they hang up; the owner stays with whoever is left.
+
 - Live transfer (`transferBinding {url, token, deadlineMs}`, Deepgram lines): the model's `transfer_call({whisper})` returns at
   once; the operator's backend claims a person, Twilio rings them ("Quarre call for you. Press 1 to join."; the whisper is the brief on their panel), and only after the 1 and
   the model's handover sentence is the caller redirected into the person's conference (a redirect drops the media stream). The

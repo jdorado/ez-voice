@@ -167,6 +167,8 @@ export function httpTransfer(binding, fetchImpl = fetch) {
       if (out?.status === 'take' && person(out.person) && sid(out.person_call_sid, 'CA') && (out.hold === null || out.hold === undefined || (room(out.hold?.room) && sid(out.hold?.call_sid, 'CA'))))
         return {status: 'take', person: out.person, person_call_sid: out.person_call_sid, hold: out.hold ? {room: out.hold.room, call_sid: out.hold.call_sid} : null};
       if (out?.status === 'back' && sid(out.person_call_sid, 'CA')) return {status: 'back', person_call_sid: out.person_call_sid, end: callSids(out.end)};
+      if (out?.status === 'pass' && claimId(out.claim_id) && person(out.person) && e164(out.number) && e164(out.caller_id) && room(out.room))
+        return {status: 'pass', claim_id: out.claim_id, person: out.person, number: out.number, caller_id: out.caller_id, room: out.room};
       return {status: 'wait'};
     },
     async after(person_call_sid) {

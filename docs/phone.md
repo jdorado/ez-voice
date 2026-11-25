@@ -348,7 +348,10 @@ Each step is one bounded `POST` of JSON to `url` with `Authorization: Bearer <to
   while it is open. Answer `{status: "wait"}`, `{status: "ring", person, number, caller_id}` (ring them as for `available`),
   `{status: "take", person, person_call_sid, hold: {room, call_sid} | null}` (hold that owner, hand over, move this caller and the
   person's existing leg into a new room), `{status: "back", person_call_sid, end}` (resume this held owner, bring the person's leg
-  into their room, hang up `end`), `{status: "drop"}` (released by the backend; the model books a callback) or `{status: "ended"}`.
+  into their room, hang up `end`), `{status: "pass", claim_id, person, number, caller_id, room}` (the person on this joined or taken
+  call brings in another the backend claimed: ring them with "call for you, press 1" and on 1 put them into `room`, no handover and
+  nobody moved; their claim then polls and releases like a joined one), `{status: "drop"}` (released by the backend; the model
+  books a callback) or `{status: "ended"}`.
   While polling a joined or taken claim the listener also reads its owner's call at Twilio; one that ended releases `completed`.
 - `{"action": "taken", "claim_id", "room", "person_call_sid"}` after a take, `{"action": "returned", "claim_id"}` after a back
   or an `after` return; answer `{ok: true}`.

@@ -18,7 +18,9 @@ import {MAX_WHISPER} from './phone-tools.mjs';
 // current room (that owner put on hold) into a new room with this caller, `drop` ends it with a callback. Joined and taken claims are
 // polled too, because a held owner's `back` arrives that way. The person always joins with endConferenceOnExit false (they move
 // between rooms) and their <Dial> carries an `after` action: when the owner they talk to hangs up, the backend says whether a held
-// owner gets them back. The backend owns the person's session; this file only moves calls and reports.
+// owner gets them back. A person on a call can pass it: the backend answers a joined or taken claim's poll `pass` with another person
+// it claimed, who is rung (the same "call for you, press 1") into the same room; the first stays until they hang up, and the owner
+// stays with whoever is left. The backend owns the person's session; this file only moves calls and reports.
 const CALLBACK = 'the colleague was pulled into another call; agree a time for them to call the caller back from this number.';
 export const NOTES = {
   unavailable: status => `Your colleague cannot join right now (${status}). Tell the caller ${CALLBACK}`,
@@ -185,13 +187,14 @@ export class Transfers {
     if (entry.state !== 'ringing') return HANGUP;
     if (kind === 'whisper') {
       entry.answered = true;
-      const say = entry.kind === 'live' ? JOIN_LIVE : `${entry.whisper} Press 1 to join.`;
+      const say = entry.kind === 'connect' ? `${entry.whisper} Press 1 to join.` : JOIN_LIVE;
       return `<Response><Gather input="dtmf" numDigits="1" timeout="8" method="POST" action="${xml(this.url('confirm', token))}"><Say>${xml(say)}</Say></Gather><Hangup/></Response>`;
     }
     if (params.get('Digits') !== '1') { entry.declined = true; return HANGUP; }
     entry.state = 'joined'; this.persist(entry);
     this.track(this.backend.joined(entry.claim.claim_id, entry.personCallSid, entry.room).then(ok => { entry.joinedAcknowledged = ok; }));
     if (entry.kind === 'connect') return `<Response><Dial callerId="${xml(entry.line)}" record="record-from-answer-dual" timeout="30"><Number>${xml(entry.to)}</Number></Dial></Response>`;
+    if (entry.kind === 'pass') { entry.state = 'transferred'; this.watch(entry); return `<Response>${this.personDial(entry.room, token)}</Response>`; }
     this.track(this.handOver(entry));
     return `<Response>${this.personDial(entry.room, token)}</Response>`;
   }
@@ -255,6 +258,7 @@ export class Transfers {
     }
     if (next.status === 'take' && entry.state === 'queued') return this.take(entry, next);
     if (next.status === 'back' && entry.state !== 'queued') return this.back(entry, next);
+    if (next.status === 'pass' && entry.state !== 'queued') return this.pass(entry, next);
     if (next.status === 'drop' || next.status === 'ended') {
       entry.released = true; entry.result = next.status; // the backend released it already
       if (entry.state === 'queued') { entry.state = 'ended'; this.entries.delete(entry.token); this.missed(entry, next.status === 'drop' ? 'dropped' : 'ended'); }
@@ -301,6 +305,14 @@ export class Transfers {
     } catch { this.moving.delete(person_call_sid); return; } // not reported: the backend still sees the person where they were
     await this.endCalls(end);
     this.track(this.backend.returned(entry.claim.claim_id));
+  }
+  // The person on this call asked to bring in another (the backend claimed them): ring them into this room. Their entry keeps the
+  // owner's call (closed bridge, same call id) so it polls the owner's end and its own `back` or `pass` like any joined entry.
+  async pass(entry, {claim_id, person, number, caller_id, room}) {
+    const other = {kind: 'pass', token: randomBytes(24).toString('hex'), room, bridge: entry.bridge, whisper: '', state: 'ringing',
+      claim: {status: 'available', claim_id, person, number, caller_id}};
+    this.entries.set(other.token, other);
+    await this.ring(other);
   }
   // A taken entry's leg reports to the entry that rang it; this one stays a minute for a late `after` callback, then goes.
   forget(entry) { this.later(() => this.entries.delete(entry.token), 60000); }
