@@ -19,6 +19,7 @@ const line = {accountSid, authToken, origin, number, instructions: 'Synthetic li
   llmApiKey: 'AIza' + 'b'.repeat(35), ttsApiKey: 'sk_' + 'a'.repeat(24), idleSeconds: 0, answerTone: 'none', handoverMaxMs: 2000};
 const binding = {url: 'https://ops.example.com/transfer', token: 't'.repeat(24), deadlineMs: 1000};
 const wait = async fn => {for (let i = 0; i < 300; i++) {if (fn()) return; await new Promise(r => setTimeout(r, 10));} throw Error('Timed out');};
+const waitLong = async fn => {for (let i = 0; i < 60; i++) {if (fn()) return; await new Promise(r => setTimeout(r, 100));} throw Error('Timed out');};
 const conferenceSid = name => 'CF' + Buffer.from(name).toString('hex').padEnd(32, '0').slice(0, 32);
 const available = {status: 'available', claim_id: 'claim-1', person: 'Juan', number: personNumber, caller_id: callerId};
 
@@ -137,6 +138,30 @@ test('the call\'s words stream to the backend throttled, with one final ended po
     assert.equal(wordsPosts(heard).length, 3);
     assert.equal(wordsPosts(heard)[2].turns.at(-1).text, 'Let me connect you.');
   } finally {ws.terminate();}
+});
+
+test('while the backend says someone listens, the words posts carry the call\'s audio about once a second', async t => {
+  let listen = false;
+  const heard = await listener(t, {answer: body => body.action === 'words' ? {ok: true, listen} : {ok: true}});
+  const {ws, dg} = await answered(heard);
+  const frame = Buffer.alloc(160, 0x10).toString('base64'); // 20 ms of loud caller sound
+  const talk = setInterval(() => ws.send(JSON.stringify({event: 'media', streamSid, media: {payload: frame}})), 20);
+  try {
+    said(dg, 'user', 'Hello?');
+    await wait(() => wordsPosts(heard).length === 1);
+    assert.equal(wordsPosts(heard)[0].audio, undefined); // nobody listens yet
+    listen = true; said(dg, 'assistant', 'Hi, this is Quarre.');
+    await waitLong(() => wordsPosts(heard).some(b => b.audio));
+    const before = wordsPosts(heard).length;
+    await waitLong(() => wordsPosts(heard).length >= before + 1); // no new words: the listen posts go on by themselves
+    const chunk = Buffer.from(wordsPosts(heard).at(-1).audio, 'base64');
+    assert(chunk.length >= 6000 && chunk.length <= 16000, `about a second of 8 kHz audio, got ${chunk.length}`);
+    listen = false;
+    await new Promise(r => setTimeout(r, 2500)); // the post in flight is answered without listen
+    const stopped = wordsPosts(heard).length;
+    await new Promise(r => setTimeout(r, 1300));
+    assert.equal(wordsPosts(heard).length, stopped); // the next answer said nobody listens: no more posts until new words
+  } finally {clearInterval(talk); ws.terminate();}
 });
 
 test('the words post keeps the last 40 turns', async t => {

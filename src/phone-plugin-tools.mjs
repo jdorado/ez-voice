@@ -128,7 +128,9 @@ export function liveContext(provider, call, maxChars) {
 // next (wait|ring|take|back|drop|ended); `after` {person_call_sid} answers whether the person goes back to a held owner once their
 // conference ended; `joined`, `taken`, `returned` answer {ok: true}; `release` answers {ok: true, end?: [Call SID]}, the owner calls
 // to hang up; `words` {call: {call_sid, line, number}, turns: [{who: caller|model, text, atMs}] (the last 40), ended} streams the call's
-// words to the person's panel while it runs, and once more with ended: true when it closes (answers {ok: true}, ignored). A failed, late or invalid claim is `unavailable`, a failed poll is `wait`; a failed report is never repeated.
+// words to the person's panel while it runs, and once more with ended: true when it closes (answers {ok: true}); an answer
+// {ok: true, listen: true} says someone listens in, and the next posts carry `audio`, the call's two sides mixed since the last post
+// (8 kHz mu-law, base64), about one a second until an answer drops listen. A failed, late or invalid claim is `unavailable`, a failed poll is `wait`; a failed report is never repeated.
 export const validateTransferBinding = value => validateHttpBinding(value, 'transferBinding', 5000);
 export const TRANSFER_RESULTS = ['no_answer', 'declined', 'failed', 'abandoned', 'completed'];
 const claimId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(value);
@@ -153,7 +155,11 @@ export function httpTransfer(binding, fetchImpl = fetch) {
     joined: (claim_id, person_call_sid, room) => acknowledged({action: 'joined', claim_id, person_call_sid, room}),
     taken: (claim_id, room, person_call_sid) => acknowledged({action: 'taken', claim_id, room, person_call_sid}),
     returned: claim_id => acknowledged({action: 'returned', claim_id}),
-    words: (call, turns, ended) => acknowledged({action: 'words', call, turns, ended}),
+    async words(call, turns, ended, audio) {
+      let out;
+      try { out = await post({action: 'words', call, turns, ended, ...(audio && {audio})}); } catch { return {ok: false, listen: false}; }
+      return {ok: out?.ok === true, listen: out?.listen === true};
+    },
     async release(claim_id, result, extra = {}) {
       let out;
       try { out = await post({action: 'release', claim_id, result, ...extra}); } catch { return {ok: false, end: []}; }

@@ -10,6 +10,7 @@ import {PhoneAdvice} from './phone-advice.mjs';
 import {renderOpener} from './phone-opener.mjs';
 import {Ambience} from './phone-ambience.mjs';
 import {latestCallerText, mailboxGreeting} from './phone-voicemail.mjs';
+import {ListenTap, tapped} from './phone-listen.mjs';
 
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
 const RING_AFTER_READY_MS = 5000;
@@ -55,7 +56,7 @@ const DETACHED = {readyState: WebSocket.CONNECTING, bufferedAmount: 0, send() {}
 // adapter (src/phone-providers). The model owns the spoken conversation.
 export class PhoneAudio {
   constructor(twilio, config, finish, {socketFactory = (url, options) => new WebSocket(url, options), onReady = () => {}, adapter, fetch: fetchImpl, ringAfterReadyMs = RING_AFTER_READY_MS, silentAnswerMs = SILENT_ANSWER_MS} = {}) {
-    this.twilio = twilio ?? DETACHED; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
+    this.listenTap = new ListenTap(); this.twilio = twilio ? tapped(twilio, this.listenTap) : DETACHED; this.finish = finish; this.config = config; this.onReady = onReady; this.socketFactory = socketFactory;
     this.ringAfterReadyMs = ringAfterReadyMs; this.silentAnswerMs = silentAnswerMs;
     this.adapter = adapter ?? createAdapter(config, fetchImpl && {fetch: fetchImpl});
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
@@ -134,7 +135,7 @@ export class PhoneAudio {
   // the session was already ready), `preopenMs` is how long it was open before.
   adopt(twilio, {streamSid, call, finish}) {
     const now = Date.now();
-    this.twilio = twilio; this.finish = finish; this.config.streamSid = streamSid; this.config.call = call;
+    this.twilio = tapped(twilio, this.listenTap); this.finish = finish; this.config.streamSid = streamSid; this.config.call = call;
     this.stats.preopenMs = now - this.startedAt;
     this.startedAt = this.activeAt = now; this.transcript = new Transcript(now);
     if (this.ready) this.stats.readyMs = 0;
@@ -171,6 +172,7 @@ export class PhoneAudio {
     if (this.closing) return;
     if (typeof payload !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload) || payload.length > 16000) return this.close('invalid_audio');
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
+    this.listenTap.caller(payload); // the caller as heard, before any silencing for the provider
     const sound = audible(payload);
     if (sound) this.soundHeardAt = Date.now();
     if (this.opener && this.opener.state !== 'done' && !(this.screenVoicemail && this.opener.state === 'waiting')) {
