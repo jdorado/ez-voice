@@ -47,6 +47,8 @@ const STATUS = {ringing: 'ringing_person', joined: 'joined'};
 const JOIN_LIVE = 'Quarre call for you. Press 1 to join.';
 // The call's words go to the backend at most this often, the last WORDS_TURNS turns each time.
 const WORDS_MS = 1500, WORDS_TURNS = 40;
+// While someone listens in (phone-listen.mjs), the words post goes this often with the mixed audio, changed transcript or not.
+const LISTEN_MS = 1000;
 
 export class Transfers {
   constructor(config, {provider, backend, calls, directory}) {
@@ -91,6 +93,7 @@ export class Transfers {
   }
   // The call's words for the person's panel (PhoneAudio: each transcript change, and `ended` once when the bridge closes). One POST in flight
   // per call, at most one per WORDS_MS while the transcript changed (a trailing one sends the last words), a failed one never repeated.
+  // While the answer says someone listens, one per LISTEN_MS carries the mixed audio since the last (phone-listen.mjs).
   words(bridge, ended = false) {
     const call = bridge.config.call, stream = this.streams.get(bridge) ?? this.streams.set(bridge, {chars: -1, at: 0, final: false}).get(bridge);
     if (!call || stream.done || this.closed) return;
@@ -100,12 +103,13 @@ export class Transfers {
   pump(bridge, call, stream) {
     if (stream.busy || stream.done || this.closed) return;
     const chars = bridge.transcript.chars;
-    if (!stream.final && (stream.waiting || chars === stream.chars)) return;
-    const wait = stream.final ? 0 : stream.at + WORDS_MS - Date.now();
+    if (!stream.final && (stream.waiting || (chars === stream.chars && !stream.listen))) return;
+    const wait = stream.final ? 0 : stream.at + (stream.listen ? LISTEN_MS : WORDS_MS) - Date.now();
     if (wait > 0) { stream.waiting = true; return this.later(() => { stream.waiting = false; this.pump(bridge, call, stream); }, wait); }
     stream.busy = true; stream.chars = chars; stream.at = Date.now(); stream.done = stream.final;
     const turns = (bridge.transcript.receipt().transcript ?? []).slice(-WORDS_TURNS);
-    this.track(this.backend.words({call_sid: call.id, line: call.line, number: call.remote}, turns, stream.final)
+    this.track(this.backend.words({call_sid: call.id, line: call.line, number: call.remote}, turns, stream.final, bridge.listenTap?.take())
+      .then(out => { stream.listen = out?.listen === true && !stream.done; bridge.listenTap?.set(stream.listen); })
       .finally(() => { stream.busy = false; this.pump(bridge, call, stream); }));
   }
   // `phone connect`: idempotent on its request ID; a refused claim keeps nothing, so the same ID may ask again later.
