@@ -66,14 +66,36 @@ export class ElevenLabsAdapter {
     {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The call has connected: answer it.)'}]}},
     {type: 'response.create'},
   ]); }
+  // A note to the model from the call itself (a transfer's outcome, the handover sentence): a user turn it answers, kept out of the
+  // transcript. The provider refuses a response.create while a reply is active, so nothing is sent then or while the caller speaks (an
+  // empty answer: the bridge asks again shortly). A refusal that still comes (a reply began as this went out) is the warning
+  // `injection_refused` (see `parse`); the item is already in the conversation by then, so its retry asks for the response only.
+  injectNote(text) {
+    if (this.response || this.callerSpeaking) return [];
+    const made = this.noteMade && this.noteText === text;
+    this.noteText = text; this.noteMade = this.noteAsked = true; this.noteAt = Date.now();
+    return [...made ? [] : [{type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: `(${text})`}]}}],
+      {type: 'response.create'}];
+  }
   audioIn(audio) { return [{type: 'input_audio_buffer.append', audio}]; }
   parse(event) {
     switch (event.type) {
       case 'conversation.created': this.conversationId = event.conversation?.id; return [];
       case 'session.created': return [{type: 'send', message: this.configure()}];
       case 'session.updated': return this.ready ? [] : (this.ready = true, [{type: 'ready', id: this.conversationId}]);
-      case 'response.created': this.response = event.response?.id; return [];
-      case 'response.done': if (event.response?.id === this.response) this.response = undefined; return [];
+      // The first reply after a note was asked for is the provider taking it (the item alone is not: a refusal can still follow it, and
+      // the bridge would stop asking while the reply in flight was taken for the answer).
+      case 'response.created':
+        this.response = event.response?.id;
+        if (!this.noteAsked) return [];
+        this.noteAsked = this.noteMade = false; return [{type: 'note_heard', text: this.noteText}];
+      case 'response.done': {
+        const id = event.response?.id, mine = id === this.response;
+        if (mine) this.response = undefined;
+        return this.audioDone(id);
+      }
+      // All of a reply's audio has been sent (Twilio may still be playing it); `response.done` says it too for a reply with no audio event.
+      case 'response.output_audio.done': return this.audioDone(event.response_id);
       case 'response.output_audio.delta':
         if (typeof event.delta !== 'string' || event.delta.length > 1000000) return [{type: 'fatal', reason: 'invalid_provider_audio'}];
         if (this.cancelled.has(event.response_id)) return []; // the reply the caller already talked over
@@ -96,9 +118,15 @@ export class ElevenLabsAdapter {
         // What was asked for is happening, so this ends nothing (the receipt keeps a warning). The same error for anything else, such as
         // a tool result that asked the model to go on, still ends the call.
         if (event.error?.code === 'conversation_already_has_active_response' && Date.now() - (this.greetedAt ?? -Infinity) < 5000) return [{type: 'warning', code: 'greeting_met_active_response'}];
+        // The same for a note: the reply that was in flight is not the note's, the bridge sends it again when that reply ends.
+        if (event.error?.code === 'conversation_already_has_active_response' && this.noteAsked && Date.now() - this.noteAt < 5000) { this.noteAsked = false; return [{type: 'warning', code: 'injection_refused'}]; }
         return [{type: 'error', code: typeof event.error?.code === 'string' ? event.error.code.slice(0, 100) : 'provider_error'}];
       default: return [];
     }
+  }
+  audioDone(id) {
+    if (!id || id === this.audioEnded || this.cancelled.has(id)) return []; // once per reply, and never for the one the caller talked over
+    this.audioEnded = id; return [{type: 'audio_done'}];
   }
   // The caller talked over the reply: stop it, drop the audio it keeps streaming until it confirms (`output_audio_buffer.cleared`, seconds
   // of speech at its burst rate, which would play over the caller), and cut the model's record of it to what was heard (`playedMs` of

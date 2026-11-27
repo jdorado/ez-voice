@@ -62,7 +62,11 @@ export class PhoneAudio {
     this.turn = 0; this.pendingTools = new Map(); this.seenTools = new Set();
     this.createdAt = this.startedAt = Date.now(); this.transcript = new Transcript(this.startedAt);
     this.stats = {provider: this.adapter.constructor.id, model: this.adapter.config.model, ...(this.adapter.config.ttsModel && {ttsModel: this.adapter.config.ttsModel}), inputBytes: 0, outputBytes: 0, inputTranscriptEvents: 0, finalized: false};
-    this.screenVoicemail = config.skipVoicemail && config.call?.direction === 'out';
+    // Deepgram screens before its first model request; a speech-to-speech line answers on its own, so it screens the callee's
+    // first transcribed turn and ends the call on a mailbox greeting (its reply, if begun, is dropped with the stream).
+    const screen = config.skipVoicemail && config.call?.direction === 'out';
+    this.screenVoicemail = screen && this.adapter.constructor.id === 'deepgram';
+    this.screenFirstTurn = screen && !this.screenVoicemail;
     if (this.screenVoicemail) this.stats.modelRequests = 0;
     if (config.ttsSpeed !== undefined) this.stats.ttsSpeed = config.ttsSpeed;
     if (config.greeting) this.stats.greetingFixed = true;
@@ -376,7 +380,7 @@ export class PhoneAudio {
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else { this.callerSpeaking = false; if (this.handover?.heard && String(item.text ?? item.delta ?? '').trim()) this.handover.spoke = true; }
         this.activeAt = Date.now();
-        if (item.who === 'caller' && this.endOnMailbox(item.text)) break;
+        if (item.who === 'caller' && (this.endOnMailbox(item.text) || this.endOnFirstTurnMailbox(item.text))) break;
         if (this.advice) this.coach(item);
         this.transcript.add(item.who, item);
         this.config.transfer?.words(this);
@@ -505,6 +509,15 @@ export class PhoneAudio {
     const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
   }
+  endOnFirstTurnMailbox(text) {
+    if (!this.screenFirstTurn || !String(text ?? '').trim()) return false;
+    this.screenFirstTurn = false;
+    if (!mailboxGreeting(text)) return false;
+    this.transcript.add('caller', {text});
+    this.stats.voicemailMs = Date.now() - this.startedAt;
+    this.close('voicemail');
+    return true;
+  }
   endOnMailbox(text) {
     if (!this.screenVoicemail || this.stats.modelRequests !== 0 || this.openingTurnAccepted || !mailboxGreeting(text)) return false;
     const last = this.transcript.turns.at(-1);
@@ -553,7 +566,13 @@ export class PhoneAudio {
     if (!this.usable || !this.adapter.injectNote) return;
     clearTimeout(this.noteAwaiting?.timer);
     this.noteAwaiting = {text, tries: 1};
-    for (const message of this.adapter.injectNote(text)) this.send(message);
+    this.sendNote(this.noteAwaiting);
+  }
+  // A provider that sends nothing (a reply is in flight) has refused it as much as one that says so.
+  sendNote(awaiting) {
+    const messages = this.adapter.injectNote(awaiting.text);
+    for (const message of messages) this.send(message);
+    if (!messages.length) this.retryNote();
   }
   retryNote() {
     const awaiting = this.noteAwaiting;
@@ -561,7 +580,7 @@ export class PhoneAudio {
     awaiting.timer = setTimeout(() => {
       if (this.noteAwaiting !== awaiting || !this.usable) return;
       awaiting.timer = undefined; awaiting.tries++;
-      for (const message of this.adapter.injectNote(awaiting.text)) this.send(message);
+      this.sendNote(awaiting);
     }, NOTE_RETRY_MS);
   }
   // The colleague confirmed: the model says one handover sentence, and the promise resolves once Twilio has played it (its mark comes

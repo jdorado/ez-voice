@@ -33,14 +33,14 @@ class Deepgram extends EventEmitter {
 }
 
 // A listener on a deepgram line with a transfer backend (`answer` decides each backend reply) and a synthetic Twilio REST API.
-async function listener(t, {answer = () => ({ok: true}), calls, settings = {}, callStatus = {}, bound = true} = {}) {
+async function listener(t, {answer = () => ({ok: true}), calls, settings = {}, callStatus = {}, bound = true, base = line} = {}) {
   const backend = [], twilio = [], receipts = [], sockets = [];
   const transfer = httpTransfer(binding, async (url, init) => {
     assert.equal(url, binding.url); assert.equal(init.headers.authorization, 'Bearer ' + binding.token);
     const body = JSON.parse(init.body); backend.push(body);
     return new Response(JSON.stringify(await answer(body)));
   });
-  const provider = new PhoneNumber(line, async (url, options) => {
+  const provider = new PhoneNumber(base, async (url, options) => {
     const form = Object.fromEntries(new URLSearchParams(options.body ?? ''));
     twilio.push({path: url.replace(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}`, ''), form});
     if (url.endsWith('/Recordings.json')) return new Response(JSON.stringify({sid: 'RE' + '8'.repeat(32)}), {status: 201});
@@ -49,7 +49,8 @@ async function listener(t, {answer = () => ({ok: true}), calls, settings = {}, c
     if (call && !options.body) return new Response(JSON.stringify({sid: call, status: callStatus[call] ?? 'in-progress'}));
     return new Response(JSON.stringify({sid: url.endsWith('/Calls.json') ? personSid : url.match(/(CA[0-9a-f]{32})/)[1]}), {status: 201});
   });
-  const web = await servePhone({...line, ...settings, ...(bound && {transfer})}, {port: 0, host: '127.0.0.1', provider, calls,
+  const web = await servePhone({...base, ...settings, ...(bound && {transfer})}, {port: 0, host: '127.0.0.1', provider, calls,
+    fetch: async () => new Response(JSON.stringify({value: 'client_secret_synthetic'})), // an ElevenLabs line's client secret
     socketFactory: () => sockets[sockets.length] = new Deepgram(), record: async r => {receipts.push(r);}});
   t.after(() => web.close());
   return {web, backend, twilio, receipts, sockets};
@@ -549,4 +550,107 @@ test('a joined person passes the call: the other person the backend claimed is r
     assert.deepEqual(heard.backend.find(b => b.action === 'release' && b.claim_id === 'claim-2'),
       {action: 'release', claim_id: 'claim-2', result: 'completed', person_call_sid: personSid, seconds: 40, person_ended: true});
   } finally {call.ws.terminate();}
+});
+
+// The same flows on an ElevenLabs Realtime line: the model's notes are user items answered by a response.create, never sent over a reply in flight.
+const elevenLine = {accountSid, authToken, origin, number, instructions: 'Synthetic line', provider: 'elevenlabs', model: 'eleven_realtime_v1_max', apiKey: 'sk_' + 'a'.repeat(24),
+  idleSeconds: 0, answerTone: 'none', handoverMaxMs: 2000};
+async function answeredEleven(heard) {
+  const params = new URLSearchParams({AccountSid: accountSid, To: number, From: caller, CallSid: callerSid});
+  const ticket = (await (await signed(heard.web.port, '/incoming', params)).text()).match(/value="([a-f0-9]+)"/)[1];
+  const ws = new WebSocket(`ws://127.0.0.1:${heard.web.port}/media`, {headers: {'x-twilio-signature': twilioSignature(authToken, origin + '/media')}});
+  const media = []; ws.on('message', raw => media.push(JSON.parse(raw.toString())));
+  await new Promise((resolve, reject) => {ws.once('open', resolve); ws.once('error', reject);});
+  ws.send(JSON.stringify({event: 'start', start: {accountSid, callSid: callerSid, streamSid, customParameters: {ticket}, mediaFormat: {encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1}}}));
+  await wait(() => heard.sockets[0]);
+  const dg = heard.sockets[0];
+  dg.receive({type: 'session.created'}); dg.receive({type: 'session.updated'});
+  await wait(() => dg.events.some(e => e.type === 'response.create')); // the greeting
+  return {ws, media, dg};
+}
+const askElevenTransfer = (dg, whisper = '12 Main St: the owner <Ann> wants to talk price.') =>
+  dg.receive({type: 'response.output_item.done', item: {type: 'function_call', call_id: 'xfer', name: 'transfer_call', arguments: JSON.stringify({whisper})}});
+const elevenNotes = dg => dg.events.filter(e => e.type === 'conversation.item.create' && e.item.role === 'user').map(e => e.item.content[0].text).slice(1); // after the greeting
+const responses = dg => dg.events.filter(e => e.type === 'response.create').length;
+
+test('elevenlabs: a Max line with the binding declares transfer_call, a refused claim reaches the model as a note, answered once', async t => {
+  const heard = await listener(t, {base: elevenLine, answer: () => ({status: 'busy'})});
+  const {ws, dg} = await answeredEleven(heard);
+  try {
+    assert(dg.events.find(e => e.type === 'session.update').session.tools.some(f => f.name === 'transfer_call'));
+    askElevenTransfer(dg);
+    const result = dg.events.find(e => e.type === 'conversation.item.create' && e.item.type === 'function_call_output');
+    assert.deepEqual(JSON.parse(result.item.output), {status: 'ringing', note: 'Ringing your colleague now. Keep the caller company; do not say goodbye.'});
+    await wait(() => elevenNotes(dg).length === 1);
+    assert.equal(elevenNotes(dg)[0], `(${NOTES.unavailable('busy')})`);
+    assert.equal(dg.events.at(-1).type, 'response.create');
+    assert(!heard.twilio.some(r => r.path === '/Calls.json'));
+    dg.receive({type: 'response.created', response: {id: 'r1'}}); // the model takes the note: it is not asked again
+    await new Promise(r => setTimeout(r, 700));
+    assert.equal(elevenNotes(dg).length, 1);
+    ws.close(); await wait(() => heard.receipts.length);
+    assert.deepEqual(heard.receipts[0].transcript ?? [], []); // the note is never caller speech
+    assert.deepEqual(heard.receipts[0].transfers, [{status: 'busy'}]);
+  } finally {ws.terminate();}
+});
+
+test('elevenlabs: a note that meets a reply in flight waits for it, and a note refused as the reply began is asked for again without a second item', async t => {
+  const heard = await listener(t, {base: elevenLine, answer: () => ({status: 'busy'})});
+  const {ws, dg} = await answeredEleven(heard);
+  try {
+    dg.receive({type: 'response.created', response: {id: 'r0'}}); // the model is talking
+    askElevenTransfer(dg);
+    await new Promise(r => setTimeout(r, 1200));
+    assert.equal(elevenNotes(dg).length, 0, 'nothing is sent over a reply in flight');
+    const asked = responses(dg);
+    dg.receive({type: 'response.done', response: {id: 'r0'}});
+    await wait(() => elevenNotes(dg).length === 1);
+    assert.equal(responses(dg), asked + 1);
+    dg.receive({type: 'error', error: {code: 'conversation_already_has_active_response'}}); // a reply began as the note went out
+    await wait(() => responses(dg) === asked + 2);
+    assert.equal(elevenNotes(dg).length, 1, 'the item is already in the conversation');
+    assert.equal(heard.receipts.length, 0); assert.equal(ws.readyState, WebSocket.OPEN);
+  } finally {ws.terminate();}
+});
+
+test('elevenlabs: a person who presses 1 joins, the model hands over in answer to the note, and the caller is moved there', async t => {
+  const heard = await listener(t, {base: elevenLine, answer: body => body.action === 'claim' ? available : {ok: true}});
+  const {ws, media, dg} = await answeredEleven(heard);
+  try {
+    askElevenTransfer(dg);
+    await wait(() => heard.twilio.some(r => r.path === '/Calls.json'));
+    await callback(heard, 'whisper', {CallStatus: 'in-progress'});
+    const joined = await (await callback(heard, 'confirm', {Digits: '1'})).text();
+    const room = joined.match(/>(transfer-[a-f0-9]{24})</)[1];
+    await wait(() => elevenNotes(dg).length === 1);
+    assert.equal(elevenNotes(dg)[0], `(${NOTES.joined})`);
+    // the end of an earlier reply is not the handover; the reply to the note is
+    dg.receive({type: 'response.output_audio.done', response_id: 'r0'});
+    assert(!media.some(m => m.event === 'mark'));
+    dg.receive({type: 'response.created', response: {id: 'r1'}});
+    dg.receive({type: 'response.output_audio_transcript.delta', response_id: 'r1', delta: 'Connecting you with Juan now.'});
+    dg.receive({type: 'response.output_audio.delta', response_id: 'r1', item_id: 'i1', delta: Buffer.alloc(160, 10).toString('base64')});
+    dg.receive({type: 'response.output_audio.done', response_id: 'r1'});
+    await wait(() => media.some(m => m.event === 'mark' && m.mark.name === 'transfer'));
+    assert(!heard.twilio.some(r => r.path === `/Calls/${callerSid}.json`), 'the caller stays on the stream until the handover has played');
+    ws.send(JSON.stringify({event: 'mark', mark: {name: 'transfer'}}));
+    await wait(() => heard.receipts.length);
+    assert.deepEqual(heard.twilio.find(r => r.path === `/Calls/${callerSid}.json`).form, {Twiml: ownerDial(room), TimeLimit: '14400'});
+    const receipt = heard.receipts[0];
+    assert.equal(receipt.reason, 'transferred'); assert.equal(receipt.handover, 'played'); assert.equal(receipt.transfer.personCallSid, personSid);
+    assert.deepEqual(receipt.transcript.map(x => x.text), ['Connecting you with Juan now.']);
+  } finally {ws.terminate();}
+});
+
+test('elevenlabs: a person who does not answer is released no_answer and the model is told they did not pick up', async t => {
+  const heard = await listener(t, {base: elevenLine, answer: body => body.action === 'claim' ? available : {ok: true}});
+  const {ws, dg} = await answeredEleven(heard);
+  try {
+    askElevenTransfer(dg);
+    await wait(() => heard.twilio.some(r => r.path === '/Calls.json'));
+    assert.equal((await callback(heard, 'status', {CallStatus: 'no-answer'})).status, 204);
+    await wait(() => elevenNotes(dg).length === 1);
+    assert.equal(elevenNotes(dg)[0], `(${NOTES.missed})`);
+    assert.equal(heard.backend.at(-1).result, 'no_answer');
+  } finally {ws.terminate();}
 });

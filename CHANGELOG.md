@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- ElevenLabs Realtime lines take live transfer (`transfer_call`; the call's notes reach the model as a user turn, asked again while a
+  reply is in flight) and `skipVoicemail` (the callee's first transcribed turn is screened; a mailbox greeting closes the call
+  `voicemail`). A session warmed at the dial declares `transfer_call` like any other.
+
 - Live transfer: a person on a joined or taken call can pass it. The backend answers the claim's poll `pass` with another person
   it claimed; they are rung ("call for you, press 1") and on 1 join the same room, no handover and nobody moved. The first person
   stays until they hang up; the owner stays with whoever is left.

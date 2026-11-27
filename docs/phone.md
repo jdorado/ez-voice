@@ -267,7 +267,10 @@ can set `skipVoicemail: true` to check its existing speech transcript for
 explicit mailbox wording before the first model request. A match closes the
 call silently and records `reason: "voicemail"`, `voicemailMs` and
 `modelRequests: 0` in the private receipt. Its fixed opener, if configured,
-waits for the opening turn or the silence timeout. Ambiguous greetings are
+waits for the opening turn or the silence timeout. An ElevenLabs line (which
+answers on its own) checks the callee's first transcribed turn the same way and
+closes with `reason: "voicemail"` and `voicemailMs`; a reply already begun is
+dropped with the stream, and later turns are never screened. Ambiguous greetings are
 handled by the call instructions.
 
 Use one stable request ID per intended call. Repeating it returns the original
@@ -320,7 +323,7 @@ past that is refused before dialing.
 
 `transferBinding: {url, token, deadlineMs}` (shared, `deadlineMs` 500..5000; the URL and token rules of `contextBinding`) names
 the operator's backend that decides who a caller is handed to. Voice knows only that URL, the numbers the backend returns and
-the whisper; it holds no roster. With it, a `deepgram` line's model gets one more tool (other providers do not declare it):
+the whisper; it holds no roster. With it, a `deepgram` or `elevenlabs` line's model (Max, the one that calls tools) gets one more tool (other providers do not declare it; they take no note from the call):
 
 `transfer_call({whisper})`: `whisper` is 1..300 characters, the brief the colleague reads on their screen before joining (the address, what the owner wants and the gist); the person's phone does not read it.
 The model should call it only once the caller agreed to be connected. It returns at once with
@@ -445,7 +448,7 @@ that apply to recording; the phone `instructions` can state the notice.
 
 Phone callers are external callers, not authenticated Ez owners. This channel has
 no native-agent delegation, owner history, workspace access or external-action
-tools. Its tools are `end_call` and, on a deepgram line with a `transferBinding`, `transfer_call` (see Tools, Live transfer); a legacy
+tools. Its tools are `end_call` and, on a deepgram or elevenlabs line with a `transferBinding`, `transfer_call` (see Tools, Live transfer); a legacy
 client delegation (`tools: false`) receives a fixed capability-unavailable result. This plugin stores no audio; Twilio
 holds the call recording. What it keeps, all in its private volume (mode 0600, readable by the operator only): each call's
 receipt (call and provider IDs, the digest of the line instructions, input/output byte counts, provider error code, final usage, the recording outcome, the

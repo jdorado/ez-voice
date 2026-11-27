@@ -237,6 +237,62 @@ test('elevenlabs: a caller who was answered by the provider itself is never gree
   } finally { clearInterval(input); audio.close('test'); socket().close(); await audio.done; }
 });
 
+// An outbound ElevenLabs line with skipVoicemail: its first transcribed caller turn is screened, since the provider answers on its own.
+const elevenScreen = async (extra = {}) => {
+  const c = await call('elevenlabs', {model: 'eleven_realtime_v1_max', idleSeconds: 0, skipVoicemail: true, call: {id: 'CA8', direction: 'out'}, ...extra}, {fetch: mintOk().fetch});
+  await wait(() => c.socket()); c.socket().receive({type: 'session.created'}); c.socket().receive({type: 'session.updated'});
+  return {...c, said: transcript => c.socket().receive({type: 'conversation.item.input_audio_transcription.completed', transcript})};
+};
+
+test('elevenlabs: skipVoicemail closes an outbound call whose first turn is a mailbox greeting; a hello, and later turns, never close it', async () => {
+  const mail = await elevenScreen();
+  mail.said('Hi, this is Juan. Please leave your message.');
+  const receipt = await mail.audio.done;
+  assert.equal(receipt.reason, 'voicemail'); assert(receipt.voicemailMs >= 0);
+  assert.deepEqual(receipt.transcript.map(x => x.text), ['Hi, this is Juan. Please leave your message.']);
+  const hello = await elevenScreen();
+  try {
+    hello.said('Hello?'); hello.said('Please leave a message after the tone.'); // only the first turn is screened
+    await sleep(50);
+    assert.equal(hello.audio.usable, true); assert.equal(hello.audio.stats.voicemailMs, undefined);
+  } finally { hello.audio.close('test'); hello.socket().close(); await hello.audio.done; }
+  const inbound = await elevenScreen({call: {id: 'CA9', direction: 'in'}});
+  try {
+    inbound.said('Please leave your message.');
+    await sleep(50);
+    assert.equal(inbound.audio.usable, true);
+  } finally { inbound.audio.close('test'); inbound.socket().close(); await inbound.audio.done; }
+  assert.equal(validatePhoneConfig({...base, apiKey: keys.elevenlabs, provider: 'elevenlabs', skipVoicemail: true}).skipVoicemail, true);
+  assert.throws(() => validatePhoneConfig({...base, apiKey: keys.gemini, provider: 'gemini', skipVoicemail: true}), /skipVoicemail/);
+});
+
+test('elevenlabs notes: sent as a user item then a response, never over a reply or a speaking caller; a refusal is retried without a second item', () => {
+  const adapter = createAdapter({...base, provider: 'elevenlabs', apiKey: keys.elevenlabs, model: 'eleven_realtime_v1_max'});
+  adapter.parse({type: 'response.created', response: {id: 'r0'}});
+  assert.deepEqual(adapter.injectNote('The colleague joined.'), [], 'a reply is in flight');
+  adapter.parse({type: 'response.done', response: {id: 'r0'}});
+  adapter.parse({type: 'input_audio_buffer.speech_started'});
+  assert.deepEqual(adapter.injectNote('The colleague joined.'), [], 'the caller is speaking');
+  adapter.parse({type: 'input_audio_buffer.speech_stopped'});
+  assert.deepEqual(adapter.injectNote('The colleague joined.'), [
+    {type: 'conversation.item.create', item: {type: 'message', role: 'user', content: [{type: 'input_text', text: '(The colleague joined.)'}]}}, {type: 'response.create'}]);
+  // the provider had begun a reply of its own: refused, a warning, and the next ask is the response alone
+  assert.deepEqual(adapter.parse({type: 'error', error: {code: 'conversation_already_has_active_response'}}), [{type: 'warning', code: 'injection_refused'}]);
+  adapter.parse({type: 'response.created', response: {id: 'r1'}}); adapter.parse({type: 'response.done', response: {id: 'r1'}});
+  assert.deepEqual(adapter.injectNote('The colleague joined.'), [{type: 'response.create'}]);
+  assert.deepEqual(adapter.parse({type: 'response.created', response: {id: 'r2'}}), [{type: 'note_heard', text: 'The colleague joined.'}], 'the reply to the note is the provider taking it');
+  assert.deepEqual(adapter.parse({type: 'response.created', response: {id: 'r3'}}), [], 'once');
+  // the same error for anything else still ends the call
+  assert.deepEqual(adapter.parse({type: 'error', error: {code: 'conversation_already_has_active_response'}}), [{type: 'error', code: 'conversation_already_has_active_response'}]);
+  // the end of a reply's audio is said once, and never for the reply the caller talked over
+  assert.deepEqual(adapter.parse({type: 'response.output_audio.done', response_id: 'r2'}), [{type: 'audio_done'}]);
+  assert.deepEqual(adapter.parse({type: 'response.done', response: {id: 'r2'}}), []);
+  adapter.parse({type: 'response.created', response: {id: 'r4'}}); adapter.interrupt({item: 'i4', playedMs: 100});
+  assert.deepEqual(adapter.parse({type: 'response.done', response: {id: 'r4'}}), []);
+  adapter.parse({type: 'response.created', response: {id: 'r5'}});
+  assert.deepEqual(adapter.parse({type: 'response.done', response: {id: 'r5'}}), [{type: 'audio_done'}], 'a reply without an audio event ends with its response');
+});
+
 test('deepgram keeps a refused injection as a receipt warning and nothing else', () => {
   const adapter = createAdapter({...base, provider: 'deepgram', apiKey: keys.deepgram, llmApiKey: keys.gemini, ttsApiKey: keys.elevenlabs});
   assert.deepEqual(adapter.parse({type: 'InjectionRefused', message: 'agent is speaking'}), [{type: 'warning', code: 'injection_refused'}]);

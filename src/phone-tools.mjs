@@ -18,7 +18,7 @@ export const PHONE_TOOLS = {
   },
 };
 
-// Declared only on a call that can transfer (`config.transfer`: the install's transferBinding, on a deepgram line). It returns at once,
+// Declared only on a call that can transfer (`config.transfer`: the install's transferBinding, on a deepgram or elevenlabs line). It returns at once,
 // because a waiting tool call silences the model; whether the colleague joined arrives later as a message (src/phone-transfer.mjs).
 export const MAX_WHISPER = 300;
 export const TRANSFER_TOOL = {
