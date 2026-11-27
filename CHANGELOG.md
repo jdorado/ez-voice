@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A v4 (Text-to-Dialogue) speech socket no longer ends the call when the model's first words come later than 20 s into it. ElevenLabs
+  closes a Dialogue socket that has had no first message in 20 s (1008); the relay now retires an unused socket at 15 s and the first
+  reply dials a new one, so a screener's greeting or a callee who talks on does not cost the call (`tts_connection_failed` at about
+  21 s, no model speech). The receipt's `tts` adds `redials` (a new socket dialed after one was retired) and, when the upstream ends
+  the call, `upstream` (its close code or HTTP status).
+
 - ElevenLabs Realtime lines take live transfer (`transfer_call`; the call's notes reach the model as a user turn, asked again while a
   reply is in flight) and `skipVoicemail` (the callee's first transcribed turn is screened; a mailbox greeting closes the call
   `voicemail`). A session warmed at the dial declares `transfer_call` like any other.
