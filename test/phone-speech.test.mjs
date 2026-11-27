@@ -179,3 +179,38 @@ test('a v4 line speaks the Text-to-Dialogue protocol upstream and the TTS protoc
   assert.equal(d.toClient(JSON.stringify({is_final_audio_for_turn: true, context_id: 'a'})), undefined);
   assert.deepEqual(d.toClient(JSON.stringify({is_final: true, context_id: 'a'})), {contextId: 'a', isFinal: true});
 });
+
+class DialogueAdapter { static dialogue = () => true; speechTarget() { return {url: 'wss://api.elevenlabs.io/v1/text-to-dialogue/multi-stream-input?model_id=eleven_v4_turbo', headers: {}}; } }
+const dialogueBridge = (closed = []) => ({config: {voice: 'voice-1', ttsModel: 'eleven_v4_turbo'}, stats: {}, adapter: new DialogueAdapter(), close: reason => closed.push(reason)});
+const opening = sockets => () => { const s = new FakeSocket(); sockets.push(s); setImmediate(() => s.emit('open')); return s; };
+
+test('a v4 speech socket that carried nothing is retired before ElevenLabs closes it at 20 s (1008), and the first reply dials a new one', async () => {
+  const client = new FakeSocket(), sockets = [], closed = [], bridge = dialogueBridge(closed);
+  relaySpeech(client, bridge, {unusedMs: 30, socketFactory: opening(sockets)});
+  await wait(() => sockets[0].readyState === WebSocket.CLOSED); // the callee's screener greeting went on; nobody has spoken yet
+  sockets[0].emit('close', 1006); sockets[0].emit('error', Error('late'));
+  assert.equal(closed.length, 0, 'whatever the retired socket still emits is not a failure');
+  client.emit('message', Buffer.from(JSON.stringify({context_id: 'a', text: 'Hi, do you have a second?'})), false);
+  await wait(() => sockets[1]?.events.length);
+  assert.equal(sockets.length, 2);
+  assert.equal(sockets[1].events[0].voices[0], 'voice-1');
+  assert.equal(sockets[1].events[0].inputs[0].text, 'Hi, do you have a second?');
+  assert.equal(bridge.stats.tts.redials, 1);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(sockets.length, 2); assert.equal(sockets[1].readyState, WebSocket.OPEN); assert.equal(closed.length, 0, 'a socket that has carried a message stays up');
+  sockets[1].emit('close', 1008); // any other upstream close still ends the call, and the receipt says which
+  assert.deepEqual(closed, ['tts_connection_failed']); assert.equal(bridge.stats.tts.upstream, 1008); assert.equal(bridge.stats.providerError, 'TTS_CONNECTION_FAILED');
+});
+
+test('a fast first reply keeps the socket dialed at the start of the call; a rejected handshake is reported with its status', async () => {
+  const client = new FakeSocket(), sockets = [], closed = [], bridge = dialogueBridge(closed);
+  relaySpeech(client, bridge, {unusedMs: 60, socketFactory: opening(sockets)});
+  client.emit('message', Buffer.from(JSON.stringify({context_id: 'a', text: 'Hi.'})), false);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(sockets.length, 1); assert.equal(sockets[0].events.length, 1); assert.equal(bridge.stats.tts.redials, undefined);
+  const rejected = new FakeSocket(), refusal = dialogueBridge(closed), upstream = new FakeSocket();
+  upstream.readyState = WebSocket.CONNECTING;
+  relaySpeech(rejected, refusal, {socketFactory: () => upstream});
+  upstream.emit('unexpected-response', {}, {statusCode: 429, resume() {}});
+  assert.equal(refusal.stats.tts.upstream, 429); assert.equal(refusal.stats.providerError, 'TTS_CONNECTION_FAILED');
+});

@@ -98,13 +98,20 @@ export class Dialogue {
   }
 }
 
-export function relaySpeech(client, bridge, {socketFactory = (url, options) => new WebSocket(url, options), finished = () => {}, query = new URLSearchParams()} = {}) {
-  const contexts = new Set(), queued = [], pronouncer = bridge.config.pronunciations && new Pronouncer(bridge.config.pronunciations); let bytes = 0, stopped = false, upstream;
+// ElevenLabs closes a Dialogue socket that receives no first message within 20 s (code 1008, "input_timeout_exceeded"); a socket that
+// has carried one stays open (measured to 100 s), no keep-alive frame is accepted, and inactivity_timeout is ignored. The relay dials
+// when the call connects, but the model's first words can come later than that (a screener's greeting, a callee who talks on; the
+// opener is pre-recorded), and a call must not end for it: a Dialogue socket that has carried nothing for this long is retired here,
+// before ElevenLabs does it, and the first frame dials a new one.
+const UNUSED_MS = 15000;
+
+export function relaySpeech(client, bridge, {socketFactory = (url, options) => new WebSocket(url, options), finished = () => {}, query = new URLSearchParams(), unusedMs = UNUSED_MS} = {}) {
+  const contexts = new Set(), queued = [], pronouncer = bridge.config.pronunciations && new Pronouncer(bridge.config.pronunciations); let bytes = 0, stopped = false, upstream, timeout, idle;
   const dialogue = bridge.adapter.constructor.dialogue?.(bridge.config.ttsModel) ? new Dialogue(bridge.config.voice) : undefined;
   bridge.stats.tts = {...(dialogue ? {model: bridge.config.ttsModel} : {speed: bridge.config.ttsSpeed}), contexts: 0, ...(pronouncer && {pronunciations: Object.keys(bridge.config.pronunciations).length})};
   const close = () => {
     if (stopped) return;
-    stopped = true; queued.length = 0; clearTimeout(timeout);
+    stopped = true; queued.length = 0; clearTimeout(timeout); clearTimeout(idle);
     client.terminate(); upstream?.terminate(); finished();
   };
   const fail = reason => {
@@ -118,7 +125,6 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
     bridge.stats.providerError ??= 'TTS_CONNECTION_FAILED';
     close(); bridge.close('tts_connection_failed');
   };
-  const timeout = setTimeout(fail, 10000);
   client.on('error', fail); client.on('close', close);
   const forward = raw => {
     const before = contexts.size, tts = speechMessage(raw, bridge.config.ttsSpeed, contexts), context = contexts.size > before;
@@ -129,7 +135,9 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
   };
   const send = item => {
     const {message} = item;
-    if (upstream?.readyState === WebSocket.OPEN) {
+    if (!upstream) { dial(); bridge.stats.tts.redials = (bridge.stats.tts.redials ?? 0) + 1; }
+    clearTimeout(idle); // a socket that has a message to carry is not retired
+    if (upstream.readyState === WebSocket.OPEN) {
       if (upstream.bufferedAmount + Buffer.byteLength(message) > MAX_BUFFER) throw Error('TTS backpressure');
       upstream.send(message);
       if (item.context) bridge.stats.tts.contexts++;
@@ -146,20 +154,24 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
       for (const frame of pronouncer ? pronouncer.apply(raw) : [raw]) forward(frame);
     } catch (error) { fail(error); }
   });
-  try {
+  // A socket the relay has retired is no longer `upstream`: whatever it still emits is ignored.
+  const dial = () => {
     const target = bridge.adapter.speechTarget(query);
     bridge.stats.tts.streaming = Object.fromEntries(new URL(target.url).searchParams);
-    upstream = socketFactory(target.url, {headers: target.headers, maxPayload: 1024 * 1024, handshakeTimeout: 10000});
-    upstream.on('open', () => {
-      if (stopped) return upstream.terminate();
+    const socket = upstream = socketFactory(target.url, {headers: target.headers, maxPayload: 1024 * 1024, handshakeTimeout: 10000});
+    clearTimeout(timeout); timeout = setTimeout(fail, 10000);
+    if (dialogue) idle = setTimeout(() => { upstream = undefined; socket.terminate(); }, unusedMs);
+    const current = () => !stopped && socket === upstream;
+    socket.on('open', () => {
+      if (!current()) return socket.terminate();
       clearTimeout(timeout);
       try {
-        for (const item of queued) { upstream.send(item.message); if (item.context) bridge.stats.tts.contexts++; }
+        for (const item of queued) { socket.send(item.message); if (item.context) bridge.stats.tts.contexts++; }
         queued.length = 0; bytes = 0;
       } catch { fail(); }
     });
-    upstream.on('message', (raw, binary) => {
-      if (stopped) return;
+    socket.on('message', (raw, binary) => {
+      if (!current()) return;
       if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > MAX_BUFFER) return fail();
       try {
         if (!dialogue) return client.send(raw, {binary});
@@ -167,13 +179,17 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
         if (reply) client.send(JSON.stringify(reply));
       } catch { fail(); }
     });
-    upstream.on('error', fail);
-    upstream.on('unexpected-response', (_request, response) => { response.resume(); fail(); });
-    upstream.on('close', code => {
-      if (stopped) return;
-      if (![1000, 1005].includes(code)) return fail();
+    socket.on('error', () => current() && fail());
+    socket.on('unexpected-response', (_request, response) => {
+      response.resume();
+      if (current()) { bridge.stats.tts.upstream = response.statusCode; fail(); }
+    });
+    socket.on('close', code => {
+      if (!current()) return;
+      if (![1000, 1005].includes(code)) { bridge.stats.tts.upstream = code; return fail(); }
       close();
     });
-  } catch { fail(); }
+  };
+  try { dial(); } catch { fail(); }
   return {close};
 }
