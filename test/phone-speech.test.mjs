@@ -190,6 +190,9 @@ test('a v4 speech socket that carried nothing is retired before ElevenLabs close
   await wait(() => sockets[0].readyState === WebSocket.CLOSED); // the callee's screener greeting went on; nobody has spoken yet
   sockets[0].emit('close', 1006); sockets[0].emit('error', Error('late'));
   assert.equal(closed.length, 0, 'whatever the retired socket still emits is not a failure');
+  client.emit('message', Buffer.from(JSON.stringify({close_socket: true})), false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sockets.length, 1, 'closing the call dials nothing'); assert.equal(bridge.stats.tts.redials, undefined);
   client.emit('message', Buffer.from(JSON.stringify({context_id: 'a', text: 'Hi, do you have a second?'})), false);
   await wait(() => sockets[1]?.events.length);
   assert.equal(sockets.length, 2);

@@ -131,11 +131,14 @@ export function relaySpeech(client, bridge, {socketFactory = (url, options) => n
     if (!dialogue) return send({message: tts, context});
     const [up, back] = dialogue.toUpstream(tts);
     for (const reply of back) client.send(JSON.stringify(reply));
-    up.forEach((m, i) => send({message: JSON.stringify(m), context: context && i === 0}));
+    up.forEach((m, i) => send({message: JSON.stringify(m), context: context && i === 0, closing: m.close_socket === true}));
   };
   const send = item => {
     const {message} = item;
-    if (!upstream) { dial(); bridge.stats.tts.redials = (bridge.stats.tts.redials ?? 0) + 1; }
+    if (!upstream) { // a retired socket: the call's end needs no new one, a reply does
+      if (item.closing) return;
+      dial(); bridge.stats.tts.redials = (bridge.stats.tts.redials ?? 0) + 1;
+    }
     clearTimeout(idle); // a socket that has a message to carry is not retired
     if (upstream.readyState === WebSocket.OPEN) {
       if (upstream.bufferedAmount + Buffer.byteLength(message) > MAX_BUFFER) throw Error('TTS backpressure');
