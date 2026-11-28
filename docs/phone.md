@@ -611,7 +611,7 @@ It is off by default. Voice holds no classifier, rules or coach key; the install
 
 Each finished caller utterance goes to the command on stdin as `{call, turn, text, history, deadline_at}`, with identity
 from the call ticket, never from model arguments. It answers `{call_id, turn, status, advice?}`: status `available`,
-`no_match` or `unavailable`; advice `{id, text, source, source_revision, confidence}`, text at most 3,000 characters.
+`no_match` or `unavailable`; advice `{id, text, source, source_revision, confidence}`, text at most 6,000 characters (a director note with its examples runs to about 4,300).
 
 A coached line's language-model requests come through the listener: Deepgram's think endpoint is
 `origin + pathPrefix + /think/...` with a per-call bearer token, and the listener holds the Google key and streams the

@@ -64,13 +64,13 @@ export function installedAdvice(binding, core) {
   validateAdviceBinding(binding);
   return {deadlineMs: binding.deadlineMs, async run(request, signal) {
     const result = await core.request('tools.invoke', {alias: binding.alias, args: binding.invoke, stdin: JSON.stringify(request)}, signal);
-    if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 8000) throw Error('Advice unavailable');
+    if (result.code !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 16000) throw Error('Advice unavailable');
     const out = JSON.parse(result.stdout);
     if (out.call_id !== request.call.id || out.turn !== request.turn
         || !['available','unavailable','no_match'].includes(out.status)) throw Error('Advice result binding mismatch');
     if (out.status === 'available') {
       const a = out.advice;
-      if (!a || typeof a.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(a.id) || typeof a.text !== 'string' || !a.text.trim() || a.text.length > 3000
+      if (!a || typeof a.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(a.id) || typeof a.text !== 'string' || !a.text.trim() || a.text.length > 6000
           || typeof a.source !== 'string' || !a.source.startsWith('https://') || a.source.length > 500
           || !/^[a-f0-9]{64}$/.test(a.source_revision) || !Number.isFinite(a.confidence) || a.confidence < 0 || a.confidence > 1
           || (a.end !== undefined && !ADVICE_ENDS.includes(a.end))) throw Error('Invalid advice result');
