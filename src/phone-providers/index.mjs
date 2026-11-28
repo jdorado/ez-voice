@@ -32,7 +32,10 @@ import {DeepgramAdapter} from './deepgram.mjs';
 //   closeMessages()              -> messages that ask the provider to finish ([] when the socket close is the end)
 //   thinkTarget() and withAdvice(body, note), only where the provider calls a language model the listener can relay,
 //   or adviceMessages(note) and static maxAdviceNote, where it takes session context during a call (confirmed with
-//                                {type: 'advice_ack'}): the side coach, src/phone-advice.mjs and src/phone-think.mjs
+//                                {type: 'advice_ack'}), or adviceMessages(note) with static adviceNow, where a note goes in as soon as it
+//                                is ready: the side coach, src/phone-advice.mjs and src/phone-think.mjs
+//   drop(), reask(note) and the item {type: 'reply', id} (a reply started), where the bridge's guards watch the model's words
+//                                (ElevenLabs, toolGuard and aiGuard)
 export const PROVIDERS = {
   [OpenAIAdapter.id]: OpenAIAdapter,
   [ElevenLabsAdapter.id]: ElevenLabsAdapter,

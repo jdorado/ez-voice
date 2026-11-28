@@ -58,6 +58,8 @@ export function validateAdviceBinding(value) {
   return value;
 }
 
+// What a result may ask of the call besides its note (an ElevenLabs advice line): end it once the model's next reply has played.
+export const ADVICE_ENDS = ['lead_goodbye', 'opt_out', 'booked'];
 export function installedAdvice(binding, core) {
   validateAdviceBinding(binding);
   return {deadlineMs: binding.deadlineMs, async run(request, signal) {
@@ -70,8 +72,9 @@ export function installedAdvice(binding, core) {
       const a = out.advice;
       if (!a || typeof a.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(a.id) || typeof a.text !== 'string' || !a.text.trim() || a.text.length > 3000
           || typeof a.source !== 'string' || !a.source.startsWith('https://') || a.source.length > 500
-          || !/^[a-f0-9]{64}$/.test(a.source_revision) || !Number.isFinite(a.confidence) || a.confidence < 0 || a.confidence > 1) throw Error('Invalid advice result');
-      return {status: out.status, advice: {id: a.id, text: a.text, source: a.source, source_revision: a.source_revision, confidence: a.confidence}};
+          || !/^[a-f0-9]{64}$/.test(a.source_revision) || !Number.isFinite(a.confidence) || a.confidence < 0 || a.confidence > 1
+          || (a.end !== undefined && !ADVICE_ENDS.includes(a.end))) throw Error('Invalid advice result');
+      return {status: out.status, advice: {id: a.id, text: a.text, source: a.source, source_revision: a.source_revision, confidence: a.confidence, ...(a.end && {end: a.end})}};
     }
     return {status: out.status};
   }};

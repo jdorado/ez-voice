@@ -266,6 +266,7 @@ test('advice is explicit per line and needs the installed binding and a provider
   assert.throws(() => validatePhoneConfig(line), /adviceBinding/);
   assert.equal(validatePhoneConfig({...line, adviceBinding: binding}).advice, true);
   assert.equal(validatePhoneConfig({...base, provider: 'openai', apiKey: 'sk-synthetic123456789', llmApiKey: undefined, ttsApiKey: undefined, advice: true, adviceBinding: binding}).advice, true);
-  assert.throws(() => validatePhoneConfig({...base, provider: 'elevenlabs', apiKey: 'sk_' + 'a'.repeat(24), llmApiKey: undefined, ttsApiKey: undefined, advice: true, adviceBinding: binding}), /during a call \(openai, deepgram\)/);
+  assert.equal(validatePhoneConfig({...base, provider: 'elevenlabs', apiKey: 'sk_' + 'a'.repeat(24), llmApiKey: undefined, ttsApiKey: undefined, advice: true, adviceBinding: binding}).advice, true);
+  assert.throws(() => validatePhoneConfig({...base, provider: 'gemini', apiKey: keys.llmApiKey, llmApiKey: undefined, ttsApiKey: undefined, advice: true, adviceBinding: binding}), /during a call \(openai, elevenlabs, deepgram\)/);
   assert.equal(createAdapter({...base}).settings().agent.think.endpoint.headers['x-goog-api-key'], keys.llmApiKey); // an uncoached line calls Google
 });

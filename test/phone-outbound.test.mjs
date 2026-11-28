@@ -476,3 +476,22 @@ test('only a line that can use one opens a session early: not other providers, n
   await service.close();
   assert.equal(sockets[0].readyState,WebSocket.CLOSED);
 });
+
+test('an ElevenLabs line with a side coach opens its session while the phone rings, and the coach hears the answered call by its own id',async t=>{
+  const requests=[];
+  const {calls,web,sockets,mints,answer}=await elevenFixture(t,{advice:true,advisor:{deadlineMs:2000,run:async request=>{requests.push(request);
+    return {status:'available',advice:{id:'n1',text:'Coach note.',source:'https://example.com/source',source_revision:'a'.repeat(64),confidence:0.9}};}}});
+  let ws;
+  try {
+    await calls.call({requestId:id,to},web.busy);
+    await wait(()=>sockets[0]?.events.some(event=>event.type==='session.update'));
+    assert.equal(mints.length,1,'opened at the dial');
+    ({ws}=await answer());
+    ws.send(JSON.stringify({event:'media',media:{payload:'//8='}}));
+    await wait(()=>sockets[0].events.some(event=>event.type==='input_audio_buffer.append'));
+    assert.equal(sockets.length,1,'the session opened at the dial took the call');
+    sockets[0].receive({type:'conversation.item.input_audio_transcription.completed',transcript:'Hello, who is this?'});
+    await wait(()=>sockets[0].events.some(event=>event.type==='conversation.item.create'&&event.item.role==='system'));
+    assert.equal(requests[0].call.id,callSid);
+  } finally {ws?.terminate();}
+});

@@ -9,8 +9,10 @@ import {RING_CYCLE, audible, level} from './phone-providers/ringback.mjs';
 import {PhoneAdvice} from './phone-advice.mjs';
 import {renderOpener} from './phone-opener.mjs';
 import {Ambience} from './phone-ambience.mjs';
-import {latestCallerText, mailboxGreeting} from './phone-voicemail.mjs';
+import {latestCallerText, mailboxGreeting, realtimeCatch} from './phone-voicemail.mjs';
 import {ListenTap, tapped} from './phone-listen.mjs';
+import {FluxSidecar} from './phone-sidecar.mjs';
+import {ToolTokenGate, TagStripper, AiGuard} from './phone-guards.mjs';
 
 // The greeting should sound within this of the session being ready; past it the line goes quiet rather than ring on.
 const RING_AFTER_READY_MS = 5000;
@@ -45,6 +47,9 @@ const OPENER_MAX_WAIT_MS = 12000;
 // somebody is speaking is sent again every NOTE_RETRY_MS, at most NOTE_TRIES times.
 export const TRANSFER_RINGING = 'Ringing your colleague now. Keep the caller company; do not say goodbye.';
 const HANDOVER_MAX_MS = 10000, NOTE_RETRY_MS = 500, NOTE_TRIES = 20;
+// An advice end (src/phone-advice.mjs) waits for the model's next reply to play, this long at most.
+const ADVICE_END_BACKSTOP_MS = 25000;
+const EARLY_NOTE_WORDS = 4; // a caller turn's provisional words go to the side coach once, at this many
 const silenceLike = payload => Buffer.alloc(Buffer.from(payload, 'base64').length, 0xff).toString('base64'); // mu-law silence, same length
 
 // A session opened before the call's media stream exists (outbound, while the phone rings) has no Twilio socket yet: it sends nothing
@@ -78,8 +83,17 @@ export class PhoneAudio {
       this.openerClip = renderOpener(config, config.opener, fetchImpl); this.openerClip.catch(() => {});
       if (twilio) this.armOpener();
     }
+    // Turn-taking: the bridge's (see BARGE_RMS) where the provider leaves it to it, unless the line keeps the provider's own (`turnDetection: 'server'`).
+    this.bridgeTurns = Boolean(this.adapter.constructor.bridgeTurns) && config.turnDetection !== 'server';
+    this.serverTurns = Boolean(this.adapter.constructor.bridgeTurns) && config.turnDetection === 'server';
+    const adviceNow = Boolean(this.adapter.constructor.adviceNow);
     if (config.advisor) this.advice = new PhoneAdvice({call: config.call, run: config.advisor.run, deadlineMs: config.advisor.deadlineMs, onReady: () => this.pushAdvice(),
-      receipts: this.stats.advice = []});
+      receipts: this.stats.advice = [], ...(adviceNow && {full: true, onEnd: (end, since) => this.adviceEnd(end, since)})});
+    // Guards on the model's words (src/phone-guards.mjs) and the machine screen of a placed call's first two utterances.
+    if (config.toolGuard) { this.toolGate = new ToolTokenGate(); this.tagStripper = new TagStripper(); }
+    if (config.aiGuard) this.aiGuard = new AiGuard(config.aiGuard);
+    this.catchMachines = Boolean(config.voicemailCatch) && config.call?.direction === 'out'; this.callerUtterances = 0;
+    if (twilio) this.startSidecar();
     // Nobody speaking for `idleMs` ends the call (a mailbox that stays open after the message, a dead line). It arms only
     // once the provider has signalled that somebody spoke, so a session without such signals is never cut short by it.
     this.idleMs = (config.idleSeconds ?? 20) * 1000; this.activeAt = Date.now();
@@ -92,7 +106,7 @@ export class PhoneAudio {
     this.idle = setInterval(() => {
       const now = Date.now();
       if (this.endingAt) { // end_call was called: let the model finish any goodbye, then hang up once Twilio has played it
-        if (this.drainingAt) { if (now - this.drainingAt > (config.endCallDrainMs ?? 15000)) this.close('end_call'); }
+        if (this.drainingAt) { if (now - this.drainingAt > (config.endCallDrainMs ?? 15000)) this.close(this.drainReason ?? 'end_call'); }
         // A managed final response has no correlated audio-completion ID. An earlier
         // utterance's AudioDone cannot end that wait; use the existing bounded window.
         else if (now - this.endingAt > (config.endCallMaxMs ?? 12000) || (!this.adapter.constructor.expectsFinalResponse && now - this.endingAt > (config.endCallGraceMs ?? 1500) && now - this.activeAt > (config.endCallQuietMs ?? 2000))) this.drain();
@@ -147,6 +161,36 @@ export class PhoneAudio {
     clearTimeout(this.duration); this.duration = setTimeout(() => this.close('duration_limit'), (this.config.maxCallSeconds ?? 180) * 1000);
     this.armSilentAnswer();
     if (this.opener) this.armOpener();
+    if (this.advice) this.advice.call = call;
+    this.startSidecar();
+  }
+  // The Flux listener beside the session (src/phone-sidecar.mjs): from the call's media stream on.
+  startSidecar() {
+    if (!this.config.sidecar || this.sidecar) return;
+    this.sidecar = new FluxSidecar({apiKey: this.config.sidecarApiKey, model: this.config.sidecar, socketFactory: this.socketFactory,
+      onText: text => this.sidecarText(text), stats: this.stats.sidecar = {}});
+  }
+  // The sidecar's words of the caller's current turn: the machine screen, then the side coach's early note (provisional words only).
+  sidecarText({kind, text}) {
+    if (!this.usable) return;
+    this.sidecarSaid = text;
+    if (this.catchMachine(text)) return;
+    if (this.advice && this.config.adviceEarly && kind !== 'final' && !this.earlyAsked && text.split(/\s+/).filter(Boolean).length >= EARLY_NOTE_WORDS) {
+      this.earlyAsked = true;
+      this.advice.heard(text, this.transcript.receipt().transcript ?? [], {partial: true});
+    }
+  }
+  // A machine in the callee's first two utterances ends a placed call at once, nothing said (`voicemailCatch`): the sidecar's words where
+  // the line has one, otherwise the provider's transcript of each utterance.
+  catchMachine(text) {
+    if (!this.catchMachines || !String(text ?? '').trim()) return false;
+    const kind = realtimeCatch(text, Math.max(0, this.callerUtterances - 1));
+    if (!kind) return false;
+    this.catchMachines = false;
+    this.transcript.add('caller', {text});
+    Object.assign(this.stats, {voicemailMs: Date.now() - this.startedAt, machine: kind});
+    this.close(kind === 'screener' ? 'screener' : 'voicemail');
+    return true;
   }
   // A placed call, answered and ready, in which nobody has spoken after `silentAnswerMs` is greeted (`silentAnswer` in the receipt).
   armSilentAnswer() {
@@ -177,6 +221,7 @@ export class PhoneAudio {
     if (typeof payload !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload) || payload.length > 16000) return this.close('invalid_audio');
     this.stats.inputBytes += Buffer.from(payload, 'base64').length;
     this.listenTap.caller(payload); // the caller as heard, before any silencing for the provider
+    this.sidecar?.audio(payload);
     const sound = audible(payload);
     if (sound) this.soundHeardAt = Date.now();
     if (this.opener && this.opener.state !== 'done' && !(this.screenVoicemail && this.opener.state === 'waiting')) {
@@ -185,7 +230,7 @@ export class PhoneAudio {
     // Twilio has already answered. Ringback is output only: dropping input here clips an
     // early hello and can turn its remaining syllable into an unrelated caller utterance.
     if (this.ready && !this.flushingInput) {
-      if (!this.adapter.constructor.bridgeTurns) this.forward(payload);
+      if (!this.bridgeTurns) this.forward(payload);
       // Echo suppression: while the model's audio plays at the phone and its echo can still come back, only caller sound loud enough
       // to be a person reaches the provider; quieter sound goes as silence. Fed the echo, the provider took the model's own words for the
       // caller's ("Is this Juan?" came back as "Yes. This is Juan.") and answered itself (lab, -20 dB echo).
@@ -350,6 +395,8 @@ export class PhoneAudio {
           if (!sound) break; // the silence some providers stream while the line still rings
           this.stopRing('speech');
         }
+        // the reply now playing, for an advice end: from its first audible audio until its audio is done
+        if (sound && item.item && item.item !== this.reply?.item) this.reply = {item: item.item, at: now, done: false};
         // Twilio plays what it is sent in order at realtime speed (8 bytes a millisecond), so audio a provider sends faster than
         // that is still playing after it arrived: `playedUntil` is when Twilio's queue runs out, `soundUntil` when its last speech does.
         if (item.item && item.item !== this.item?.id) this.item = {id: item.item, playFrom: Math.max(this.playedUntil ?? 0, now), bytes: 0};
@@ -364,7 +411,9 @@ export class PhoneAudio {
           this.twilio.send(JSON.stringify({event: 'media', streamSid: this.config.streamSid, media: {payload: this.ambience ? this.ambience.under(item.audio) : item.audio}}));
         }
         break;
+      case 'reply': this.toolGate?.reset(); this.aiGuard?.reply(); break;
       case 'speech':
+        if (item.who === 'model' && item.delta !== undefined && (this.toolGate || this.aiGuard) && this.guardModel(item)) break;
         if (String(item.text ?? item.delta ?? '').trim()) this.conversationStarted = true;
         // Output audio flows nonstop on some providers, silence included, so only these signals say who is speaking.
         if (item.who === 'caller') {
@@ -376,11 +425,16 @@ export class PhoneAudio {
             // the provider's share before the model can answer: the caller's last audible frame to the provider ending their turn
             if (this.soundHeardAt !== undefined && (this.stats.turnEndMs ??= []).length < 64) this.stats.turnEndMs.push(this.callerStoppedAt - this.soundHeardAt);
           }
-          if (item.start) { this.cancelTools(true); this.turn++; }
+          if (item.start) {
+            this.cancelTools(true); this.turn++; this.callerUtterances++;
+            // the provider keeps its own turn detection and has stopped its reply: drop what Twilio still has queued of it
+            if (this.serverTurns && Date.now() < (this.soundUntil ?? 0)) this.bargeIn(Date.now());
+          }
+          if (item.stop) this.callerEndedAt = Date.now();
           this.callerSpeaking = true; this.stats.inputTranscriptEvents++; this.stopRing('caller');
         } else { this.callerSpeaking = false; if (this.handover?.heard && String(item.text ?? item.delta ?? '').trim()) this.handover.spoke = true; }
         this.activeAt = Date.now();
-        if (item.who === 'caller' && (this.endOnMailbox(item.text) || this.endOnFirstTurnMailbox(item.text))) break;
+        if (item.who === 'caller' && (this.endOnMailbox(item.text) || this.endOnFirstTurnMailbox(item.text) || (!this.sidecar && this.catchMachine(item.text)))) break;
         if (this.advice) this.coach(item);
         this.transcript.add(item.who, item);
         this.config.transfer?.words(this);
@@ -391,6 +445,7 @@ export class PhoneAudio {
         if (this.handover && item.text === this.handover.text) this.handover.heard = true;
         break;
       case 'audio_done':
+        if (this.reply) { this.reply.done = true; this.checkEnd(); }
         // the reply to the handover note has been sent: once Twilio has played it, the caller is moved
         if (this.handover?.spoke && !this.handover.marked) {
           this.handover.marked = true;
@@ -462,7 +517,10 @@ export class PhoneAudio {
         (this.stats.informationReads ??= []).push({name: item.name, turn, milliseconds: Date.now() - began,
           status: typeof output?.status === 'string' ? output.status.slice(0, 40) : 'returned'});
         for (const message of this.adapter.toolResult(item.id, item.name, output)) this.send(message);
-      }).finally(() => { clearTimeout(timer); this.pendingTools.delete(item.id); });
+      }).finally(() => {
+        clearTimeout(timer); this.pendingTools.delete(item.id);
+        if (this.advice && this.adapter.constructor.adviceNow) this.pushAdvice(); // a note held while the tool ran
+      });
   }
   cancelTools(notify = false, request, callId) {
     for (const [id, abort] of this.pendingTools) {
@@ -483,7 +541,7 @@ export class PhoneAudio {
   coach(item) {
     this.wordsAt = Date.now();
     if (item.who === 'caller') {
-      if (item.text) this.advice.heard(item.text, this.transcript.receipt().transcript ?? []);
+      if (item.text) { this.earlyAsked = false; this.advice.heard(item.text, this.transcript.receipt().transcript ?? [], {since: this.callerEndedAt}); }
       else if (item.delta) this.callerOpen = true;
       return;
     }
@@ -499,8 +557,16 @@ export class PhoneAudio {
   // work in flight (held at most adviceDelegationMs, so an event that never arrives cannot block notes for good) and the
   // call not ending. In real-provider runs an addition as the caller began garbled their words,
   // and one timed from the model's words alone (they run ahead of its audio) cut replies and goodbyes short.
+  // A provider that takes a note as a system item (`adviceNow`, ElevenLabs) takes it the moment it is ready, never while a tool call is
+  // pending (the tool's end sends it) or once the call is ending.
   pushAdvice() {
     clearTimeout(this.adviceTimer);
+    if (this.adapter.constructor.adviceNow) {
+      if (this.pendingTools.size || this.endingAt || this.closing || this.completed) return;
+      const note = this.advice.deliver();
+      if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
+      return;
+    }
     if (!this.adapter.adviceMessages || !this.advice.ready() || this.callerOpen || this.pendingTools.size
         || this.endingAt || this.closing || this.completed) return;
     const now = Date.now(), quiet = Math.max(this.wordsAt ?? 0, this.soundUntil ?? 0) + (this.config.adviceQuietMs ?? 1200) - now;
@@ -508,6 +574,55 @@ export class PhoneAudio {
     if (Math.max(quiet, held) > 0) return void (this.adviceTimer = setTimeout(() => this.pushAdvice(), Math.max(quiet, held)));
     const note = this.advice.push(this.adapter.constructor.maxAdviceNote);
     if (note) for (const message of this.adapter.adviceMessages(note)) this.send(message);
+  }
+  // The model's words against the line's guards (src/phone-guards.mjs); true drops this piece of them. A tool call written into speech
+  // (`toolGuard`) loses the reply's unplayed audio and the rest of its words, uncancelled so its function call still comes; delivery
+  // tags are cut from the words. A volunteered AI admission (`aiGuard`, the caller never asked) cancels the reply, and the model is told
+  // why and asked again, once a caller turn.
+  guardModel(item) {
+    if (this.tagStripper) {
+      const clean = this.tagStripper.feed(item.delta);
+      if (this.tagStripper.removed) this.stats.tagsStripped = this.tagStripper.removed;
+      if (clean !== item.delta) { item.delta = clean; if (!clean) return true; }
+    }
+    const atMs = Date.now() - this.startedAt;
+    if (this.toolGate?.feed(item.delta)) {
+      this.cutReply(false);
+      if ((this.stats.toolGuard ??= []).length < 16) this.stats.toolGuard.push({atMs});
+      if (this.reply) { this.reply.done = true; this.checkEnd(); } // nothing more of it will play
+      return true;
+    }
+    const said = this.aiGuard?.feed(item.delta, this.callerSaid());
+    if (said === undefined) return false;
+    this.cutReply(true);
+    for (const message of this.adapter.reask(this.aiGuard.note(said))) this.send(message);
+    if ((this.stats.aiGuard ??= []).length < 16) this.stats.aiGuard.push({atMs});
+    return true;
+  }
+  // Everything the caller has said, for the AI guard: the transcript's caller turns and the sidecar's words of the current turn.
+  callerSaid() { return [...this.transcript.turns.filter(t => t.who === 'caller').map(t => t.text), this.sidecarSaid ?? ''].join(' '); }
+  // The reply in flight stops at the phone: what Twilio has queued is dropped, and the provider cancels it (`cancel`) or keeps it.
+  cutReply(cancel) {
+    const playedMs = this.item ? Math.max(0, Math.min(Date.now() - this.item.playFrom, this.item.bytes / 8)) : 0;
+    if (cancel) for (const message of this.adapter.interrupt({item: this.item?.id, playedMs, cancel: true})) this.send(message);
+    else this.adapter.drop();
+    this.item = undefined; this.speakingUntil = this.playedUntil = this.soundUntil = 0;
+    if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'clear', streamSid: this.config.streamSid}));
+  }
+  // An advice end (lead_goodbye, opt_out, booked): the call ends once the model's next reply, the first to start after the caller's
+  // utterance ended, has played at Twilio, or ADVICE_END_BACKSTOP_MS after the end came. The call's reason is the end.
+  adviceEnd(end, since) {
+    if (this.adviceEnding || !this.usable) return;
+    this.adviceEnding = {end, since};
+    this.stats.adviceEnd = {end, atMs: Date.now() - this.startedAt};
+    this.adviceBackstop = setTimeout(() => { this.stats.adviceEnd.how ??= 'backstop'; this.close(end); }, this.config.adviceEndBackstopMs ?? ADVICE_END_BACKSTOP_MS);
+    this.checkEnd();
+  }
+  checkEnd() {
+    const ending = this.adviceEnding;
+    if (!ending || ending.draining || !this.usable || !this.reply?.done || this.reply.at < ending.since) return;
+    ending.draining = true; this.stats.adviceEnd.how = 'played';
+    this.endingAt ??= Date.now(); this.drain(ending.end);
   }
   endOnFirstTurnMailbox(text) {
     if (!this.screenFirstTurn || !String(text ?? '').trim()) return false;
@@ -600,13 +715,14 @@ export class PhoneAudio {
   }
   // Audio a provider sent faster than realtime is still queued at Twilio, and closing the stream drops it (a voicemail message
   // was cut after one sentence). A mark queued behind that audio comes back from Twilio once everything before it has played.
-  drain() {
-    this.drainingAt = Date.now();
+  // `reason` is why the call ends once it has played (end_call by default).
+  drain(reason) {
+    this.drainingAt = Date.now(); this.drainReason ??= reason;
     if (this.twilio.readyState === WebSocket.OPEN) this.twilio.send(JSON.stringify({event: 'mark', streamSid: this.config.streamSid, mark: {name: 'end_call'}}));
-    else this.close('end_call');
+    else this.close(this.drainReason ?? 'end_call');
   }
   mark(name) {
-    if (name === 'end_call' && this.drainingAt) this.close('end_call');
+    if (name === 'end_call' && this.drainingAt) this.close(this.drainReason ?? 'end_call');
     if (name === 'transfer' && this.handover?.marked) this.handedOver('played');
   }
   // Paced by elapsed time and kept a little ahead: Twilio plays what it is sent in order, and a clear drops what is queued.
@@ -631,7 +747,7 @@ export class PhoneAudio {
   close(reason = 'caller_hangup') {
     if (this.closing || this.completed) return this.done;
     this.stopRing('close');
-    this.advice?.close(); clearTimeout(this.adviceTimer);
+    this.advice?.close(); clearTimeout(this.adviceTimer); clearTimeout(this.adviceBackstop); this.sidecar?.close();
     this.cancelTools();
     this.config.transfer?.words(this, true);
     this.closing = true; this.stats.reason = this.closeReason ?? reason; // closeReason: the call was moved on (a transfer) and its stream ends for that
@@ -649,7 +765,7 @@ export class PhoneAudio {
   }
   complete() {
     if (this.completed) return this.done;
-    this.advice?.close(); clearTimeout(this.adviceTimer);
+    this.advice?.close(); clearTimeout(this.adviceTimer); clearTimeout(this.adviceBackstop); this.sidecar?.close();
     this.cancelTools();
     this.config.transfer?.words(this, true); // a provider that closed its own socket never went through close()
     this.completed = true; clearTimeout(this.noteAwaiting?.timer); this.handedOver('closed'); clearTimeout(this.startTimer); clearTimeout(this.duration); clearInterval(this.idle); clearTimeout(this.closeTimer); clearInterval(this.ringing);

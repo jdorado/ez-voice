@@ -31,9 +31,16 @@ export class ElevenLabsAdapter {
   static toolModels = ['eleven_realtime_v1_max'];
   // A session can be opened while an outbound call rings and wait for its media stream (see `warmSeconds` in `configure`).
   static warm = true;
+  // A side-coach note goes in as a system item the moment it is ready, with no response asked for: context for the model's next reply
+  // and nobody's turn (a user item was answered as one, and voiced). See src/phone-advice.mjs.
+  static adviceNow = true;
   static supportsTools(model) { return ElevenLabsAdapter.toolModels.includes(model); }
 
-  constructor(config, {fetch: fetchImpl = fetch} = {}) { this.config = config; this.fetch = fetchImpl; this.cancelled = new Set(); }
+  constructor(config, {fetch: fetchImpl = fetch} = {}) {
+    this.config = config; this.fetch = fetchImpl; this.cancelled = new Set();
+    // A line that watches the model's words (toolGuard, aiGuard) is told where each reply starts, and hears no words of a reply it dropped.
+    this.guarded = Boolean(config.toolGuard || config.aiGuard);
+  }
 
   async connection() {
     // The mint scopes the authoritative initial session; do not connect with default
@@ -51,10 +58,12 @@ export class ElevenLabsAdapter {
   configure() {
     const c = this.config;
     // ElevenLabs closes a session after max_duration_seconds (default 600, range 60..7200): follow the call length.
+    // `turnDetection: 'server'` sends no turn_detection: the provider's default, its own barge-in included (see `bridgeTurns`).
     return {type: 'session.update', session: {type: 'realtime', model: c.model, instructions: c.instructions, output_modalities: ['audio'],
       max_duration_seconds: Math.min(7200, Math.max(60, (c.maxCallSeconds ?? 180) + 15 + (c.warmSeconds ?? 0))),
       ...(c.tools === false || !ElevenLabsAdapter.supportsTools(c.model) ? {} : {tools: toolDefinitions(c), tool_choice: 'auto'}),
-      audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}, turn_detection: {type: 'semantic_vad', interrupt_response: false}}, output: {format: {type: 'audio/pcmu'}, voice: c.voice}}}};
+      audio: {input: {format: {type: 'audio/pcmu'}, transcription: {language: c.language ?? 'en'}, ...(c.turnDetection !== 'server' && {turn_detection: {type: 'semantic_vad', interrupt_response: false}})},
+        output: {format: {type: 'audio/pcmu'}, voice: c.voice, ...(c.speed !== undefined && {speed: c.speed})}}}};
   }
   // An empty response request can produce no turn. Supply the actual transport event,
   // just as Gemini requires, without inventing caller speech or a domain-specific greeting.
@@ -85,10 +94,12 @@ export class ElevenLabsAdapter {
       case 'session.updated': return this.ready ? [] : (this.ready = true, [{type: 'ready', id: this.conversationId}]);
       // The first reply after a note was asked for is the provider taking it (the item alone is not: a refusal can still follow it, and
       // the bridge would stop asking while the reply in flight was taken for the answer).
-      case 'response.created':
+      case 'response.created': {
         this.response = event.response?.id;
-        if (!this.noteAsked) return [];
-        this.noteAsked = this.noteMade = false; return [{type: 'note_heard', text: this.noteText}];
+        const reply = this.guarded ? [{type: 'reply', id: this.response}] : [];
+        if (!this.noteAsked) return reply;
+        this.noteAsked = this.noteMade = false; return [...reply, {type: 'note_heard', text: this.noteText}];
+      }
       case 'response.done': {
         const id = event.response?.id, mine = id === this.response;
         if (mine) this.response = undefined;
@@ -108,7 +119,9 @@ export class ElevenLabsAdapter {
       case 'input_audio_buffer.speech_stopped': this.callerSpeaking = false; return [{type: 'speech', who: 'caller', stop: true}];
       // The caller's words arrive whole per utterance, the model's as it speaks.
       case 'conversation.item.input_audio_transcription.completed': return [{type: 'speech', who: 'caller', text: words(event.transcript)}];
-      case 'response.output_audio_transcript.delta': return [{type: 'speech', who: 'model', delta: words(event.delta)}];
+      case 'response.output_audio_transcript.delta':
+        if (this.guarded && this.cancelled.has(event.response_id)) return []; // the rest of a reply a guard dropped
+        return [{type: 'speech', who: 'model', delta: words(event.delta)}];
       case 'response.output_item.done':
         return event.item?.type === 'function_call' ? [{type: 'tool', id: event.item.call_id, name: event.item.name, args: event.item.arguments}] : [];
       case 'error':
@@ -132,13 +145,22 @@ export class ElevenLabsAdapter {
   // of speech at its burst rate, which would play over the caller), and cut the model's record of it to what was heard (`playedMs` of
   // `item`), so its next turn follows on from there instead of assuming the whole reply was heard. Ids stay cancelled for the call:
   // `response.done` can come before the last stray audio, and ids are never reused.
-  interrupt({item, playedMs}) {
+  // With the provider's own turn detection (`turnDetection: 'server'`) it has cancelled the reply itself: only the record is cut.
+  // A guard's correction cancels in either case (`cancel`).
+  interrupt({item, playedMs, cancel = this.config.turnDetection !== 'server'}) {
     this.controlAt = Date.now();
     const messages = [];
-    if (this.response) { this.cancelled.add(this.response); messages.push({type: 'response.cancel'}); }
+    if (this.response) { this.cancelled.add(this.response); if (cancel) messages.push({type: 'response.cancel'}); }
     if (item) messages.push({type: 'conversation.item.truncate', item_id: item, content_index: 0, audio_end_ms: Math.max(0, Math.round(playedMs))});
     return messages;
   }
+  // A reply the tool guard caught speaking a tool call: none of its audio or words are kept from here, and it is not cancelled, so a
+  // function call in the same reply still comes.
+  drop() { if (this.response) this.cancelled.add(this.response); }
+  // A side-coach note (src/phone-advice.mjs), and the guard's correction of a cancelled reply with the reply asked for again.
+  systemItem(text) { return {type: 'conversation.item.create', item: {type: 'message', role: 'system', content: [{type: 'input_text', text}]}}; }
+  adviceMessages(note) { return [this.systemItem(note)]; }
+  reask(note) { return [this.systemItem(note), {type: 'response.create'}]; }
   // A line the bridge already played (a placed call's pre-rendered opener): the model takes it as its own and goes on from there.
   history(text) { return [{type: 'conversation.item.create', item: {type: 'message', role: 'assistant', content: [{type: 'output_text', text}]}}]; }
   toolResult(id, name, output, {final = false} = {}) {
