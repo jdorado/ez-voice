@@ -43,8 +43,10 @@ export class PhoneAdvice {
       if (partial) this.early = a.text;
       if (this.current?.receipt.status === 'ready') this.current.receipt.status = 'unused';
       this.current = {receipt, text: a.text}; receipt.status = 'ready'; this.onReady();
-    }, () => {
-      if (receipt.status === 'pending') Object.assign(receipt, {status: signal.aborted && !this.closed.signal.aborted ? 'timeout' : 'unavailable', milliseconds: this.now() - began});
+    }, error => {
+      // the reason a lookup failed (the core's or the command's message, never the note), so a receipt explains an unavailable coach
+      if (receipt.status === 'pending') Object.assign(receipt, {status: signal.aborted && !this.closed.signal.aborted ? 'timeout' : 'unavailable', milliseconds: this.now() - began,
+        error: String(error?.message ?? error).replace(/[\r\n]+/g, ' ').slice(0, 200)});
     });
   }
   // The note for the model's next request, if a pick is ready; `attached` once a request carries it.
