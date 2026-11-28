@@ -163,8 +163,9 @@ started with the very instructions the answer would start with (the line's files
 the call ends unanswered, fails or is hung up while it rings, or after 60 s (Twilio rings 45 s). `readyMs` is then 0 and
 `preopenMs` says how long the session was open before the answer. Inbound calls and the other providers start at the answer, as
 before. The session's own `max_duration_seconds` includes that wait. An unanswered call has used a provider session (start-up credits and
-one of the account's concurrent sessions for up to the ring): the cost of a ready session at the answer. Only a line with no `advice`,
-`thinking`, `ttsSpeed`, `pronunciations` or `greetingFile` opens one early.
+one of the account's concurrent sessions for up to the ring): the cost of a ready session at the answer. Only a line with no
+`thinking`, `ttsSpeed`, `pronunciations`, `greetingFile` or `skipVoicemail`, and no `advice` on a provider other than ElevenLabs, opens
+one early (an ElevenLabs coach takes the call's own identity at the answer, and a sidecar starts with the media stream).
 
 Known limits: `firstAudioMs` is the first audio frame, not a turn latency: GPT-Live streams silence from
 the start, so there it is close to `readyMs`. The provider's own session cap applies too (ElevenLabs follows `maxCallSeconds`
@@ -576,9 +577,35 @@ File-backed instructions require the Linux Docker runtime: containment is verifi
 
 The managed final-response window can leave the line open briefly after a goodbye. It is bounded by the existing end-call limit; an unrelated earlier AudioDone cannot close the call before the final response. Audible greeting activity also arms the configured idle timer when the caller remains silent.
 
+## ElevenLabs Realtime options
+
+Opt-in line keys for `provider: "elevenlabs"` (refused on other providers); a line without them behaves as before.
+
+- `sidecar: "flux-general-en"` with `sidecarApiKey` (a Deepgram key, private like `apiKey`): a Deepgram Flux listener
+  (`wss://api.deepgram.com/v2/listen`, mu-law 8 kHz, eager end of turn at 0.5) on the caller's line as Twilio sends it. The session
+  sends the caller's words only once an utterance is finished; the sidecar gives them as they come, for `adviceEarly` and
+  `voicemailCatch`. It never feeds the session, and a sidecar that fails ends nothing. The receipt's `sidecar` has its `status`, an
+  `error` code and how many `interim`, `eager` and `final` texts came.
+- `toolGuard: true`: a reply whose words write a tool call (a tool name, call markup, a reason code: "Have a great day. [end_call]")
+  loses what Twilio still has queued of it and the rest of its audio and words. It is not cancelled, so a function call in the same
+  reply still comes. Delivery tags ("[calm]") are cut from the transcript. The receipt keeps `toolGuard` (when) and `tagsStripped`.
+  Audio played before its words arrived cannot be recalled.
+- `voicemailCatch: true`: a placed call ends at once, nothing said, on a voicemail greeting, carrier message, phone menu or call
+  screener in the callee's first two utterances (the sidecar's words where the line has one, else the provider's transcript). The
+  reason is `voicemail` (`screener` for a screener) and `machine` says which. A hold message, a live question ("who is this?") or a
+  person offering to take a message is never a machine. `skipVoicemail` keeps its own first-turn matcher.
+- `aiGuard: "<correction>"`: a reply in which the model says it is an AI or an assistant when nothing the caller said asked is
+  cancelled, and the model gets a system item `System: <correction>. Say it in your own words. You already said: "…". Continue from
+  there…` and a new reply, at most once a caller turn. The correction's wording is the operator's (it names the persona).
+- `speed: 0.7..1.2`: the session's output speed (`audio.output.speed`); ElevenLabs may ignore it.
+- `turnDetection: "server"`: no `turn_detection` is sent, so the provider's default turn detection and barge-in apply; the bridge
+  forwards every caller frame (no echo silencing, no barge-in of its own) and, when the provider hears the caller over a reply, only
+  drops what Twilio still has queued and cuts the model's record of it. The default, `"bridge"`, is today's
+  `semantic_vad` with `interrupt_response: false` and the bridge's barge-in.
+
 ## Side coach (advice)
 
-An operator can give a Deepgram or GPT-Live line a side coach: `advice: true` on the line and one shared installed command,
+An operator can give a Deepgram, GPT-Live or ElevenLabs line a side coach: `advice: true` on the line and one shared installed command,
 `adviceBinding: {alias, invoke, deadlineMs}`, for example `{"alias": "advice", "invoke": ["evaluate", "-"], "deadlineMs": 4000}`.
 It is off by default. Voice holds no classifier, rules or coach key; the installed command owns what a note means.
 
@@ -600,7 +627,21 @@ words and after its audible audio has played at Twilio, with the caller's words 
 and the call not ending (end_call); a delegation that never reports its end holds a note for 20 s at most. In real-provider runs an addition as the caller began garbled the caller's words,
 and one timed from the model's words alone (they run ahead of its audio) cut replies and goodbyes short; thinking context
 (`session.thinking.append`) stopped end_call delegation altogether (0 of 6 hang-ups against 4 of 6 without).
-Each note says it replaces the earlier ones; a call adds at most eight. Other providers refuse `advice`.
+Each note says it replaces the earlier ones; a call adds at most eight. Gemini refuses `advice`.
+
+An ElevenLabs Realtime session takes a note as a system item (`conversation.item.create`, role `system`, no `response.create`): context
+for the model's next reply and nobody's turn (a user item was answered as a turn and voiced). It goes in the moment it is ready, never
+while an information tool call is pending (the tool's end sends it) or once the call is ending, and as the command wrote it, with no
+header added. The provider answers each spoken turn by itself, so a note timed to the final words lands a turn late: with `adviceEarly`
+(it needs `sidecar`) the caller's provisional words also go to the command once a caller turn, at four words of the sidecar's interim or
+eager text, with `partial: true`; the final utterance follows as usual, and its note goes in only when its text differs from the early one.
+The request carries the whole call so far in `history` (the last 80 turns of at most 1,000 characters each, the oldest dropped until the
+request fits 56,000 bytes), so the command can rebuild its per-call state from it; `deadlineMs` is unchanged. A call asks at most 160 times.
+
+On these lines the result may also carry `advice.end`: `lead_goodbye`, `opt_out` or `booked` (anything else is an invalid result). The
+call then ends once the model's next reply, the first to start after the caller's utterance ended, has played at Twilio (a reply already
+played ends it at once), or 25 s after the end came; the receipt's `reason` is the end and `adviceEnd` has `{end, atMs, how: played |
+backstop}`. A partial result's end is ignored; a final one is honoured even when a newer utterance overtook its note.
 
 The receipt's `advice` lists each lookup's status, timing, note ID, source revision and how many requests carried it,
 never the note's text. Carrying a note is not proof the model used it; check on real calls that the model never
